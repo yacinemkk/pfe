@@ -1,0 +1,31 @@
+sdn 
+
+Après l’octroi de l’accès initial, le contrôleur SDN collecte dynamiquement les statistiques de flux réseau associées au dispositif authentifié. Ces statistiques sont obtenues via les interfaces programmables du plan de contrôle SDN.
+
+Les caractéristiques extraites incluent notamment :
+
+le taux de transmission des paquets,
+
+la durée des flux,
+
+les intervalles temporels entre communications,
+
+la diversité des adresses de destination,
+
+l’utilisation des protocoles,
+
+les volumes de données transmis et reçus.
+
+Ces métriques sont agrégées afin de former un vecteur de caractéristiques représentatif du comportement réseau du dispositif.
+
+
+------------------------------------------------------------
+
+ ajouter a la photo 2
+La fonction de projection garantit que les valeurs modifiées respectent les contraintes réalistes du trafic réseau.
+
+Deux stratégies principales sont adoptées :
+
+Minimisation L0, via l’utilisation de masques afin de limiter le nombre de caractéristiques modifiées ;
+
+Minimisation L2, en sélectionnant des classes cibles proches dans l’espace des caractéristiques afin de réduire l’amplitude globale de la perturbation

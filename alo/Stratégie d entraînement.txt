@@ -1,0 +1,189 @@
+Stratégie d’entraînement
+
+🔹 1️⃣ Validator – Nature des données
+🎯 Rôle
+
+Détecter :
+
+anomalies grossières
+
+perturbations adversariales évidentes
+
+incohérences statistiques
+
+
+🧪 Données recommandées
+
+trafic bénin normal
+
+Il doit apprendre à distinguer :
+
+normal distribution  vs  perturbed distribution
+
+autoencoder 
+
+--------------------------------------------------------------
+
+🔹 2️⃣ Adversarial Discriminator
+
+🧪 Données recommandées
+
+👉 Dataset équilibré :
+
+50% trafic normal
+
+50% trafic adversarial généré (FGSM + PGD)
+
+Les attaques doivent cibler le modèle d’identification, pas le discriminator.
+
+Donc le pipeline correct est :
+
+Entraîner LSTM initialement
+
+Générer attaques FGSM/PGD sur ce modèle
+
+Utiliser ces échantillons pour entraîner le discriminator
+
+
+-------------------------------------------------------------
+🔹 3️⃣ LSTM / Transformer (Modèle d’identification IoT)
+🎯 Rôle
+
+Identifier le type d’appareil IoT
+
+🧪 Données recommandées – Phase 1
+
+👉 UNIQUEMENT trafic bénin
+
+Pourquoi ?
+Parce que tu veux apprendre :
+
+le comportement réel naturel des appareils
+
+🔹 Phase 2 – Robustesse ( pour chaque modele)
+
+Ensuite tu ajoutes :
+
+80% trafic bénin
+
+20% trafic adversarial
+
+👉 C’est là qu’intervient :
+
+🛡️ Adversarial Training Léger
+
+----------------------------------------------------
+
+
+🔥 Adversarial Training Léger – Explication claire
+🎯 Définition
+
+Technique consistant à :
+
+Générer des exemples adversariaux
+
+Les injecter partiellement dans l'entraînement
+
+Réentraîner le modèle(lstm / transformer) dessus 
+
+
+10% à 25% max d’exemples adversariaux
+
+-----------------------------------------------------
+
+🧠 Intuition mathématique
+
+Si ton dataset est D :
+
+D = {x}
+D_adv = FGSM(x) ou PGD(x)
+
+Nouvelle fonction de perte :
+
+Loss = (1 - α) * Loss(x)
+       + α * Loss(x_adv)
+       
+-------------------------------------------------------------
+
+🔄 Fine-Tuning Adaptatif – Explication
+🎯 Définition
+
+Réajuster dynamiquement le modèle quand :
+
+le taux d’attaque augmente
+
+la distribution change
+
+score_adv moyen augmente
+
+📌 Comment faire ?
+
+Quand le moteur adaptatif détecte :
+
+moyenne(score_adv) > seuil
+
+Alors :
+
+Collecter les nouveaux flux suspects
+
+Ajouter à un buffer
+
+Fine-tune le modèle pendant quelques epochs
+--------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

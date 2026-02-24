@@ -1,0 +1,29 @@
+Traitement des données
+
+réduisant le nombre total de classes à 18 dans IoT IPFIX Home et 17 dans IPFIX Records, comme indiqué dans le Tableau 7
+Les classes supprimées étaient celles ayant un nombre limité d’instances
+
+
+les principales étapes du prétraitement des données
+
+1 Normalisation
+Les données sont remises à l’échelle dans une plage de [0, 1]
+
+(2) Standardisation
+Les données sont transformées pour avoir une moyenne de 0 et un écart-type de 1
+
+(3) Suppression des doublons
+Les entrées dupliquées ont été identifiées et supprimées à l’aide de la bibliothèque Pandas de Python
+
+
+(4) Gestion des valeurs manquantes
+Les instances contenant des valeurs manquantes ont été exclues afin de maintenir la qualité des données et d’assurer l’exactitude des résultats. La suppression des valeurs manquantes aide à prévenir des résultats trompeurs qui pourraient découler de données incomplètes.
+
+
+
+---------------------------------------------------
+Adaptation des ensembles de données pour les réseaux SDN
+
+Dans le contexte de notre étude, l’accès à des ensembles de données contenant des caractéristiques de flux spécifiques aux réseaux définis par logiciel (SDN) est essentiel. Cependant, ces ensembles de données sont souvent dérivés de réseaux traditionnels et ne s’alignent pas directement avec nos exigences. Pour combler cet écart, nous avons entrepris la tâche d’adapter ces ensembles de données en supprimant certaines caractéristiques et en ne conservant que celles pertinentes pour les réseaux SDN.
+
+Cette adaptation a nécessité une sélection minutieuse des données afin d’assurer leur alignement avec les informations disponibles via les API SDN. Pour y parvenir, nous avons systématiquement sélectionné les caractéristiques pertinentes, en éliminant celles telles que les adresses IP source et destination, ainsi que les ports source et destination, entre autres. Notre objectif était de ne préserver que les caractéristiques clés fournies par les API SDN, spécifiquement le temps moyen d’inter-arrivée, la taille moyenne des paquets entrants et sortants, ainsi que le protocole IP.
