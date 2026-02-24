@@ -17,6 +17,7 @@ Usage:
 """
 
 import argparse
+import gc
 import json
 import pickle
 from datetime import datetime
@@ -133,16 +134,25 @@ def load_and_preprocess_data(
     y = df["device"].values
     source_groups = df["source_file"].values if "source_file" in df.columns else None
 
+    del df, dfs
+    gc.collect()
+
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
     label_encoder = LabelEncoder()
     y_encoded = label_encoder.fit_transform(y)
 
+    del X, y
+    gc.collect()
+
     print(f"  Creating sequences...")
     X_seq, y_seq = create_sequences_with_stride(
         X_scaled, y_encoded, seq_length, stride, source_groups
     )
+
+    del X_scaled, y_encoded, source_groups
+    gc.collect()
 
     print(f"  Total sequences: {len(X_seq):,}")
 
@@ -150,9 +160,15 @@ def load_and_preprocess_data(
         X_seq, y_seq, test_size=0.2, random_state=42, stratify=y_seq
     )
 
+    del X_seq, y_seq
+    gc.collect()
+
     X_val, X_test, y_val, y_test = train_test_split(
         X_temp, y_temp, test_size=0.5, random_state=42, stratify=y_temp
     )
+
+    del X_temp, y_temp
+    gc.collect()
 
     print(f"  Train: {len(X_train):,} | Val: {len(X_val):,} | Test: {len(X_test):,}")
 
@@ -217,18 +233,21 @@ class AdversarialTrainer:
 
                     X_batch_adv = torch.FloatTensor(X_adv).to(self.device)
 
-                    X_combined = torch.cat([X_batch, X_batch_adv])
-                    y_combined = torch.cat([y_batch, y_batch[adv_indices]])
+                    X_batch[adv_indices] = X_batch_adv
+
+                    del X_adv, X_batch_adv
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
                     optimizer.zero_grad()
-                    outputs = self.model(X_combined)
-                    loss = criterion(outputs, y_combined)
+                    outputs = self.model(X_batch)
+                    loss = criterion(outputs, y_batch)
                     loss.backward()
                     optimizer.step()
 
-                    total += len(y_combined)
+                    total += y_batch.size(0)
                     _, predicted = outputs.max(1)
-                    correct += predicted.eq(y_combined).sum().item()
+                    correct += predicted.eq(y_batch).sum().item()
                     total_loss += loss.item()
                 else:
                     optimizer.zero_grad()
@@ -443,6 +462,9 @@ def run_experiment(
         X_train_flat, y_train_expanded, features, num_classes
     )
 
+    del X_train_flat, y_train_expanded
+    gc.collect()
+
     sequence_attack = SequenceLevelAttack(
         model, device, epsilon=0.1, alpha=0.01, num_steps=10
     )
@@ -463,6 +485,11 @@ def run_experiment(
         adv_method=adv_method if adv_method in ["pgd", "fgsm"] else "pgd",
         save_path=save_path if save_results else None,
     )
+
+    del train_loader, val_loader
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     print("\n" + "=" * 60)
     print("EVALUATION")
@@ -492,8 +519,8 @@ def run_experiment(
         n_eval = min(1000, len(X_test))
         eval_indices = np.random.choice(len(X_test), n_eval, replace=False)
 
-        X_eval = X_test[eval_indices]
-        y_eval = y_test[eval_indices]
+        X_eval = X_test[eval_indices].copy()
+        y_eval = y_test[eval_indices].copy()
 
         print("  Feature-level attack...")
         X_adv_feature = feature_attack.generate_batch(
@@ -506,6 +533,9 @@ def run_experiment(
         adversarial_results["feature_level"] = {"loss": loss_f, "accuracy": acc_f}
         print(f"  Feature-level attack - Loss: {loss_f:.4f}, Acc: {acc_f:.4f}")
 
+        del X_adv_feature, eval_dataset, eval_loader
+        gc.collect()
+
         print("  Sequence-level PGD attack...")
         X_adv_pgd = sequence_attack.generate_batch(
             X_eval, y_eval, method="pgd", verbose=True
@@ -516,6 +546,9 @@ def run_experiment(
         loss_p, acc_p = trainer.evaluate(eval_loader, criterion)
         adversarial_results["sequence_pgd"] = {"loss": loss_p, "accuracy": acc_p}
         print(f"  Sequence PGD attack - Loss: {loss_p:.4f}, Acc: {acc_p:.4f}")
+
+        del X_adv_pgd, eval_dataset, eval_loader
+        gc.collect()
 
         print("  Sequence-level FGSM attack...")
         X_adv_fgsm = sequence_attack.generate_batch(
@@ -528,6 +561,9 @@ def run_experiment(
         adversarial_results["sequence_fgsm"] = {"loss": loss_fgsm, "accuracy": acc_fgsm}
         print(f"  Sequence FGSM attack - Loss: {loss_fgsm:.4f}, Acc: {acc_fgsm:.4f}")
 
+        del X_adv_fgsm, eval_dataset, eval_loader
+        gc.collect()
+
         print("  Hybrid attack...")
         X_adv_hybrid = adv_generator.generate_batch(
             X_eval, y_eval, method="hybrid", verbose=True
@@ -539,11 +575,17 @@ def run_experiment(
         adversarial_results["hybrid"] = {"loss": loss_h, "accuracy": acc_h}
         print(f"  Hybrid attack - Loss: {loss_h:.4f}, Acc: {acc_h:.4f}")
 
+        del X_adv_hybrid, eval_dataset, eval_loader, X_eval, y_eval
+        gc.collect()
+
         results["adversarial_results"] = adversarial_results
 
         results["robustness_ratios"] = {
             k: v["accuracy"] / test_acc for k, v in adversarial_results.items()
         }
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     if save_results:
         with open(save_path / "results.json", "w") as f:
@@ -564,6 +606,13 @@ def run_experiment(
             )
 
         print(f"\nResults saved to: {save_path}")
+
+    del X_train, X_val, X_test, y_train, y_val, y_test
+    del test_loader, test_dataset, train_dataset, val_dataset
+    del model, trainer, feature_attack, sequence_attack, adv_generator
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     return results
 
@@ -597,6 +646,10 @@ def compare_models(
                     save_results=True,
                 )
                 all_results[key] = results
+
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
     print("\n" + "=" * 60)
     print("COMPARISON SUMMARY")

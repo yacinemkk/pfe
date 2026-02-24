@@ -12,6 +12,7 @@ import torch.nn as nn
 import numpy as np
 from typing import List, Dict, Tuple, Optional
 from tqdm import tqdm
+import gc
 
 
 class FeatureLevelAttack:
@@ -31,8 +32,6 @@ class FeatureLevelAttack:
         non_modifiable: List[str] = None,
         dependent_pairs: Dict[str, str] = None,
     ):
-        self.X_train = X_train
-        self.y_train = y_train
         self.feature_names = feature_names
         self.num_classes = num_classes
 
@@ -56,9 +55,9 @@ class FeatureLevelAttack:
 
         self.modifiable_indices = self._get_modifiable_indices()
         self.dependent_indices = self._get_dependent_indices()
-        self.class_centroids = self._compute_centroids()
+        self.class_centroids = self._compute_centroids(X_train, y_train)
         self.nearest_classes = self._find_nearest_classes(k=3)
-        self.masks = self._generate_masks(n_masks=15)
+        self.masks = self._generate_masks(X_train, n_masks=15)
 
     def _get_modifiable_indices(self) -> np.ndarray:
         modifiable = []
@@ -76,12 +75,14 @@ class FeatureLevelAttack:
                 )
         return pairs
 
-    def _compute_centroids(self) -> Dict[int, np.ndarray]:
+    def _compute_centroids(
+        self, X_train: np.ndarray, y_train: np.ndarray
+    ) -> Dict[int, np.ndarray]:
         centroids = {}
         for cls in range(self.num_classes):
-            mask = self.y_train == cls
+            mask = y_train == cls
             if np.sum(mask) > 0:
-                centroids[cls] = np.mean(self.X_train[mask], axis=0)
+                centroids[cls] = np.mean(X_train[mask], axis=0)
         return centroids
 
     def _find_nearest_classes(self, k: int = 3) -> Dict[int, List[int]]:
@@ -102,7 +103,7 @@ class FeatureLevelAttack:
 
         return nearest
 
-    def _generate_masks(self, n_masks: int = 15) -> np.ndarray:
+    def _generate_masks(self, X_train: np.ndarray, n_masks: int = 15) -> np.ndarray:
         n_features = len(self.feature_names)
         masks = []
 
@@ -119,8 +120,8 @@ class FeatureLevelAttack:
                 mask[active] = 1
                 masks.append(mask)
 
-        if len(self.X_train) > 0:
-            variances = np.var(self.X_train, axis=0)
+        if len(X_train) > 0:
+            variances = np.var(X_train, axis=0)
             for top_k in [5, 10, 15]:
                 mask = np.zeros(n_features)
                 top_indices = np.argsort(variances)[-top_k:]
