@@ -106,7 +106,7 @@ def load_and_preprocess_data(
     print(f"Loading data with sequence length={seq_length}, stride={stride}")
 
     dfs = []
-    csv_files = sorted(RAW_DATA_DIR.glob("home*.csv"))
+    csv_files = sorted(RAW_DATA_DIR.glob("home*_labeled.csv"))
 
     if max_files:
         csv_files = csv_files[:max_files]
