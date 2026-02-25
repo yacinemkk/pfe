@@ -121,17 +121,17 @@ def load_and_preprocess_data(
     df = pd.concat(dfs, ignore_index=True)
 
     df = df.drop_duplicates()
-    df = df.dropna(subset=["device"])
+    df = df.dropna(subset=["name"])
 
-    class_counts = df["device"].value_counts()
+    class_counts = df["name"].value_counts()
     valid_classes = class_counts[class_counts >= 500].index
-    df = df[df["device"].isin(valid_classes)]
+    df = df[df["name"].isin(valid_classes)]
 
     print(f"  Samples: {len(df):,} | Classes: {len(valid_classes)}")
 
     features = [c for c in FEATURES_TO_KEEP if c in df.columns]
     X = df[features].values
-    y = df["device"].values
+    y = df["name"].values
     source_groups = df["source_file"].values if "source_file" in df.columns else None
 
     del df, dfs

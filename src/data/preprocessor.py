@@ -23,7 +23,7 @@ class IoTDataProcessor:
 
     def load_all_data(self, max_files=None):
         dfs = []
-        csv_files = sorted(RAW_DATA_DIR.glob("home*.csv"))
+        csv_files = sorted(RAW_DATA_DIR.glob("home*_labeled.csv"))
 
         if max_files:
             csv_files = csv_files[:max_files]

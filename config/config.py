@@ -60,9 +60,11 @@ FEATURES_TO_DROP = [
     "destIP",
     "srcPort",
     "destPort",
+    "device",
+    "name",
 ]
 
-LABEL_COLUMN = "device"
+LABEL_COLUMN = "name"
 
 SEQUENCE_LENGTH = 10
 STRIDE = 5
