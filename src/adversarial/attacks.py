@@ -230,6 +230,24 @@ class SequenceLevelAttack:
         self.clip_max = clip_max
         self.feature_mask = feature_mask
         self.preserve_positions = preserve_positions
+        self._original_training_state = None
+
+    def _enable_grad_mode(self):
+        self._original_training_state = self.model.training
+        self.model.train()
+        for module in self.model.modules():
+            if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+                module.eval()
+
+    def _restore_mode(self):
+        if self._original_training_state is not None:
+            if self._original_training_state:
+                self.model.train()
+            else:
+                self.model.eval()
+            for module in self.model.modules():
+                if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+                    module.eval()
 
     def _apply_feature_mask(self, grad: torch.Tensor) -> torch.Tensor:
         if self.feature_mask is not None:
@@ -258,43 +276,49 @@ class SequenceLevelAttack:
         targeted: bool = False,
         target_class: Optional[int] = None,
     ) -> torch.Tensor:
-        X = X.to(self.device)
-        y = y.to(self.device)
+        self._enable_grad_mode()
 
-        X_orig = X.clone().detach()
+        try:
+            X = X.to(self.device)
+            y = y.to(self.device)
 
-        if targeted and target_class is not None:
-            target = torch.full_like(y, target_class)
+            X_orig = X.clone().detach()
 
-        X_adv = X.clone().detach()
-        X_adv.requires_grad = True
-
-        for step in range(self.num_steps):
-            outputs = self.model(X_adv)
-
+            target = None
             if targeted and target_class is not None:
-                loss = nn.CrossEntropyLoss()(outputs, target)
-                loss = -loss
-            else:
-                loss = nn.CrossEntropyLoss()(outputs, y)
+                target = torch.full_like(y, target_class)
 
-            loss.backward()
-
-            grad = X_adv.grad.data
-            grad = self._apply_feature_mask(grad)
-
-            X_adv = X_adv + self.alpha * grad.sign()
-
-            eta = torch.clamp(X_adv - X_orig, -self.epsilon, self.epsilon)
-            X_adv = X_orig + eta
-            X_adv = torch.clamp(X_adv, self.clip_min, self.clip_max)
-
-            X_adv = self._preserve_temporal_structure(X_adv, X_orig)
-
-            X_adv = X_adv.detach()
+            X_adv = X.clone().detach()
             X_adv.requires_grad = True
 
-        return X_adv.detach()
+            for step in range(self.num_steps):
+                outputs = self.model(X_adv)
+
+                if targeted and target_class is not None and target is not None:
+                    loss = nn.CrossEntropyLoss()(outputs, target)
+                    loss = -loss
+                else:
+                    loss = nn.CrossEntropyLoss()(outputs, y)
+
+                loss.backward()
+
+                grad = X_adv.grad.data
+                grad = self._apply_feature_mask(grad)
+
+                X_adv = X_adv + self.alpha * grad.sign()
+
+                eta = torch.clamp(X_adv - X_orig, -self.epsilon, self.epsilon)
+                X_adv = X_orig + eta
+                X_adv = torch.clamp(X_adv, self.clip_min, self.clip_max)
+
+                X_adv = self._preserve_temporal_structure(X_adv, X_orig)
+
+                X_adv = X_adv.detach()
+                X_adv.requires_grad = True
+
+            return X_adv.detach()
+        finally:
+            self._restore_mode()
 
     def fgsm_attack(
         self,
@@ -303,29 +327,34 @@ class SequenceLevelAttack:
         targeted: bool = False,
         target_class: Optional[int] = None,
     ) -> torch.Tensor:
-        X = X.to(self.device)
-        y = y.to(self.device)
+        self._enable_grad_mode()
 
-        X_adv = X.clone().detach()
-        X_adv.requires_grad = True
+        try:
+            X = X.to(self.device)
+            y = y.to(self.device)
 
-        outputs = self.model(X_adv)
+            X_adv = X.clone().detach()
+            X_adv.requires_grad = True
 
-        if targeted and target_class is not None:
-            target = torch.full_like(y, target_class)
-            loss = -nn.CrossEntropyLoss()(outputs, target)
-        else:
-            loss = nn.CrossEntropyLoss()(outputs, y)
+            outputs = self.model(X_adv)
 
-        loss.backward()
+            if targeted and target_class is not None:
+                target = torch.full_like(y, target_class)
+                loss = -nn.CrossEntropyLoss()(outputs, target)
+            else:
+                loss = nn.CrossEntropyLoss()(outputs, y)
 
-        grad = X_adv.grad.data
-        grad = self._apply_feature_mask(grad)
+            loss.backward()
 
-        X_adv = X_adv + self.epsilon * grad.sign()
-        X_adv = torch.clamp(X_adv, self.clip_min, self.clip_max)
+            grad = X_adv.grad.data
+            grad = self._apply_feature_mask(grad)
 
-        return X_adv.detach()
+            X_adv = X_adv + self.epsilon * grad.sign()
+            X_adv = torch.clamp(X_adv, self.clip_min, self.clip_max)
+
+            return X_adv.detach()
+        finally:
+            self._restore_mode()
 
     def generate_batch(
         self,
@@ -335,8 +364,6 @@ class SequenceLevelAttack:
         method: str = "pgd",
         verbose: bool = False,
     ) -> np.ndarray:
-        self.model.eval()
-
         X_adv = []
 
         n_batches = (len(X) + batch_size - 1) // batch_size

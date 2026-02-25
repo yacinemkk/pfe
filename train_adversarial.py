@@ -32,7 +32,7 @@ from tqdm import tqdm
 
 import sys
 
-BASE_DIR = Path(__file__).parent.parent.parent
+BASE_DIR = Path(__file__).parent
 sys.path.insert(0, str(BASE_DIR))
 
 from config.config import (
