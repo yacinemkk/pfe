@@ -523,8 +523,10 @@ def run_experiment(
         y_eval = y_test[eval_indices].copy()
 
         print("  Feature-level attack...")
+        seq_len = X_eval.shape[1]
+        y_eval_expanded = np.repeat(y_eval, seq_len)
         X_adv_feature = feature_attack.generate_batch(
-            X_eval.reshape(-1, X_eval.shape[-1]), y_eval, verbose=True
+            X_eval.reshape(-1, X_eval.shape[-1]), y_eval_expanded, verbose=True
         ).reshape(X_eval.shape)
 
         eval_dataset = IoTSequenceDataset(X_adv_feature, y_eval)
