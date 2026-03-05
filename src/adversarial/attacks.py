@@ -245,9 +245,6 @@ class SequenceLevelAttack:
                 self.model.train()
             else:
                 self.model.eval()
-            for module in self.model.modules():
-                if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
-                    module.eval()
 
     def _apply_feature_mask(self, grad: torch.Tensor) -> torch.Tensor:
         if self.feature_mask is not None:
@@ -464,7 +461,7 @@ class AdversarialEvaluator:
         y: np.ndarray,
         attacks: Dict[str, np.ndarray],
         batch_size: int = 64,
-    ) -> Dict[str, Dict[str, float]]:
+    ) -> Tuple[Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]:
         results = {}
 
         results["clean"] = self._evaluate_clean(X, y, batch_size)

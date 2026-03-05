@@ -84,7 +84,7 @@ def create_sequences_with_stride(
 
     if source_groups is None:
         n_samples = len(X) - seq_length + 1
-        for i in range(0, n_samples, stride):
+        for i in range(0, max(1, n_samples), stride):
             X_seq.append(X[i : i + seq_length])
             y_seq.append(y[i + seq_length - 1])
     else:

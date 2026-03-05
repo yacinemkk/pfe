@@ -64,7 +64,7 @@ class IoTDataProcessor:
         X_seq, y_seq = [], []
 
         if source_groups is None:
-            n_samples = len(X) - SEQUENCE_LENGTH
+            n_samples = len(X) - SEQUENCE_LENGTH + 1
             for i in range(0, n_samples, STRIDE):
                 X_seq.append(X[i : i + SEQUENCE_LENGTH])
                 y_seq.append(y[i + SEQUENCE_LENGTH - 1])
@@ -74,7 +74,7 @@ class IoTDataProcessor:
                 X_group = X[mask]
                 y_group = y[mask]
 
-                n_samples = len(X_group) - SEQUENCE_LENGTH
+                n_samples = len(X_group) - SEQUENCE_LENGTH + 1
                 for i in range(0, max(1, n_samples), STRIDE):
                     if i + SEQUENCE_LENGTH <= len(X_group):
                         X_seq.append(X_group[i : i + SEQUENCE_LENGTH])
