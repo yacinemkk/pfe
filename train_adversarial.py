@@ -123,11 +123,16 @@ def load_and_preprocess_data(
     df = df.drop_duplicates()
     df = df.dropna(subset=["name"])
 
+    from config.config import IOT_DEVICE_CLASSES
+
+    # Filter only the 18 IoT device classes from section 4.4
+    df = df[df["name"].isin(IOT_DEVICE_CLASSES)]
+
     class_counts = df["name"].value_counts()
     valid_classes = class_counts[class_counts >= 500].index
     df = df[df["name"].isin(valid_classes)]
 
-    print(f"  Samples: {len(df):,} | Classes: {len(valid_classes)}")
+    print(f"  Samples: {len(df):,} | Classes: {len(valid_classes)} (filtered to 18 IoT classes)")
 
     features = [c for c in FEATURES_TO_KEEP if c in df.columns]
     X = df[features].values

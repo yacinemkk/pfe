@@ -94,3 +94,25 @@ TRANSFORMER_CONFIG = {
 }
 
 MIN_SAMPLES_PER_CLASS = 500
+
+# 4.4 Classes de Dispositifs IoT (18 classes)
+IOT_DEVICE_CLASSES = [
+    "Eclear",
+    "Sleep",
+    "Esensor",
+    "Hub Plus",
+    "Humidifier",
+    "Home Unit",
+    "Ink Jet Printer",
+    "Smart Wi-Fi Plug Mini",
+    "Smart Power Strip",
+    "Echo Dot",
+    "Fire 7 Tablet",
+    "Google Nest Mini",
+    "Google Chromecast",
+    "Atom Cam",
+    "Kasa Camera Pro",
+    "Kasa Smart LED Lamp",
+    "Fire TV Stick 4K",
+    "Qrio Hub",
+]

@@ -43,11 +43,14 @@ class IoTDataProcessor:
         existing_cols = [c for c in FEATURES_TO_DROP if c in df.columns]
         df = df.drop(columns=existing_cols, errors="ignore")
 
+        # Filter only the 18 IoT device classes from section 4.4
+        df = df[df[LABEL_COLUMN].isin(IOT_DEVICE_CLASSES)]
+
         class_counts = df[LABEL_COLUMN].value_counts()
         valid_classes = class_counts[class_counts >= MIN_SAMPLES_PER_CLASS].index
         df = df[df[LABEL_COLUMN].isin(valid_classes)]
 
-        print(f"Classes: {len(valid_classes)} | Samples: {len(df)}")
+        print(f"Classes: {len(valid_classes)}/18 | Samples: {len(df)}")
         return df
 
     def select_features(self, df):
