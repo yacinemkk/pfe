@@ -334,6 +334,19 @@ class AdversarialTrainer:
 
         return total_loss / len(dataloader), correct / total
 
+    def test_model(
+        self,
+        test_loader: DataLoader,
+        criterion: nn.Module,
+        phase_name: str = "Test"
+    ) -> Tuple[float, float]:
+        """Test the model and print results."""
+        test_loss, test_acc = self.evaluate(test_loader, criterion)
+        print(f"\n{'='*50}")
+        print(f"  {phase_name} - Loss: {test_loss:.4f}, Acc: {test_acc:.4f}")
+        print(f"{'='*50}\n")
+        return test_loss, test_acc
+
     def fit(
         self,
         train_loader: DataLoader,
@@ -347,12 +360,19 @@ class AdversarialTrainer:
         hybrid_split: Optional[Dict[str, float]] = None,
         save_path: Optional[Path] = None,
         early_stopping_patience: int = 10,
+        test_loader: Optional[DataLoader] = None,
     ) -> Dict:
-        """Full training loop with adversarial training.
+        """Full training loop with phased adversarial training and intermediate tests.
+        
+        Phases:
+        1. Phase 1 (60% epochs): Clean training only -> TEST
+        2. Phase 2 (20% epochs): Feature-level adversarial training -> TEST
+        3. Phase 3 (20% epochs): Sequence-level adversarial training -> TEST
         
         Args:
             hybrid_split: Dict with 'clean', 'feature', 'sequence' ratios
                          Default: {'clean': 0.6, 'feature': 0.2, 'sequence': 0.2}
+            test_loader: Test dataloader for intermediate evaluations
         """
         optimizer = torch.optim.AdamW(
             self.model.parameters(), lr=lr, weight_decay=weight_decay
@@ -365,12 +385,30 @@ class AdversarialTrainer:
         best_val_acc = 0
         patience_counter = 0
 
-        for epoch in range(epochs):
+        # Calculate phase epochs (60% - 20% - 20%)
+        phase1_epochs = int(epochs * 0.6)
+        phase2_epochs = int(epochs * 0.2)
+        phase3_epochs = epochs - phase1_epochs - phase2_epochs
+
+        print(f"\n{'='*60}")
+        print("PHASED ADVERSARIAL TRAINING PLAN")
+        print(f"{'='*60}")
+        print(f"Phase 1 (Clean Training):        Epochs 1-{phase1_epochs} ({phase1_epochs} epochs)")
+        if adv_generator and adv_ratio > 0:
+            print(f"Phase 2 (Feature-Level Attack):  Epochs {phase1_epochs+1}-{phase1_epochs+phase2_epochs} ({phase2_epochs} epochs)")
+            print(f"Phase 3 (Sequence-Level Attack): Epochs {phase1_epochs+phase2_epochs+1}-{epochs} ({phase3_epochs} epochs)")
+        print(f"{'='*60}\n")
+
+        # Phase 1: Clean Training (60%)
+        print(f"\n{'='*60}")
+        print("PHASE 1: CLEAN TRAINING (60%)")
+        print(f"{'='*60}\n")
+        
+        for epoch in range(phase1_epochs):
             train_loss, train_acc = self.train_epoch(
-                train_loader, optimizer, criterion, adv_generator, adv_ratio, adv_method, hybrid_split
+                train_loader, optimizer, criterion, None, 0.0, adv_method, None
             )
             val_loss, val_acc = self.evaluate(val_loader, criterion)
-
             scheduler.step(val_loss)
 
             self.history["train_loss"].append(train_loss)
@@ -378,14 +416,13 @@ class AdversarialTrainer:
             self.history["val_loss"].append(val_loss)
             self.history["val_acc"].append(val_acc)
 
-            print(f"Epoch {epoch + 1}/{epochs}")
+            print(f"Phase 1 - Epoch {epoch + 1}/{phase1_epochs} (Global: {epoch + 1}/{epochs})")
             print(f"  Train - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
             print(f"  Val   - Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
 
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
                 patience_counter = 0
-
                 if save_path:
                     torch.save(
                         {
@@ -394,15 +431,128 @@ class AdversarialTrainer:
                             "optimizer_state_dict": optimizer.state_dict(),
                             "val_acc": val_acc,
                             "history": self.history,
-                            "hybrid_split": hybrid_split,
+                            "phase": 1,
                         },
-                        save_path / "best_model.pt",
+                        save_path / "best_model_phase1.pt",
+                    )
+            else:
+                patience_counter += 1
+
+        # Test after Phase 1
+        if test_loader:
+            self.test_model(test_loader, criterion, "TEST APRES PHASE 1 (60% Clean)")
+
+        # Early exit if no adversarial training
+        if adv_generator is None or adv_ratio <= 0:
+            return self.history
+
+        # Phase 2: Feature-Level Adversarial Training (20%)
+        print(f"\n{'='*60}")
+        print("PHASE 2: FEATURE-LEVEL ADVERSARIAL TRAINING (20%)")
+        print(f"{'='*60}\n")
+        
+        for epoch in range(phase2_epochs):
+            global_epoch = phase1_epochs + epoch + 1
+            train_loss, train_acc = self.train_epoch(
+                train_loader, optimizer, criterion, adv_generator, adv_ratio, 
+                "feature", {"clean": 0.0, "feature": 1.0, "sequence": 0.0}
+            )
+            val_loss, val_acc = self.evaluate(val_loader, criterion)
+            scheduler.step(val_loss)
+
+            self.history["train_loss"].append(train_loss)
+            self.history["train_acc"].append(train_acc)
+            self.history["val_loss"].append(val_loss)
+            self.history["val_acc"].append(val_acc)
+
+            print(f"Phase 2 - Epoch {epoch + 1}/{phase2_epochs} (Global: {global_epoch}/{epochs})")
+            print(f"  Train - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
+            print(f"  Val   - Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
+
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                patience_counter = 0
+                if save_path:
+                    torch.save(
+                        {
+                            "epoch": global_epoch - 1,
+                            "model_state_dict": self.model.state_dict(),
+                            "optimizer_state_dict": optimizer.state_dict(),
+                            "val_acc": val_acc,
+                            "history": self.history,
+                            "phase": 2,
+                        },
+                        save_path / "best_model_phase2.pt",
+                    )
+            else:
+                patience_counter += 1
+
+        # Test after Phase 2
+        if test_loader:
+            self.test_model(test_loader, criterion, "TEST APRES PHASE 2 (20% Feature-Level)")
+
+        # Phase 3: Sequence-Level Adversarial Training (20%)
+        print(f"\n{'='*60}")
+        print("PHASE 3: SEQUENCE-LEVEL ADVERSARIAL TRAINING (20%)")
+        print(f"{'='*60}\n")
+        
+        for epoch in range(phase3_epochs):
+            global_epoch = phase1_epochs + phase2_epochs + epoch + 1
+            train_loss, train_acc = self.train_epoch(
+                train_loader, optimizer, criterion, adv_generator, adv_ratio,
+                "pgd", {"clean": 0.0, "feature": 0.0, "sequence": 1.0}
+            )
+            val_loss, val_acc = self.evaluate(val_loader, criterion)
+            scheduler.step(val_loss)
+
+            self.history["train_loss"].append(train_loss)
+            self.history["train_acc"].append(train_acc)
+            self.history["val_loss"].append(val_loss)
+            self.history["val_acc"].append(val_acc)
+
+            print(f"Phase 3 - Epoch {epoch + 1}/{phase3_epochs} (Global: {global_epoch}/{epochs})")
+            print(f"  Train - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
+            print(f"  Val   - Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
+
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                patience_counter = 0
+                if save_path:
+                    torch.save(
+                        {
+                            "epoch": global_epoch - 1,
+                            "model_state_dict": self.model.state_dict(),
+                            "optimizer_state_dict": optimizer.state_dict(),
+                            "val_acc": val_acc,
+                            "history": self.history,
+                            "phase": 3,
+                        },
+                        save_path / "best_model_phase3.pt",
                     )
             else:
                 patience_counter += 1
                 if patience_counter >= early_stopping_patience:
-                    print(f"Early stopping at epoch {epoch + 1}")
+                    print(f"Early stopping at epoch {global_epoch}")
                     break
+
+        # Test after Phase 3 (Final)
+        if test_loader:
+            self.test_model(test_loader, criterion, "TEST FINAL APRES PHASE 3 (20% Sequence-Level)")
+
+        # Save final best model
+        if save_path:
+            final_epoch = phase1_epochs + phase2_epochs + phase3_epochs
+            torch.save(
+                {
+                    "epoch": final_epoch,
+                    "model_state_dict": self.model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "best_val_acc": best_val_acc,
+                    "history": self.history,
+                    "phases": {"phase1": phase1_epochs, "phase2": phase2_epochs, "phase3": phase3_epochs},
+                },
+                save_path / "best_model.pt",
+            )
 
         return self.history
 
@@ -527,7 +677,7 @@ def run_experiment(
 
     print(f"\nTraining with adversarial ratio: {adv_ratio}")
     if adv_method == "hybrid":
-        print(f"  Hybrid split: {hybrid_split['clean']*100:.0f}% clean + {hybrid_split['feature']*100:.0f}% feature-level + {hybrid_split['sequence']*100:.0f}% sequence-level")
+        print(f"  Phased training: 60% clean -> 20% feature-level -> 20% sequence-level")
     history = trainer.fit(
         train_loader,
         val_loader,
@@ -537,6 +687,7 @@ def run_experiment(
         adv_method=adv_method if adv_method in ["pgd", "fgsm"] else "pgd",
         hybrid_split=hybrid_split,
         save_path=save_path if save_results else None,
+        test_loader=test_loader,
     )
 
     del train_loader, val_loader
