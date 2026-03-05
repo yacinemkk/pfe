@@ -7,12 +7,18 @@ This script implements:
 2. Multiple sequence lengths for experimentation
 3. Feature-level adversarial attacks (IoT-SDN style)
 4. Sequence-level adversarial attacks (PGD via BPTT)
-5. Hybrid adversarial training with combined attacks
+5. Hybrid adversarial training with 60% clean + 20% feature-level + 20% sequence-level
 6. Comprehensive robustness evaluation
 
 Usage:
+    # Default hybrid training: 60% clean + 20% feature + 20% sequence
     python train_adversarial.py --model lstm --seq_length 10 --adv_method hybrid
-    python train_adversarial.py --model cnn_lstm --seq_length 50 --adv_method all
+    
+    # Custom hybrid split
+    python train_adversarial.py --model cnn_lstm --seq_length 50 --adv_method hybrid \
+        --hybrid_clean 0.5 --hybrid_feature 0.3 --hybrid_sequence 0.2
+    
+    # Compare all configurations
     python train_adversarial.py --compare_all --seq_lengths 10,25,50
 """
 
@@ -216,10 +222,20 @@ class AdversarialTrainer:
         adv_generator: Optional[HybridAdversarialAttack] = None,
         adv_ratio: float = 0.0,
         adv_method: str = "pgd",
+        hybrid_split: Optional[Dict[str, float]] = None,
     ) -> Tuple[float, float]:
-        """Train for one epoch with optional adversarial training."""
+        """Train for one epoch with optional adversarial training.
+        
+        Args:
+            hybrid_split: Dict with 'clean', 'feature', 'sequence' ratios (must sum to 1.0)
+                         Default: {'clean': 0.6, 'feature': 0.2, 'sequence': 0.2}
+        """
         self.model.train()
         total_loss, correct, total = 0, 0, 0
+
+        # Default hybrid split: 60% clean, 20% feature-level, 20% sequence-level
+        if hybrid_split is None:
+            hybrid_split = {"clean": 0.6, "feature": 0.2, "sequence": 0.2}
 
         for X_batch, y_batch in tqdm(train_loader, desc="Training", leave=False):
             X_batch = X_batch.to(self.device)
@@ -228,19 +244,36 @@ class AdversarialTrainer:
             if adv_generator is not None and adv_ratio > 0:
                 n_adv = int(len(X_batch) * adv_ratio)
                 if n_adv > 0:
+                    # Calculate split sizes based on hybrid ratios
+                    n_feature = int(n_adv * hybrid_split.get("feature", 0.2) / (hybrid_split.get("feature", 0.2) + hybrid_split.get("sequence", 0.2)))
+                    n_sequence = n_adv - n_feature
+
                     adv_indices = np.random.choice(len(X_batch), n_adv, replace=False)
+                    
+                    # Split indices for feature-level and sequence-level attacks
+                    idx_feature = adv_indices[:n_feature]
+                    idx_sequence = adv_indices[n_feature:n_feature + n_sequence]
 
-                    X_adv = adv_generator.sequence_attack.generate_batch(
-                        X_batch[adv_indices].cpu().numpy(),
-                        y_batch[adv_indices].cpu().numpy(),
-                        method=adv_method,
-                    )
+                    # Apply feature-level attack
+                    if len(idx_feature) > 0:
+                        X_adv_feature = adv_generator.feature_attack.generate_batch(
+                            X_batch[idx_feature].cpu().numpy(),
+                            y_batch[idx_feature].cpu().numpy(),
+                        )
+                        X_batch[idx_feature] = torch.FloatTensor(X_adv_feature).to(self.device)
+                        del X_adv_feature
 
-                    X_batch_adv = torch.FloatTensor(X_adv).to(self.device)
+                    # Apply sequence-level attack
+                    if len(idx_sequence) > 0:
+                        seq_method = "pgd" if adv_method == "hybrid" else adv_method
+                        X_adv_sequence = adv_generator.sequence_attack.generate_batch(
+                            X_batch[idx_sequence].cpu().numpy(),
+                            y_batch[idx_sequence].cpu().numpy(),
+                            method=seq_method,
+                        )
+                        X_batch[idx_sequence] = torch.FloatTensor(X_adv_sequence).to(self.device)
+                        del X_adv_sequence
 
-                    X_batch[adv_indices] = X_batch_adv
-
-                    del X_adv, X_batch_adv
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
 
@@ -311,10 +344,16 @@ class AdversarialTrainer:
         adv_generator: Optional[HybridAdversarialAttack] = None,
         adv_ratio: float = 0.0,
         adv_method: str = "pgd",
+        hybrid_split: Optional[Dict[str, float]] = None,
         save_path: Optional[Path] = None,
         early_stopping_patience: int = 10,
     ) -> Dict:
-        """Full training loop with adversarial training."""
+        """Full training loop with adversarial training.
+        
+        Args:
+            hybrid_split: Dict with 'clean', 'feature', 'sequence' ratios
+                         Default: {'clean': 0.6, 'feature': 0.2, 'sequence': 0.2}
+        """
         optimizer = torch.optim.AdamW(
             self.model.parameters(), lr=lr, weight_decay=weight_decay
         )
@@ -328,7 +367,7 @@ class AdversarialTrainer:
 
         for epoch in range(epochs):
             train_loss, train_acc = self.train_epoch(
-                train_loader, optimizer, criterion, adv_generator, adv_ratio, adv_method
+                train_loader, optimizer, criterion, adv_generator, adv_ratio, adv_method, hybrid_split
             )
             val_loss, val_acc = self.evaluate(val_loader, criterion)
 
@@ -355,6 +394,7 @@ class AdversarialTrainer:
                             "optimizer_state_dict": optimizer.state_dict(),
                             "val_acc": val_acc,
                             "history": self.history,
+                            "hybrid_split": hybrid_split,
                         },
                         save_path / "best_model.pt",
                     )
@@ -416,6 +456,7 @@ def run_experiment(
     batch_size: int,
     max_files: Optional[int] = None,
     save_results: bool = True,
+    hybrid_split: Optional[Dict[str, float]] = None,
 ) -> Dict:
     """Run a single experiment."""
     device = get_device()
@@ -480,7 +521,13 @@ def run_experiment(
 
     trainer = AdversarialTrainer(model, device, model_type)
 
+    # Default hybrid split: 60% clean, 20% feature-level, 20% sequence-level
+    if hybrid_split is None:
+        hybrid_split = {"clean": 0.6, "feature": 0.2, "sequence": 0.2}
+
     print(f"\nTraining with adversarial ratio: {adv_ratio}")
+    if adv_method == "hybrid":
+        print(f"  Hybrid split: {hybrid_split['clean']*100:.0f}% clean + {hybrid_split['feature']*100:.0f}% feature-level + {hybrid_split['sequence']*100:.0f}% sequence-level")
     history = trainer.fit(
         train_loader,
         val_loader,
@@ -488,6 +535,7 @@ def run_experiment(
         adv_generator=adv_generator if adv_method != "none" else None,
         adv_ratio=adv_ratio if adv_method != "none" else 0.0,
         adv_method=adv_method if adv_method in ["pgd", "fgsm"] else "pgd",
+        hybrid_split=hybrid_split,
         save_path=save_path if save_results else None,
     )
 
@@ -509,6 +557,7 @@ def run_experiment(
         "sequence_length": seq_length,
         "adversarial_method": adv_method,
         "adversarial_ratio": adv_ratio,
+        "hybrid_split": hybrid_split,
         "test_accuracy_clean": test_acc,
         "test_loss_clean": test_loss,
         "best_val_accuracy": max(history["val_acc"]),
@@ -753,8 +802,36 @@ def main():
         default="none,feature,pgd,hybrid",
         help="Comma-separated adversarial methods for comparison",
     )
+    parser.add_argument(
+        "--hybrid_clean",
+        type=float,
+        default=0.6,
+        help="Ratio of clean samples in hybrid training (default: 0.6)",
+    )
+    parser.add_argument(
+        "--hybrid_feature",
+        type=float,
+        default=0.2,
+        help="Ratio of feature-level adversarial samples in hybrid training (default: 0.2)",
+    )
+    parser.add_argument(
+        "--hybrid_sequence",
+        type=float,
+        default=0.2,
+        help="Ratio of sequence-level adversarial samples in hybrid training (default: 0.2)",
+    )
 
     args = parser.parse_args()
+
+    # Validate hybrid split ratios
+    hybrid_split = {
+        "clean": args.hybrid_clean,
+        "feature": args.hybrid_feature,
+        "sequence": args.hybrid_sequence,
+    }
+    total = sum(hybrid_split.values())
+    if abs(total - 1.0) > 1e-6:
+        parser.error(f"Hybrid split ratios must sum to 1.0, got {total}")
 
     if args.compare_all:
         seq_lengths = [int(x) for x in args.seq_lengths.split(",")]
@@ -778,6 +855,7 @@ def main():
             batch_size=args.batch_size,
             max_files=args.max_files,
             save_results=True,
+            hybrid_split=hybrid_split,
         )
 
 

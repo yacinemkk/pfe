@@ -95,6 +95,14 @@ TRANSFORMER_CONFIG = {
 
 MIN_SAMPLES_PER_CLASS = 500
 
+# Hybrid Adversarial Training Configuration
+# Default: 60% clean + 20% feature-level + 20% sequence-level
+HYBRID_SPLIT_CONFIG = {
+    "clean": 0.6,
+    "feature": 0.2,
+    "sequence": 0.2,
+}
+
 # 4.4 Classes de Dispositifs IoT (18 classes)
 IOT_DEVICE_CLASSES = [
     "Eclear",
