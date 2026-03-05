@@ -347,6 +347,353 @@ class AdversarialTrainer:
         print(f"{'='*50}\n")
         return test_loss, test_acc
 
+    def fit_with_phase_checkpoints(
+        self,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        test_loader: DataLoader,
+        epochs: int = 30,
+        lr: float = 1e-3,
+        weight_decay: float = 1e-4,
+        adv_generator: Optional[HybridAdversarialAttack] = None,
+        adv_ratio: float = 0.0,
+        adv_method: str = "pgd",
+        hybrid_split: Optional[Dict[str, float]] = None,
+        save_path: Optional[Path] = None,
+        early_stopping_patience: int = 10,
+        feature_attack: Optional[FeatureLevelAttack] = None,
+        sequence_attack: Optional[SequenceLevelAttack] = None,
+        X_test: Optional[np.ndarray] = None,
+        y_test: Optional[np.ndarray] = None,
+        batch_size: int = 64,
+    ) -> Dict:
+        """Training avec sauvegarde après chaque phase et évaluation finale de tous les checkpoints.
+        
+        Cette méthode:
+        1. Entraîne le modèle en 3 phases (60% clean, 20% feature, 20% sequence)
+        2. Sauvegarde le modèle à la fin de CHAQUE phase
+        3. À la fin de l'entraînement, charge chaque modèle sauvegardé et évalue les métriques
+        
+        Args:
+            test_loader: DataLoader de test obligatoire
+            feature_attack: Pour évaluation robustesse feature-level
+            sequence_attack: Pour évaluation robustesse sequence-level
+            X_test: Données test pour génération d'exemples adversariaux
+            y_test: Labels test pour génération d'exemples adversariaux
+            batch_size: Taille du batch pour évaluation
+        """
+        optimizer = torch.optim.AdamW(
+            self.model.parameters(), lr=lr, weight_decay=weight_decay
+        )
+        criterion = nn.CrossEntropyLoss()
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", patience=3, factor=0.5
+        )
+
+        best_val_acc = 0
+        patience_counter = 0
+
+        # Calculate phase epochs (60% - 20% - 20%)
+        phase1_epochs = int(epochs * 0.6)
+        phase2_epochs = int(epochs * 0.2)
+        phase3_epochs = epochs - phase1_epochs - phase2_epochs
+
+        print(f"\n{'='*60}")
+        print("PHASED ADVERSARIAL TRAINING AVEC CHECKPOINTS")
+        print(f"{'='*60}")
+        print(f"Phase 1 (Clean Training):        Epochs 1-{phase1_epochs} ({phase1_epochs} epochs)")
+        if adv_generator and adv_ratio > 0:
+            print(f"Phase 2 (Feature-Level Attack):  Epochs {phase1_epochs+1}-{phase1_epochs+phase2_epochs} ({phase2_epochs} epochs)")
+            print(f"Phase 3 (Sequence-Level Attack): Epochs {phase1_epochs+phase2_epochs+1}-{epochs} ({phase3_epochs} epochs)")
+        print(f"{'='*60}\n")
+
+        # Dictionnaire pour stocker les chemins des checkpoints
+        phase_checkpoints = {}
+
+        # Phase 1: Clean Training (60%)
+        print(f"\n{'='*60}")
+        print("PHASE 1: CLEAN TRAINING (60%)")
+        print(f"{'='*60}\n")
+        
+        for epoch in range(phase1_epochs):
+            train_loss, train_acc = self.train_epoch(
+                train_loader, optimizer, criterion, None, 0.0, adv_method, None
+            )
+            val_loss, val_acc = self.evaluate(val_loader, criterion)
+            scheduler.step(val_loss)
+
+            self.history["train_loss"].append(train_loss)
+            self.history["train_acc"].append(train_acc)
+            self.history["val_loss"].append(val_loss)
+            self.history["val_acc"].append(val_acc)
+
+            print(f"Phase 1 - Epoch {epoch + 1}/{phase1_epochs} (Global: {epoch + 1}/{epochs})")
+            print(f"  Train - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
+            print(f"  Val   - Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
+
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                patience_counter = 0
+            else:
+                patience_counter += 1
+
+        # Sauvegarder checkpoint Phase 1
+        if save_path:
+            checkpoint_path = save_path / "checkpoint_phase1.pt"
+            torch.save(
+                {
+                    "epoch": phase1_epochs,
+                    "model_state_dict": self.model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "best_val_acc": best_val_acc,
+                    "history": self.history,
+                    "phase": 1,
+                },
+                checkpoint_path,
+            )
+            phase_checkpoints[1] = str(checkpoint_path)
+            print(f"\n[CHECKPOINT] Phase 1 sauvegardée: {checkpoint_path}")
+
+        # Early exit si pas d'entraînement adversarial
+        if adv_generator is None or adv_ratio <= 0:
+            return self._evaluate_all_checkpoints(
+                phase_checkpoints, test_loader, criterion,
+                feature_attack, sequence_attack, X_test, y_test, batch_size
+            )
+
+        # Phase 2: Feature-Level Adversarial Training (20%)
+        print(f"\n{'='*60}")
+        print("PHASE 2: FEATURE-LEVEL ADVERSARIAL TRAINING (20%)")
+        print(f"{'='*60}\n")
+        
+        for epoch in range(phase2_epochs):
+            global_epoch = phase1_epochs + epoch + 1
+            train_loss, train_acc = self.train_epoch(
+                train_loader, optimizer, criterion, adv_generator, adv_ratio, 
+                "feature", {"clean": 0.0, "feature": 1.0, "sequence": 0.0}
+            )
+            val_loss, val_acc = self.evaluate(val_loader, criterion)
+            scheduler.step(val_loss)
+
+            self.history["train_loss"].append(train_loss)
+            self.history["train_acc"].append(train_acc)
+            self.history["val_loss"].append(val_loss)
+            self.history["val_acc"].append(val_acc)
+
+            print(f"Phase 2 - Epoch {epoch + 1}/{phase2_epochs} (Global: {global_epoch}/{epochs})")
+            print(f"  Train - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
+            print(f"  Val   - Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
+
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                patience_counter = 0
+            else:
+                patience_counter += 1
+
+        # Sauvegarder checkpoint Phase 2
+        if save_path:
+            checkpoint_path = save_path / "checkpoint_phase2.pt"
+            torch.save(
+                {
+                    "epoch": phase1_epochs + phase2_epochs,
+                    "model_state_dict": self.model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "best_val_acc": best_val_acc,
+                    "history": self.history,
+                    "phase": 2,
+                },
+                checkpoint_path,
+            )
+            phase_checkpoints[2] = str(checkpoint_path)
+            print(f"\n[CHECKPOINT] Phase 2 sauvegardée: {checkpoint_path}")
+
+        # Phase 3: Sequence-Level Adversarial Training (20%)
+        print(f"\n{'='*60}")
+        print("PHASE 3: SEQUENCE-LEVEL ADVERSARIAL TRAINING (20%)")
+        print(f"{'='*60}\n")
+        
+        for epoch in range(phase3_epochs):
+            global_epoch = phase1_epochs + phase2_epochs + epoch + 1
+            train_loss, train_acc = self.train_epoch(
+                train_loader, optimizer, criterion, adv_generator, adv_ratio,
+                "pgd", {"clean": 0.0, "feature": 0.0, "sequence": 1.0}
+            )
+            val_loss, val_acc = self.evaluate(val_loader, criterion)
+            scheduler.step(val_loss)
+
+            self.history["train_loss"].append(train_loss)
+            self.history["train_acc"].append(train_acc)
+            self.history["val_loss"].append(val_loss)
+            self.history["val_acc"].append(val_acc)
+
+            print(f"Phase 3 - Epoch {epoch + 1}/{phase3_epochs} (Global: {global_epoch}/{epochs})")
+            print(f"  Train - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
+            print(f"  Val   - Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
+
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= early_stopping_patience:
+                    print(f"Early stopping at epoch {global_epoch}")
+                    break
+
+        # Sauvegarder checkpoint Phase 3
+        if save_path:
+            checkpoint_path = save_path / "checkpoint_phase3.pt"
+            torch.save(
+                {
+                    "epoch": epochs,
+                    "model_state_dict": self.model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "best_val_acc": best_val_acc,
+                    "history": self.history,
+                    "phase": 3,
+                },
+                checkpoint_path,
+            )
+            phase_checkpoints[3] = str(checkpoint_path)
+            print(f"\n[CHECKPOINT] Phase 3 sauvegardée: {checkpoint_path}")
+
+        # Sauvegarder modèle final
+        if save_path:
+            final_path = save_path / "best_model.pt"
+            torch.save(
+                {
+                    "epoch": epochs,
+                    "model_state_dict": self.model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "best_val_acc": best_val_acc,
+                    "history": self.history,
+                    "phases": {"phase1": phase1_epochs, "phase2": phase2_epochs, "phase3": phase3_epochs},
+                },
+                final_path,
+            )
+
+        # Évaluer tous les checkpoints à la fin
+        return self._evaluate_all_checkpoints(
+            phase_checkpoints, test_loader, criterion,
+            feature_attack, sequence_attack, X_test, y_test, batch_size
+        )
+
+    def _evaluate_all_checkpoints(
+        self,
+        phase_checkpoints: Dict[int, str],
+        test_loader: DataLoader,
+        criterion: nn.Module,
+        feature_attack: Optional[FeatureLevelAttack],
+        sequence_attack: Optional[SequenceLevelAttack],
+        X_test: Optional[np.ndarray],
+        y_test: Optional[np.ndarray],
+        batch_size: int,
+    ) -> Dict:
+        """Évalue tous les checkpoints de phase sur les métriques de test."""
+        print(f"\n{'='*70}")
+        print("ÉVALUATION DE TOUS LES CHECKPOINTS DE PHASE")
+        print(f"{'='*70}\n")
+
+        all_phase_results = {}
+
+        for phase_num, checkpoint_path in sorted(phase_checkpoints.items()):
+            print(f"\n{'-'*60}")
+            print(f"ÉVALUATION CHECKPOINT PHASE {phase_num}")
+            print(f"Checkpoint: {checkpoint_path}")
+            print(f"{'-'*60}")
+
+            # Charger le checkpoint
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            self.model.load_state_dict(checkpoint["model_state_dict"])
+            self.model.eval()
+
+            phase_results = {"phase": phase_num, "checkpoint": checkpoint_path}
+
+            # Test sur données clean
+            test_loss, test_acc = self.evaluate(test_loader, criterion)
+            phase_results["clean"] = {"loss": test_loss, "accuracy": test_acc}
+            print(f"  Clean Test - Loss: {test_loss:.4f}, Acc: {test_acc:.4f}")
+
+            # Test robustesse si attaques disponibles
+            if feature_attack is not None and X_test is not None and y_test is not None:
+                # Feature-level attack
+                print("  Évaluation robustesse (Feature-level)...")
+                n_eval = min(1000, len(X_test))
+                eval_indices = np.random.choice(len(X_test), n_eval, replace=False)
+                X_eval = X_test[eval_indices].copy()
+                y_eval = y_test[eval_indices].copy()
+
+                y_eval_expanded = np.repeat(y_eval, X_eval.shape[1])
+                X_adv_feature = feature_attack.generate_batch(
+                    X_eval.reshape(-1, X_eval.shape[-1]), y_eval_expanded, verbose=False
+                ).reshape(X_eval.shape)
+
+                eval_dataset = IoTSequenceDataset(X_adv_feature, y_eval)
+                eval_loader = DataLoader(eval_dataset, batch_size=batch_size)
+                loss_f, acc_f = self.evaluate(eval_loader, criterion)
+                phase_results["feature_attack"] = {"loss": loss_f, "accuracy": acc_f}
+                print(f"    Feature Attack - Loss: {loss_f:.4f}, Acc: {acc_f:.4f}")
+
+                del X_adv_feature, eval_dataset, eval_loader
+                gc.collect()
+
+            if sequence_attack is not None and X_test is not None and y_test is not None:
+                # Sequence-level PGD
+                print("  Évaluation robustesse (Sequence PGD)...")
+                n_eval = min(1000, len(X_test))
+                eval_indices = np.random.choice(len(X_test), n_eval, replace=False)
+                X_eval = X_test[eval_indices].copy()
+                y_eval = y_test[eval_indices].copy()
+
+                X_adv_pgd = sequence_attack.generate_batch(X_eval, y_eval, method="pgd", verbose=False)
+                eval_dataset = IoTSequenceDataset(X_adv_pgd, y_eval)
+                eval_loader = DataLoader(eval_dataset, batch_size=batch_size)
+                loss_p, acc_p = self.evaluate(eval_loader, criterion)
+                phase_results["sequence_pgd"] = {"loss": loss_p, "accuracy": acc_p}
+                print(f"    Sequence PGD - Loss: {loss_p:.4f}, Acc: {acc_p:.4f}")
+
+                del X_adv_pgd, eval_dataset, eval_loader
+                gc.collect()
+
+                # Sequence-level FGSM
+                print("  Évaluation robustesse (Sequence FGSM)...")
+                X_adv_fgsm = sequence_attack.generate_batch(X_eval, y_eval, method="fgsm", verbose=False)
+                eval_dataset = IoTSequenceDataset(X_adv_fgsm, y_eval)
+                eval_loader = DataLoader(eval_dataset, batch_size=batch_size)
+                loss_fgsm, acc_fgsm = self.evaluate(eval_loader, criterion)
+                phase_results["sequence_fgsm"] = {"loss": loss_fgsm, "accuracy": acc_fgsm}
+                print(f"    Sequence FGSM - Loss: {loss_fgsm:.4f}, Acc: {acc_fgsm:.4f}")
+
+                del X_adv_fgsm, eval_dataset, eval_loader, X_eval, y_eval
+                gc.collect()
+
+            all_phase_results[f"phase_{phase_num}"] = phase_results
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        # Afficher le résumé comparatif
+        print(f"\n{'='*70}")
+        print("RÉSUMÉ COMPARATIF DES PHASES")
+        print(f"{'='*70}")
+        print(f"{'Phase':<10} {'Clean Acc':<12} {'Feature':<12} {'PGD':<12} {'FGSM':<12}")
+        print(f"{'-'*70}")
+        
+        for phase_key, results in sorted(all_phase_results.items()):
+            phase_num = results["phase"]
+            clean_acc = results.get("clean", {}).get("accuracy", 0)
+            feature_acc = results.get("feature_attack", {}).get("accuracy", 0)
+            pgd_acc = results.get("sequence_pgd", {}).get("accuracy", 0)
+            fgsm_acc = results.get("sequence_fgsm", {}).get("accuracy", 0)
+            
+            print(f"{f'Phase {phase_num}':<10} {clean_acc:<12.4f} {feature_acc:<12.4f} {pgd_acc:<12.4f} {fgsm_acc:<12.4f}")
+
+        print(f"{'='*70}\n")
+
+        # Stocker les résultats dans l'historique
+        self.history["phase_checkpoints_evaluation"] = all_phase_results
+
+        return self.history
+
     def fit(
         self,
         train_loader: DataLoader,
@@ -595,6 +942,159 @@ def create_model(
         raise ValueError(f"Unknown model type: {model_type}")
 
     return model.to(device)
+
+
+def run_experiment_with_phase_checkpoints(
+    model_type: str,
+    seq_length: int,
+    adv_method: str,
+    adv_ratio: float,
+    epochs: int,
+    batch_size: int,
+    max_files: Optional[int] = None,
+    save_results: bool = True,
+    hybrid_split: Optional[Dict[str, float]] = None,
+) -> Dict:
+    """Run experiment avec sauvegarde et évaluation des checkpoints de phase."""
+    device = get_device()
+    print(f"\n{'=' * 60}")
+    print(f"Experiment (Phase Checkpoints): {model_type.upper()} | Seq={seq_length} | Adv={adv_method}")
+    print(f"Device: {device}")
+    print(f"{'=' * 60}\n")
+
+    (
+        X_train,
+        X_val,
+        X_test,
+        y_train,
+        y_val,
+        y_test,
+        features,
+        scaler,
+        label_encoder,
+    ) = load_and_preprocess_data(
+        seq_length, stride=max(1, seq_length // 2), max_files=max_files
+    )
+
+    train_dataset = IoTSequenceDataset(X_train, y_train)
+    val_dataset = IoTSequenceDataset(X_val, y_val)
+    test_dataset = IoTSequenceDataset(X_test, y_test)
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size)
+
+    input_size = X_train.shape[2]
+    num_classes = len(np.unique(y_train))
+
+    print(f"\nInput size: {input_size}, Classes: {num_classes}")
+
+    model = create_model(model_type, input_size, num_classes, seq_length, device)
+    print(f"\nModel parameters: {sum(p.numel() for p in model.parameters()):,}")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_path = (
+        RESULTS_DIR / "models" / f"{model_type}_{seq_length}_{adv_method}_phases_{timestamp}"
+    )
+    if save_results:
+        save_path.mkdir(parents=True, exist_ok=True)
+
+    X_train_flat = X_train.reshape(-1, X_train.shape[-1])
+    y_train_expanded = np.repeat(y_train, X_train.shape[1])
+    feature_attack = FeatureLevelAttack(
+        X_train_flat, y_train_expanded, features, num_classes
+    )
+
+    del X_train_flat, y_train_expanded
+    gc.collect()
+
+    sequence_attack = SequenceLevelAttack(
+        model, device, epsilon=0.1, alpha=0.01, num_steps=10
+    )
+
+    adv_generator = HybridAdversarialAttack(
+        feature_attack, sequence_attack, features, combine_ratio=0.5
+    )
+
+    trainer = AdversarialTrainer(model, device, model_type)
+
+    if hybrid_split is None:
+        hybrid_split = {"clean": 0.6, "feature": 0.2, "sequence": 0.2}
+
+    print(f"\nTraining avec checkpoints de phase - adversarial ratio: {adv_ratio}")
+    
+    history = trainer.fit_with_phase_checkpoints(
+        train_loader,
+        val_loader,
+        test_loader,
+        epochs=epochs,
+        lr=LEARNING_RATE,
+        weight_decay=WEIGHT_DECAY,
+        adv_generator=adv_generator if adv_method != "none" else None,
+        adv_ratio=adv_ratio if adv_method != "none" else 0.0,
+        adv_method=adv_method if adv_method in ["pgd", "fgsm"] else "pgd",
+        hybrid_split=hybrid_split,
+        save_path=save_path if save_results else None,
+        feature_attack=feature_attack,
+        sequence_attack=sequence_attack,
+        X_test=X_test,
+        y_test=y_test,
+        batch_size=batch_size,
+    )
+
+    # Récupérer les résultats d'évaluation des phases
+    phase_results = history.get("phase_checkpoints_evaluation", {})
+
+    # Construire le résultat final
+    results = {
+        "model_type": model_type,
+        "sequence_length": seq_length,
+        "adversarial_method": adv_method,
+        "adversarial_ratio": adv_ratio,
+        "hybrid_split": hybrid_split,
+        "num_classes": num_classes,
+        "input_size": input_size,
+        "parameters": sum(p.numel() for p in model.parameters()),
+        "phase_checkpoints_evaluation": phase_results,
+    }
+
+    # Ajouter les métriques finales
+    if phase_results:
+        last_phase = max(phase_results.keys(), key=lambda k: int(k.split("_")[1]))
+        final_metrics = phase_results[last_phase]
+        results["test_accuracy_clean"] = final_metrics.get("clean", {}).get("accuracy", 0)
+        results["test_loss_clean"] = final_metrics.get("clean", {}).get("loss", 0)
+        results["final_phase"] = int(last_phase.split("_")[1])
+
+    if save_results:
+        with open(save_path / "results.json", "w") as f:
+            json.dump(results, f, indent=2)
+
+        with open(save_path / "history.json", "w") as f:
+            json.dump(history, f, indent=2)
+
+        with open(save_path / "preprocessor.pkl", "wb") as f:
+            pickle.dump(
+                {
+                    "scaler": scaler,
+                    "label_encoder": label_encoder,
+                    "features": features,
+                    "seq_length": seq_length,
+                },
+                f,
+            )
+
+        print(f"\nResults saved to: {save_path}")
+
+    del X_train, X_val, X_test, y_train, y_val, y_test
+    del train_loader, val_loader, test_loader
+    del train_dataset, val_dataset, test_dataset
+    del model, trainer, feature_attack, sequence_attack, adv_generator
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return results
 
 
 def run_experiment(
@@ -971,6 +1471,11 @@ def main():
         default=0.2,
         help="Ratio of sequence-level adversarial samples in hybrid training (default: 0.2)",
     )
+    parser.add_argument(
+        "--phase_checkpoints",
+        action="store_true",
+        help="Utiliser la méthode avec sauvegarde et évaluation de checkpoints après chaque phase",
+    )
 
     args = parser.parse_args()
 
@@ -995,6 +1500,19 @@ def main():
             adv_methods=adv_methods,
             epochs=args.epochs,
             max_files=args.max_files,
+        )
+    elif args.phase_checkpoints:
+        # Utiliser la nouvelle méthode avec checkpoints de phase
+        run_experiment_with_phase_checkpoints(
+            model_type=args.model,
+            seq_length=args.seq_length,
+            adv_method=args.adv_method,
+            adv_ratio=args.adv_ratio,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            max_files=args.max_files,
+            save_results=True,
+            hybrid_split=hybrid_split,
         )
     else:
         run_experiment(
