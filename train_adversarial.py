@@ -63,6 +63,9 @@ from src.adversarial.attacks import (
     AdversarialEvaluator,
 )
 
+# Ensure results directory exists
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def get_device():
     if torch.cuda.is_available():
@@ -135,7 +138,7 @@ def load_and_preprocess_data(
     df = df[df["name"].isin(IOT_DEVICE_CLASSES)]
 
     class_counts = df["name"].value_counts()
-    valid_classes = class_counts[class_counts >= 500].index
+    valid_classes = class_counts.index
     df = df[df["name"].isin(valid_classes)]
 
     print(f"  Samples: {len(df):,} | Classes: {len(valid_classes)} (filtered to 18 IoT classes)")
