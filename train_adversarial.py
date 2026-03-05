@@ -106,7 +106,7 @@ def create_sequences_with_stride(
 
 
 def load_and_preprocess_data(
-    seq_length: int, stride: int = 5, max_files: int = None
+    seq_length: int, stride: int = 5, max_files: Optional[int] = None, data_dir: Optional[Path] = None
 ) -> Tuple[np.ndarray, ...]:
     """Load and preprocess data with specified sequence length."""
     from sklearn.preprocessing import StandardScaler, LabelEncoder
@@ -114,9 +114,23 @@ def load_and_preprocess_data(
     import pandas as pd
 
     print(f"Loading data with sequence length={seq_length}, stride={stride}")
+    
+    # Use provided data_dir or fall back to config default
+    if data_dir is None:
+        data_dir = RAW_DATA_DIR
+    
+    print(f"  Data directory: {data_dir}")
 
     dfs = []
-    csv_files = sorted(RAW_DATA_DIR.glob("home*_labeled.csv"))
+    csv_files = sorted(data_dir.glob("home*_labeled.csv"))
+
+    if len(csv_files) == 0:
+        print(f"\n⚠️  ERROR: No CSV files found in {data_dir}")
+        print(f"    Expected files matching pattern: home*_labeled.csv")
+        print(f"\n    To fix this:")
+        print(f"    1. If running locally: Ensure data is at {data_dir}")
+        print(f"    2. If running on Colab: Use --data_dir /content/drive/MyDrive/PFE/IPFIX_ML_Instances")
+        raise FileNotFoundError(f"No CSV files found in {data_dir}")
 
     if max_files:
         csv_files = csv_files[:max_files]
@@ -957,8 +971,9 @@ def run_experiment_with_phase_checkpoints(
     max_files: Optional[int] = None,
     save_results: bool = True,
     hybrid_split: Optional[Dict[str, float]] = None,
+    data_dir: Optional[Path] = None,
 ) -> Dict:
-    """Run experiment avec sauvegarde et évaluation des checkpoints de phase."""
+    """Run experiment avec sauvegarde et evaluation des checkpoints de phase."""
     device = get_device()
     print(f"\n{'=' * 60}")
     print(f"Experiment (Phase Checkpoints): {model_type.upper()} | Seq={seq_length} | Adv={adv_method}")
@@ -976,7 +991,7 @@ def run_experiment_with_phase_checkpoints(
         scaler,
         label_encoder,
     ) = load_and_preprocess_data(
-        seq_length, stride=max(1, seq_length // 2), max_files=max_files
+        seq_length, stride=max(1, seq_length // 2), max_files=max_files, data_dir=data_dir
     )
 
     train_dataset = IoTSequenceDataset(X_train, y_train)
@@ -1110,6 +1125,7 @@ def run_experiment(
     max_files: Optional[int] = None,
     save_results: bool = True,
     hybrid_split: Optional[Dict[str, float]] = None,
+    data_dir: Optional[Path] = None,
 ) -> Dict:
     """Run a single experiment."""
     device = get_device()
@@ -1129,7 +1145,7 @@ def run_experiment(
         scaler,
         label_encoder,
     ) = load_and_preprocess_data(
-        seq_length, stride=max(1, seq_length // 2), max_files=max_files
+        seq_length, stride=max(1, seq_length // 2), max_files=max_files, data_dir=data_dir
     )
 
     train_dataset = IoTSequenceDataset(X_train, y_train)
@@ -1333,6 +1349,7 @@ def compare_models(
     adv_methods: List[str],
     epochs: int,
     max_files: Optional[int] = None,
+    data_dir: Optional[Path] = None,
 ) -> Dict:
     """Compare multiple model architectures and adversarial methods."""
     all_results = {}
@@ -1354,6 +1371,7 @@ def compare_models(
                     batch_size=BATCH_SIZE,
                     max_files=max_files,
                     save_results=True,
+                    data_dir=data_dir,
                 )
                 all_results[key] = results
 
@@ -1432,6 +1450,12 @@ def main():
         default=None,
         help="Maximum number of data files to load",
     )
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default=None,
+        help="Path to data directory containing CSV files (default: use config)",
+    )
 
     parser.add_argument(
         "--compare_all",
@@ -1492,6 +1516,9 @@ def main():
     if abs(total - 1.0) > 1e-6:
         parser.error(f"Hybrid split ratios must sum to 1.0, got {total}")
 
+    # Parse data_dir if provided
+    data_dir = Path(args.data_dir) if args.data_dir else None
+
     if args.compare_all:
         seq_lengths = [int(x) for x in args.seq_lengths.split(",")]
         models = args.models.split(",")
@@ -1503,6 +1530,7 @@ def main():
             adv_methods=adv_methods,
             epochs=args.epochs,
             max_files=args.max_files,
+            data_dir=data_dir,
         )
     elif args.phase_checkpoints:
         # Utiliser la nouvelle méthode avec checkpoints de phase
@@ -1516,6 +1544,7 @@ def main():
             max_files=args.max_files,
             save_results=True,
             hybrid_split=hybrid_split,
+            data_dir=data_dir,
         )
     else:
         run_experiment(
@@ -1528,6 +1557,7 @@ def main():
             max_files=args.max_files,
             save_results=True,
             hybrid_split=hybrid_split,
+            data_dir=data_dir,
         )
 
 
