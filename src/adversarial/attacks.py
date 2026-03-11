@@ -31,27 +31,56 @@ class FeatureLevelAttack:
         num_classes: int,
         non_modifiable: List[str] = None,
         dependent_pairs: Dict[str, str] = None,
+        n_continuous_features: Optional[int] = None,
     ):
         self.feature_names = feature_names
         self.num_classes = num_classes
+        self.n_continuous_features = n_continuous_features
 
-        self.non_modifiable = non_modifiable or [
-            "ipProto",
-            "http",
-            "https",
-            "dns",
-            "ntp",
-            "tcp",
-            "udp",
-            "ssdp",
-        ]
+        # Auto-detect non-modifiable features based on feature names
+        if non_modifiable is not None:
+            self.non_modifiable = non_modifiable
+        else:
+            # Check if we're using JSON pipeline (has pkt_dir features)
+            has_pkt_dir = any(f.startswith("pkt_dir_") for f in feature_names)
+            if has_pkt_dir:
+                # JSON pipeline: packet direction bits are non-modifiable
+                self.non_modifiable = [
+                    "protocolIdentifier",
+                ] + [f"pkt_dir_{i}" for i in range(8)]
+            else:
+                # CSV pipeline: original defaults
+                self.non_modifiable = [
+                    "ipProto",
+                    "http",
+                    "https",
+                    "dns",
+                    "ntp",
+                    "tcp",
+                    "udp",
+                    "ssdp",
+                ]
 
-        self.dependent_pairs = dependent_pairs or {
-            "inPacketCount": "outPacketCount",
-            "inByteCount": "outByteCount",
-            "inAvgIAT": "outAvgIAT",
-            "inAvgPacketSize": "outAvgPacketSize",
-        }
+        # Auto-detect dependent pairs based on feature names
+        if dependent_pairs is not None:
+            self.dependent_pairs = dependent_pairs
+        else:
+            has_pkt_dir = any(f.startswith("pkt_dir_") for f in feature_names)
+            if has_pkt_dir:
+                # JSON pipeline: use JSON field names
+                self.dependent_pairs = {
+                    "reversePacketTotalCount": "packetTotalCount",
+                    "reverseOctetTotalCount": "octetTotalCount",
+                    "reverseAverageInterarrivalTime": "averageInterarrivalTime",
+                }
+            else:
+                # CSV pipeline: original defaults
+                self.dependent_pairs = {
+                    "inPacketCount": "outPacketCount",
+                    "inByteCount": "outByteCount",
+                    "inAvgIAT": "outAvgIAT",
+                    "inAvgPacketSize": "outAvgPacketSize",
+                }
 
         self.modifiable_indices = self._get_modifiable_indices()
         self.dependent_indices = self._get_dependent_indices()
@@ -132,9 +161,25 @@ class FeatureLevelAttack:
 
     def projection(self, X: np.ndarray) -> np.ndarray:
         X_proj = X.copy()
-        X_proj = np.clip(X_proj, -3.0, 3.0)
+        
+        n_cont = self.n_continuous_features
+        
+        if n_cont is not None:
+            # Clip continuous features only
+            if X_proj.ndim == 1:
+                X_proj[:n_cont] = np.clip(X_proj[:n_cont], -3.0, 3.0)
+                # Ensure binary features stay as {0, 1}
+                X_proj[n_cont:] = np.clip(np.round(X_proj[n_cont:]), 0, 1)
+            else:
+                X_proj[:, :n_cont] = np.clip(X_proj[:, :n_cont], -3.0, 3.0)
+                X_proj[:, n_cont:] = np.clip(np.round(X_proj[:, n_cont:]), 0, 1)
+        else:
+            X_proj = np.clip(X_proj, -3.0, 3.0)
 
         for indep_idx, dep_idx in self.dependent_indices:
+            # Only apply ratio constraints to continuous features
+            if n_cont is not None and (dep_idx >= n_cont or indep_idx >= n_cont):
+                continue
             if X_proj.ndim == 1:
                 ratio = np.abs(X_proj[dep_idx]) / (np.abs(X_proj[indep_idx]) + 1e-8)
                 X_proj[dep_idx] = X_proj[indep_idx] * np.clip(ratio, 0.5, 2.0)
@@ -207,6 +252,9 @@ class SequenceLevelAttack:
     Uses Backpropagation Through Time (BPTT) to compute gradients w.r.t. input sequences.
 
     Implements PGD (Projected Gradient Descent) adapted for sequences.
+    
+    Issue 6 Fix: Splits attacks into continuous (PGD) and discrete (bit-flip)
+    components so perturbations remain semantically valid.
     """
 
     def __init__(
@@ -220,7 +268,16 @@ class SequenceLevelAttack:
         clip_max: float = 3.0,
         feature_mask: Optional[np.ndarray] = None,
         preserve_positions: bool = True,
+        n_continuous_features: Optional[int] = None,
+        k_bits_to_flip: int = 2,
     ):
+        """
+        Args:
+            n_continuous_features: Number of continuous features (first N dimensions).
+                If None, all features are treated as continuous (backward compatible).
+                If set, features [0:n_continuous] get PGD, features [n_continuous:] get bit-flip.
+            k_bits_to_flip: Number of binary bits to flip per attack step (Issue 6).
+        """
         self.model = model
         self.device = device
         self.epsilon = epsilon
@@ -231,6 +288,8 @@ class SequenceLevelAttack:
         self.feature_mask = feature_mask
         self.preserve_positions = preserve_positions
         self._original_training_state = None
+        self.n_continuous_features = n_continuous_features
+        self.k_bits_to_flip = k_bits_to_flip
 
     def _enable_grad_mode(self):
         self._original_training_state = self.model.training
@@ -259,12 +318,55 @@ class SequenceLevelAttack:
         if not self.preserve_positions:
             return x_adv
 
-        temporal_std = torch.std(x_orig, dim=2, keepdim=True)
-        perturbation = x_adv - x_orig
-        max_perturbation = 0.5 * temporal_std
-        perturbation = torch.clamp(perturbation, -max_perturbation, max_perturbation)
+        n_cont = self.n_continuous_features
 
-        return x_orig + perturbation
+        if n_cont is not None and n_cont < x_orig.shape[-1]:
+            # Apply temporal preservation only to continuous features
+            cont_adv = x_adv[:, :, :n_cont]
+            cont_orig = x_orig[:, :, :n_cont]
+
+            temporal_std = torch.std(cont_orig, dim=2, keepdim=True)
+            perturbation = cont_adv - cont_orig
+            max_perturbation = 0.5 * temporal_std
+            perturbation = torch.clamp(perturbation, -max_perturbation, max_perturbation)
+
+            # Binary features: ensure they stay as {0, 1}
+            bin_adv = x_adv[:, :, n_cont:]
+            bin_adv = torch.clamp(torch.round(bin_adv), 0, 1)
+
+            return torch.cat([cont_orig + perturbation, bin_adv], dim=-1)
+        else:
+            # Backward compatible: all continuous
+            temporal_std = torch.std(x_orig, dim=2, keepdim=True)
+            perturbation = x_adv - x_orig
+            max_perturbation = 0.5 * temporal_std
+            perturbation = torch.clamp(perturbation, -max_perturbation, max_perturbation)
+            return x_orig + perturbation
+
+    def _attack_discrete_bits(
+        self, direction_bits: torch.Tensor, grad: torch.Tensor, k: int = None
+    ) -> torch.Tensor:
+        """
+        Issue 6: Gradient-guided bit-flipping for binary packet direction features.
+        
+        Flips the k bits with the highest gradient magnitude.
+        Ensures output is strictly {0, 1}.
+        """
+        if k is None:
+            k = self.k_bits_to_flip
+
+        # Clamp k to the number of binary features
+        n_bits = direction_bits.shape[-1]
+        k = min(k, n_bits)
+
+        # Find top-k positions by gradient magnitude
+        _, topk_idx = torch.topk(grad.abs(), k=k, dim=-1)
+
+        # Flip: 0 -> 1, 1 -> 0
+        x_flipped = direction_bits.clone()
+        x_flipped.scatter_(-1, topk_idx, 1 - direction_bits.gather(-1, topk_idx))
+
+        return x_flipped
 
     def pgd_attack(
         self,
@@ -280,6 +382,7 @@ class SequenceLevelAttack:
             y = y.to(self.device)
 
             X_orig = X.clone().detach()
+            n_cont = self.n_continuous_features
 
             target = None
             if targeted and target_class is not None:
@@ -302,11 +405,28 @@ class SequenceLevelAttack:
                 grad = X_adv.grad.data
                 grad = self._apply_feature_mask(grad)
 
-                X_adv = X_adv + self.alpha * grad.sign()
+                if n_cont is not None and n_cont < X.shape[-1]:
+                    # Issue 6: Split perturbation by feature type
+                    # Continuous features: standard PGD
+                    cont_adv = X_adv[:, :, :n_cont] + self.alpha * grad[:, :, :n_cont].sign()
+                    eta = torch.clamp(cont_adv - X_orig[:, :, :n_cont], -self.epsilon, self.epsilon)
+                    cont_adv = X_orig[:, :, :n_cont] + eta
+                    cont_adv = torch.clamp(cont_adv, self.clip_min, self.clip_max)
 
-                eta = torch.clamp(X_adv - X_orig, -self.epsilon, self.epsilon)
-                X_adv = X_orig + eta
-                X_adv = torch.clamp(X_adv, self.clip_min, self.clip_max)
+                    # Binary features: gradient-guided bit-flip
+                    bin_adv = self._attack_discrete_bits(
+                        X_adv[:, :, n_cont:].detach(),
+                        grad[:, :, n_cont:],
+                        k=self.k_bits_to_flip,
+                    )
+
+                    X_adv = torch.cat([cont_adv, bin_adv], dim=-1)
+                else:
+                    # Backward compatible: all continuous
+                    X_adv = X_adv + self.alpha * grad.sign()
+                    eta = torch.clamp(X_adv - X_orig, -self.epsilon, self.epsilon)
+                    X_adv = X_orig + eta
+                    X_adv = torch.clamp(X_adv, self.clip_min, self.clip_max)
 
                 X_adv = self._preserve_temporal_structure(X_adv, X_orig)
 
@@ -330,6 +450,9 @@ class SequenceLevelAttack:
             X = X.to(self.device)
             y = y.to(self.device)
 
+            X_orig = X.clone().detach()
+            n_cont = self.n_continuous_features
+
             X_adv = X.clone().detach()
             X_adv.requires_grad = True
 
@@ -346,8 +469,21 @@ class SequenceLevelAttack:
             grad = X_adv.grad.data
             grad = self._apply_feature_mask(grad)
 
-            X_adv = X_adv + self.epsilon * grad.sign()
-            X_adv = torch.clamp(X_adv, self.clip_min, self.clip_max)
+            if n_cont is not None and n_cont < X.shape[-1]:
+                # Issue 6: Split perturbation
+                cont_adv = X_adv[:, :, :n_cont] + self.epsilon * grad[:, :, :n_cont].sign()
+                cont_adv = torch.clamp(cont_adv, self.clip_min, self.clip_max)
+
+                bin_adv = self._attack_discrete_bits(
+                    X_adv[:, :, n_cont:].detach(),
+                    grad[:, :, n_cont:],
+                    k=self.k_bits_to_flip,
+                )
+
+                X_adv = torch.cat([cont_adv, bin_adv], dim=-1)
+            else:
+                X_adv = X_adv + self.epsilon * grad.sign()
+                X_adv = torch.clamp(X_adv, self.clip_min, self.clip_max)
 
             return X_adv.detach()
         finally:
@@ -381,6 +517,7 @@ class SequenceLevelAttack:
             X_adv.append(X_batch_adv.cpu().numpy())
 
         return np.vstack(X_adv)
+
 
 
 class HybridAdversarialAttack:

@@ -52,6 +52,12 @@ from config.config import (
     RESULTS_DIR,
     LSTM_CONFIG,
     TRANSFORMER_CONFIG,
+    PIPELINE_MODE,
+    JSON_DATA_DIR,
+    JSON_PROCESSED_DATA_DIR,
+    JSON_N_CONTINUOUS,
+    JSON_N_BINARY,
+    JSON_INPUT_SIZE,
 )
 from src.models.lstm import LSTMClassifier, IoTSequenceDataset
 from src.models.transformer import TransformerClassifier
@@ -106,16 +112,88 @@ def create_sequences_with_stride(
 
 
 def load_and_preprocess_data(
-    seq_length: int, stride: int = 5, max_files: Optional[int] = None, data_dir: Optional[Path] = None
+    seq_length: int, stride: int = 5, max_files: Optional[int] = None,
+    data_dir: Optional[Path] = None, pipeline_mode: Optional[str] = None,
+    max_records: Optional[int] = None,
 ) -> Tuple[np.ndarray, ...]:
-    """Load and preprocess data with specified sequence length."""
+    """Load and preprocess data with specified sequence length.
+    
+    Supports two pipeline modes:
+    - 'csv': Original CSV pipeline (IoT IPFIX Home dataset, 18 classes)
+    - 'json': New JSON-native pipeline (IPFIX Records dataset, 17-26 classes)
+    
+    Returns:
+        Tuple of (X_train, X_val, X_test, y_train, y_val, y_test,
+                  features, scaler, label_encoder, n_continuous_features)
+    """
+    if pipeline_mode is None:
+        pipeline_mode = PIPELINE_MODE
+    
+    print(f"Pipeline mode: {pipeline_mode.upper()}")
+    
+    if pipeline_mode == "json":
+        return _load_json_pipeline(seq_length, stride, data_dir, max_records)
+    else:
+        return _load_csv_pipeline(seq_length, stride, max_files, data_dir)
+
+
+def _load_json_pipeline(
+    seq_length: int, stride: int = 5,
+    data_dir: Optional[Path] = None,
+    max_records: Optional[int] = None,
+) -> Tuple[np.ndarray, ...]:
+    """Load JSON IPFIX Records using the native JSON preprocessor.
+    
+    Addresses:
+    - Issue 1: Uses JSON dataset natively
+    - Issue 2: Labels via MAC-to-device mapping
+    - Issue 3: Bidirectional flow labeling
+    - Issue 4: Drops identifying columns
+    - Issue 5: Decodes hex packet directions
+    """
+    from src.data.json_preprocessor import JsonIoTDataProcessor
+    
+    if data_dir is None:
+        data_dir = JSON_DATA_DIR
+    
+    print(f"  JSON Data directory: {data_dir}")
+    
+    processor = JsonIoTDataProcessor()
+    result = processor.process_all(
+        data_dir=data_dir,
+        seq_length=seq_length,
+        stride=stride,
+        max_records=max_records,
+    )
+    
+    X_train, X_val, X_test, y_train, y_val, y_test, features, scaler, label_encoder = result
+    n_continuous = JSON_N_CONTINUOUS
+    
+    print(f"\n  JSON Pipeline Summary:")
+    print(f"    Features: {len(features)} ({n_continuous} continuous + {JSON_N_BINARY} binary)")
+    print(f"    Classes: {len(label_encoder.classes_)}")
+    print(f"    Train: {len(X_train):,} | Val: {len(X_val):,} | Test: {len(X_test):,}")
+    
+    return (
+        X_train, X_val, X_test,
+        y_train, y_val, y_test,
+        features, scaler, label_encoder,
+        n_continuous,
+    )
+
+
+def _load_csv_pipeline(
+    seq_length: int, stride: int = 5,
+    max_files: Optional[int] = None,
+    data_dir: Optional[Path] = None,
+) -> Tuple[np.ndarray, ...]:
+    """Original CSV pipeline (backward compatible)."""
     from sklearn.preprocessing import StandardScaler, LabelEncoder
     from sklearn.model_selection import train_test_split
     import pandas as pd
 
-    print(f"Loading data with sequence length={seq_length}, stride={stride}")
+    print(f"Loading CSV data with sequence length={seq_length}, stride={stride}")
     
-    # Use provided data_dir or fall back to config default
     if data_dir is None:
         data_dir = RAW_DATA_DIR
     
@@ -148,7 +226,6 @@ def load_and_preprocess_data(
 
     from config.config import IOT_DEVICE_CLASSES
 
-    # Filter only the 18 IoT device classes from section 4.4
     df = df[df["name"].isin(IOT_DEVICE_CLASSES)]
 
     class_counts = df["name"].value_counts()
@@ -200,16 +277,14 @@ def load_and_preprocess_data(
 
     print(f"  Train: {len(X_train):,} | Val: {len(X_val):,} | Test: {len(X_test):,}")
 
+    # CSV pipeline: all features are continuous (no binary packet direction bits)
+    n_continuous = len(features)
+
     return (
-        X_train,
-        X_val,
-        X_test,
-        y_train,
-        y_val,
-        y_test,
-        features,
-        scaler,
-        label_encoder,
+        X_train, X_val, X_test,
+        y_train, y_val, y_test,
+        features, scaler, label_encoder,
+        n_continuous,
     )
 
 
@@ -990,6 +1065,7 @@ def run_experiment_with_phase_checkpoints(
         features,
         scaler,
         label_encoder,
+        n_continuous_features,
     ) = load_and_preprocess_data(
         seq_length, stride=max(1, seq_length // 2), max_files=max_files, data_dir=data_dir
     )
@@ -1006,6 +1082,7 @@ def run_experiment_with_phase_checkpoints(
     num_classes = len(np.unique(y_train))
 
     print(f"\nInput size: {input_size}, Classes: {num_classes}")
+    print(f"Continuous features: {n_continuous_features}, Binary features: {input_size - n_continuous_features}")
 
     model = create_model(model_type, input_size, num_classes, seq_length, device)
     print(f"\nModel parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -1020,14 +1097,16 @@ def run_experiment_with_phase_checkpoints(
     X_train_flat = X_train.reshape(-1, X_train.shape[-1])
     y_train_expanded = np.repeat(y_train, X_train.shape[1])
     feature_attack = FeatureLevelAttack(
-        X_train_flat, y_train_expanded, features, num_classes
+        X_train_flat, y_train_expanded, features, num_classes,
+        n_continuous_features=n_continuous_features,
     )
 
     del X_train_flat, y_train_expanded
     gc.collect()
 
     sequence_attack = SequenceLevelAttack(
-        model, device, epsilon=0.1, alpha=0.01, num_steps=10
+        model, device, epsilon=0.1, alpha=0.01, num_steps=10,
+        n_continuous_features=n_continuous_features,
     )
 
     adv_generator = HybridAdversarialAttack(
@@ -1144,6 +1223,7 @@ def run_experiment(
         features,
         scaler,
         label_encoder,
+        n_continuous_features,
     ) = load_and_preprocess_data(
         seq_length, stride=max(1, seq_length // 2), max_files=max_files, data_dir=data_dir
     )
@@ -1160,6 +1240,7 @@ def run_experiment(
     num_classes = len(np.unique(y_train))
 
     print(f"\nInput size: {input_size}, Classes: {num_classes}")
+    print(f"Continuous features: {n_continuous_features}, Binary features: {input_size - n_continuous_features}")
 
     model = create_model(model_type, input_size, num_classes, seq_length, device)
     print(f"\nModel parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -1174,14 +1255,16 @@ def run_experiment(
     X_train_flat = X_train.reshape(-1, X_train.shape[-1])
     y_train_expanded = np.repeat(y_train, X_train.shape[1])
     feature_attack = FeatureLevelAttack(
-        X_train_flat, y_train_expanded, features, num_classes
+        X_train_flat, y_train_expanded, features, num_classes,
+        n_continuous_features=n_continuous_features,
     )
 
     del X_train_flat, y_train_expanded
     gc.collect()
 
     sequence_attack = SequenceLevelAttack(
-        model, device, epsilon=0.1, alpha=0.01, num_steps=10
+        model, device, epsilon=0.1, alpha=0.01, num_steps=10,
+        n_continuous_features=n_continuous_features,
     )
 
     adv_generator = HybridAdversarialAttack(

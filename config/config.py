@@ -95,6 +95,85 @@ TRANSFORMER_CONFIG = {
 
 MIN_SAMPLES_PER_CLASS = 500
 
+# ─── JSON Pipeline Configuration (IPFIX Records dataset) ────────────────────
+# Issue 1: CSV and JSON are completely different datasets — use independently
+
+JSON_DATA_DIR = DATA_DIR / "pcap" / "IPFIX Records (UNSW IoT Analytics)"
+JSON_PROCESSED_DATA_DIR = DATA_DIR / "processed" / "json_native"
+
+# JSON-specific behavioral features (Issue 4: identifying columns excluded)
+JSON_FEATURES_TO_KEEP = [
+    "flowDurationMilliseconds",
+    "reverseFlowDeltaMilliseconds",
+    "protocolIdentifier",
+    "packetTotalCount",
+    "octetTotalCount",
+    "reversePacketTotalCount",
+    "reverseOctetTotalCount",
+    "tcpUrgTotalCount",
+    "smallPacketCount",
+    "nonEmptyPacketCount",
+    "dataByteCount",
+    "averageInterarrivalTime",
+    "firstNonEmptyPacketSize",
+    "largePacketCount",
+    "maxPacketSize",
+    "standardDeviationPayloadLength",
+    "standardDeviationInterarrivalTime",
+    "bytesPerPacket",
+    "reverseTcpUrgTotalCount",
+    "reverseSmallPacketCount",
+    "reverseNonEmptyPacketCount",
+    "reverseDataByteCount",
+    "reverseAverageInterarrivalTime",
+    "reverseFirstNonEmptyPacketSize",
+    "reverseLargePacketCount",
+    "reverseMaxPacketSize",
+    "reverseStandardDeviationPayloadLength",
+    "reverseStandardDeviationInterarrivalTime",
+]
+
+# 8 binary packet direction features (Issue 5: decoded from hex)
+JSON_PKT_DIR_FEATURES = [f"pkt_dir_{i}" for i in range(8)]
+
+# Total features: 28 continuous + 8 binary = 36
+JSON_N_CONTINUOUS = len(JSON_FEATURES_TO_KEEP)
+JSON_N_BINARY = 8
+JSON_INPUT_SIZE = JSON_N_CONTINUOUS + JSON_N_BINARY
+
+# 26 device classes from IPFIX Records testbed (Issue 2: MAC-mapped)
+JSON_DEVICE_CLASSES = [
+    "Nokia body",
+    "Panasonic doorphone",
+    "Qrio hub",
+    "Philips Hue lightbulb",
+    "Xiaomi LED",
+    "Planex UCA01A camera",
+    "Planex pantilt camera",
+    "JVC Kenwood camera",
+    "Nature remote control",
+    "Bitfinder aware sensor",
+    "Google Home",
+    "Apple Homepod",
+    "Sony Bravia TV",
+    "iRobot roomba",
+    "Sesame access point",
+    "JVC Kenwood hub",
+    "Wansview camera",
+    "Qwatch camera",
+    "Fredi camera",
+    "Planex outdoor camera",
+    "PowerElec WIFI plug",
+    "Line Clova speaker",
+    "Sony smart speaker",
+    "Amazon Echo",
+    "Amazon Echo Show",
+    "MCJ room hub",
+]
+
+# Pipeline selection flag: "csv" or "json"
+PIPELINE_MODE = "json"
+
 # Hybrid Adversarial Training Configuration
 # Default: 60% clean + 20% feature-level + 20% sequence-level
 HYBRID_SPLIT_CONFIG = {

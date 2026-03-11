@@ -299,42 +299,6 @@ MIN_SAMPLES_PER_CLASS = 500
 
 ## 7. Apprentissage Adversarial
 
-### 7.1 Fondements de l'Apprentissage Antagoniste
-
-L'apprentissage antagoniste (adversarial learning) est un paradigme d'apprentissage automatique dans lequel deux modèles ou plus sont entraînés simultanément dans un cadre compétitif. Ce concept repose sur la théorie des jeux et l'optimisation min-max.
-
-#### 7.1.1 Réseaux Antagonistes Génératifs (GAN)
-
-Les GAN (Generative Adversarial Networks), introduits par Ian Goodfellow en 2014, constituent une architecture fondamentale de l'apprentissage antagoniste.
-
-**Architecture** :
-- **Générateur (G)** : Réseau neuronal qui prend en entrée un vecteur de bruit aléatoire (issu d'une distribution gaussienne) et génère des données synthétiques similaires aux données réelles.
-- **Discriminateur (D)** : Réseau neuronal qui distingue les données réelles des données générées.
-
-**Objectif min-max** :
-```
-min_G max_D V(D, G) = E_{x~p_data}[log D(x)] + E_{z~p_z}[log(1 - D(G(z)))]
-```
-
-Le générateur cherche à minimiser cette fonction tandis que le discriminateur cherche à la maximiser.
-
-#### 7.1.2 Application à la Sécurité IoT
-
-Dans le contexte de ce projet :
-- Le **générateur** peut être utilisé pour créer des exemples adversariaux réalistes (trafic IoT modifié)
-- Le **discriminateur** (Adversarial Discriminator dans l'architecture) détecte les patterns adversariaux
-
-### 7.2 Strategie d'Entrainement Adversarial
-
-**Phase 1 - Entrainement initial** :
-- Donnees 100% benignes
-- Apprentissage du comportement reel naturel des appareils
-
-**Phase 2 - Entrainement adversarial** :
-- 80% trafic benin
-- 20% trafic adversarial
-- Le modele apprend des frontieres de decision plus robustes
-
 ### 7.3 Approches Adversariales pour Sequences
 
 #### Approche 1 : PGD/FGSM pour Sequences
