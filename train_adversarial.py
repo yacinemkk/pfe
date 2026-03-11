@@ -1537,9 +1537,15 @@ def main():
         "--data_dir",
         type=str,
         default=None,
-        help="Path to data directory containing CSV files (default: use config)",
+        help="Path to JSON data directory (default: use config)",
     )
-
+    parser.add_argument(
+        "--results_dir",
+        type=str,
+        default=None,
+        help="Directory to save models and results (default: results/ in project root). "
+             "Set to a Google Drive path to save directly to Drive.",
+    )
     parser.add_argument(
         "--compare_all",
         action="store_true",
@@ -1599,8 +1605,16 @@ def main():
     if abs(total - 1.0) > 1e-6:
         parser.error(f"Hybrid split ratios must sum to 1.0, got {total}")
 
-    # Parse data_dir if provided
+    # Parse data_dir / results_dir if provided
     data_dir = Path(args.data_dir) if args.data_dir else None
+
+    # Override RESULTS_DIR globally if --results_dir is supplied
+    if args.results_dir:
+        _results_dir = Path(args.results_dir)
+        _results_dir.mkdir(parents=True, exist_ok=True)
+        # Patch the module-level RESULTS_DIR so all save paths point there
+        globals()["RESULTS_DIR"] = _results_dir
+        print(f"Results will be saved to: {_results_dir}")
 
     if args.compare_all:
         seq_lengths = [int(x) for x in args.seq_lengths.split(",")]
