@@ -199,8 +199,8 @@ def label_flow(flow: dict, mac_to_device: dict = None) -> str:
     if mac_to_device is None:
         mac_to_device = MAC_TO_DEVICE
 
-    src_mac = flow.get("sourceMacAddress", "")
-    dst_mac = flow.get("destinationMacAddress", "")
+    src_mac = flow.get("sourceMacAddress", "").strip().rstrip(':')
+    dst_mac = flow.get("destinationMacAddress", "").strip().rstrip(':')
 
     src_device = mac_to_device.get(src_mac)
     dst_device = mac_to_device.get(dst_mac)
