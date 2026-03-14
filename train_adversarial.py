@@ -635,9 +635,9 @@ class AdversarialTrainer:
         num_classes = int(sample_y.max().item()) + 1
 
         # Calculate phase epochs
-        phase1_epochs = max(1, int(epochs * 0.6))
-        phase2_epochs = max(1, int(epochs * 0.2))
-        phase3_epochs = max(1, epochs - phase1_epochs - phase2_epochs)
+        phase1_epochs = 24
+        phase2_epochs = 8
+        phase3_epochs = 8
 
         print(f"\n{'='*70}")
         print("  CURRICULUM LEARNING — Early Stopping par Phase")
@@ -943,9 +943,9 @@ class AdversarialTrainer:
         )
 
         # Calculate phase epochs (60% - 20% - 20%)
-        phase1_epochs = max(1, int(epochs * 0.6))
-        phase2_epochs = max(1, int(epochs * 0.2))
-        phase3_epochs = max(1, epochs - phase1_epochs - phase2_epochs)
+        phase1_epochs = 24
+        phase2_epochs = 8
+        phase3_epochs = 8
 
         print(f"\n{'='*60}")
         print("CURRICULUM LEARNING — Early Stopping par Phase")

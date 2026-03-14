@@ -551,6 +551,16 @@ class JsonIoTDataProcessor:
         del X_seq, y_seq, X_temp, y_temp
         gc.collect()
 
+        # Diminuer le nombre train de 300 000 et ajouter aux sequences de validation
+        transfer_size = 300000
+        if len(X_train) > transfer_size:
+            X_train, X_transfer, y_train, y_transfer = train_test_split(
+                X_train, y_train, test_size=transfer_size,
+                random_state=RANDOM_STATE, stratify=y_train
+            )
+            X_val = np.concatenate([X_val, X_transfer])
+            y_val = np.concatenate([y_val, y_transfer])
+
         print(f"  Train: {len(X_train):,} | Val: {len(X_val):,} | Test: {len(X_test):,}")
 
         # Save if path provided
