@@ -217,12 +217,12 @@ data/processed/ipfix_records_labeled.parquet
 **Input:** `data/processed/ipfix_records_labeled.parquet`  
 **Output:** `data/processed/X_train.npy`, `y_train.npy`, `X_val.npy`, `y_val.npy`, `X_test.npy`, `y_test.npy`
 
-**Shape:** `X.shape = (N, SEQUENCE_LENGTH, 37)` where 37 = 29 continuous + 8 binary
+**Shape:** `X.shape = (N, SEQUENCE_LENGTH, 36)` where 36 = 28 continuous + 8 binary
 
 **Code to modify:**
 - The `create_sequences` method in [`src/data/preprocessor.py`](src/data/preprocessor.py) can be adapted, but should be called from the new `json_preprocessor.py`
 
-**Important:** Scaling (StandardScaler/MinMaxScaler) must be applied ONLY to the 29 continuous features. The 8 binary packet direction bits must NOT be scaled.
+**Important:** Scaling (StandardScaler/MinMaxScaler) must be applied ONLY to the 28 continuous features. The 8 binary packet direction bits must NOT be scaled.
 
 </details>
 

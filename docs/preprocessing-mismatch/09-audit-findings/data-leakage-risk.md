@@ -73,15 +73,20 @@ COLUMNS_TO_DROP = [
     "ipClassOfService",
     "active_timeout",
     "idle_timeout",
+    # TCP flag strings — not numeric, must be dropped
+    "initialTCPFlags",
+    "unionTCPFlags",
+    "reverseInitialTCPFlags",
+    "reverseUnionTCPFlags",
 ]
 ```
 
-### Fields to KEEP (behavioral flow statistics)
+### Fields to KEEP (28 behavioral flow statistics)
 
-These are the SDN-accessible features per the manuscript:
+These are the SDN-accessible features per the manuscript (28 continuous features):
 
 ```python
-FEATURES_TO_KEEP = [
+FEATURES_TO_KEEP_JSON = [
     "flowDurationMilliseconds",
     "reverseFlowDeltaMilliseconds",
     "protocolIdentifier",
@@ -110,9 +115,9 @@ FEATURES_TO_KEEP = [
     "reverseMaxPacketSize",
     "reverseStandardDeviationPayloadLength",
     "reverseStandardDeviationInterarrivalTime",
-    # "reverseBytesPerPacket",  # only present in some records
-    "firstEightNonEmptyPacketDirections",  # hex → decoded to 8 binary features
 ]
+# + 8 binary columns (pkt_dir_0 à pkt_dir_7) décodées de firstEightNonEmptyPacketDirections (hex → 8 bits)
+# Total: 28 continus + 8 discrets = 36 features
 ```
 
 ---

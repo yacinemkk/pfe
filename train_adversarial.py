@@ -35,6 +35,10 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend for server/Colab
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 
 import sys
 
@@ -440,6 +444,58 @@ class AdversarialTrainer:
         print(f"{'='*50}\n")
         return test_loss, test_acc
 
+    def compute_per_class_metrics(
+        self,
+        dataloader: DataLoader,
+        label_encoder,
+        num_classes: int,
+    ) -> Dict:
+        """Compute per-class Precision, Recall, F1 and macro averages."""
+        from sklearn.metrics import precision_recall_fscore_support, classification_report
+
+        self.model.eval()
+        all_preds, all_labels = [], []
+
+        with torch.no_grad():
+            for X_batch, y_batch in dataloader:
+                X_batch = X_batch.to(self.device)
+                outputs = self.model(X_batch)
+                _, predicted = outputs.max(1)
+                all_preds.extend(predicted.cpu().numpy())
+                all_labels.extend(y_batch.numpy())
+
+        all_preds = np.array(all_preds)
+        all_labels = np.array(all_labels)
+        accuracy = float(np.mean(all_preds == all_labels))
+
+        precision, recall, f1, support = precision_recall_fscore_support(
+            all_labels, all_preds, average=None, zero_division=0
+        )
+        macro_p, macro_r, macro_f1, _ = precision_recall_fscore_support(
+            all_labels, all_preds, average="macro", zero_division=0
+        )
+
+        class_names = list(label_encoder.classes_) if label_encoder is not None else [str(i) for i in range(num_classes)]
+
+        per_class = {}
+        for i in range(min(len(class_names), len(precision))):
+            per_class[class_names[i]] = {
+                "precision": float(precision[i]),
+                "recall": float(recall[i]),
+                "f1": float(f1[i]),
+                "support": int(support[i]),
+            }
+
+        return {
+            "accuracy": accuracy,
+            "macro_precision": float(macro_p),
+            "macro_recall": float(macro_r),
+            "macro_f1": float(macro_f1),
+            "per_class": per_class,
+            "all_preds": all_preds,
+            "all_labels": all_labels,
+        }
+
     def _compute_detailed_metrics(
         self,
         dataloader: DataLoader,
@@ -496,6 +552,8 @@ class AdversarialTrainer:
         y_test: Optional[np.ndarray],
         batch_size: int,
         num_classes: int,
+        label_encoder=None,
+        save_path: Optional[Path] = None,
     ) -> Dict:
         """Crash Test exhaustif après chaque phase.
 
@@ -506,6 +564,7 @@ class AdversarialTrainer:
         4. Test_Loader_Adv_Seq_FGSM (attaque FGSM)
 
         Métriques par loader: Loss, Accuracy, Precision, Recall, F1, Robustness Ratio.
+        Generates per-phase plots for the jury presentation.
         """
         print(f"\n{'─'*60}")
         print(f"  CRASH TEST — Phase {phase_num}")
@@ -513,13 +572,20 @@ class AdversarialTrainer:
 
         crash_results = {"phase": phase_num}
 
-        # 1. Clean Test
+        # 1. Clean Test (with per-class metrics)
         clean_metrics = self._compute_detailed_metrics(test_loader, criterion, num_classes)
+        clean_per_class_data = self.compute_per_class_metrics(test_loader, label_encoder, num_classes)
         crash_results["clean"] = clean_metrics
+        crash_results["clean"]["macro_f1"] = clean_per_class_data["macro_f1"]
+        crash_results["clean"]["per_class"] = clean_per_class_data["per_class"]
         clean_acc = clean_metrics["accuracy"]
         print(f"  [Clean]       Loss={clean_metrics['loss']:.4f}  Acc={clean_acc:.4f}  "
               f"P={clean_metrics['precision']:.4f}  R={clean_metrics['recall']:.4f}  "
-              f"F1={clean_metrics['f1_score']:.4f}")
+              f"F1={clean_metrics['f1_score']:.4f}  Macro-F1={clean_per_class_data['macro_f1']:.4f}")
+
+        adv_feature_per_class = {}
+        adv_pgd_per_class = {}
+        adv_fgsm_per_class = {}
 
         # 2. Feature-level attack
         if feature_attack is not None and X_test is not None and y_test is not None:
@@ -536,11 +602,16 @@ class AdversarialTrainer:
             eval_dataset = IoTSequenceDataset(X_adv_feature, y_eval)
             eval_loader = DataLoader(eval_dataset, batch_size=batch_size)
             feat_metrics = self._compute_detailed_metrics(eval_loader, criterion, num_classes)
+            feat_per_class = self.compute_per_class_metrics(eval_loader, label_encoder, num_classes)
             feat_metrics["robustness_ratio"] = feat_metrics["accuracy"] / max(clean_acc, 1e-8)
+            feat_metrics["macro_f1"] = feat_per_class["macro_f1"]
+            feat_metrics["per_class"] = feat_per_class["per_class"]
+            adv_feature_per_class = feat_per_class["per_class"]
             crash_results["feature_attack"] = feat_metrics
             print(f"  [FeatureAdv]  Loss={feat_metrics['loss']:.4f}  Acc={feat_metrics['accuracy']:.4f}  "
                   f"P={feat_metrics['precision']:.4f}  R={feat_metrics['recall']:.4f}  "
-                  f"F1={feat_metrics['f1_score']:.4f}  RR={feat_metrics['robustness_ratio']:.4f}")
+                  f"F1={feat_metrics['f1_score']:.4f}  Macro-F1={feat_per_class['macro_f1']:.4f}  "
+                  f"RR={feat_metrics['robustness_ratio']:.4f}")
 
             del X_adv_feature, eval_dataset, eval_loader
             gc.collect()
@@ -556,11 +627,16 @@ class AdversarialTrainer:
             eval_dataset = IoTSequenceDataset(X_adv_pgd, y_eval)
             eval_loader = DataLoader(eval_dataset, batch_size=batch_size)
             pgd_metrics = self._compute_detailed_metrics(eval_loader, criterion, num_classes)
+            pgd_per_class = self.compute_per_class_metrics(eval_loader, label_encoder, num_classes)
             pgd_metrics["robustness_ratio"] = pgd_metrics["accuracy"] / max(clean_acc, 1e-8)
+            pgd_metrics["macro_f1"] = pgd_per_class["macro_f1"]
+            pgd_metrics["per_class"] = pgd_per_class["per_class"]
+            adv_pgd_per_class = pgd_per_class["per_class"]
             crash_results["sequence_pgd"] = pgd_metrics
             print(f"  [SeqPGD]      Loss={pgd_metrics['loss']:.4f}  Acc={pgd_metrics['accuracy']:.4f}  "
                   f"P={pgd_metrics['precision']:.4f}  R={pgd_metrics['recall']:.4f}  "
-                  f"F1={pgd_metrics['f1_score']:.4f}  RR={pgd_metrics['robustness_ratio']:.4f}")
+                  f"F1={pgd_metrics['f1_score']:.4f}  Macro-F1={pgd_per_class['macro_f1']:.4f}  "
+                  f"RR={pgd_metrics['robustness_ratio']:.4f}")
 
             del X_adv_pgd, eval_dataset, eval_loader
             gc.collect()
@@ -570,11 +646,16 @@ class AdversarialTrainer:
             eval_dataset = IoTSequenceDataset(X_adv_fgsm, y_eval)
             eval_loader = DataLoader(eval_dataset, batch_size=batch_size)
             fgsm_metrics = self._compute_detailed_metrics(eval_loader, criterion, num_classes)
+            fgsm_per_class = self.compute_per_class_metrics(eval_loader, label_encoder, num_classes)
             fgsm_metrics["robustness_ratio"] = fgsm_metrics["accuracy"] / max(clean_acc, 1e-8)
+            fgsm_metrics["macro_f1"] = fgsm_per_class["macro_f1"]
+            fgsm_metrics["per_class"] = fgsm_per_class["per_class"]
+            adv_fgsm_per_class = fgsm_per_class["per_class"]
             crash_results["sequence_fgsm"] = fgsm_metrics
             print(f"  [SeqFGSM]     Loss={fgsm_metrics['loss']:.4f}  Acc={fgsm_metrics['accuracy']:.4f}  "
                   f"P={fgsm_metrics['precision']:.4f}  R={fgsm_metrics['recall']:.4f}  "
-                  f"F1={fgsm_metrics['f1_score']:.4f}  RR={fgsm_metrics['robustness_ratio']:.4f}")
+                  f"F1={fgsm_metrics['f1_score']:.4f}  Macro-F1={fgsm_per_class['macro_f1']:.4f}  "
+                  f"RR={fgsm_metrics['robustness_ratio']:.4f}")
 
             del X_adv_fgsm, eval_dataset, eval_loader, X_eval, y_eval
             gc.collect()
@@ -582,7 +663,73 @@ class AdversarialTrainer:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+        # ── Generate per-phase plots ────────────────────────────
+        if save_path and clean_per_class_data.get("per_class"):
+            try:
+                phase_label = f"phase{phase_num}"
+                print(f"\n  📊 Generating Phase {phase_num} plots...")
+
+                # Plot 1: Per-device P/R/F1
+                generate_device_identification_plot(
+                    clean_per_class_data["per_class"],
+                    save_path,
+                    f"{self.model_name} (Phase {phase_num})",
+                )
+                # Rename to include phase
+                src = save_path / "fig_device_identification_scores.png"
+                dst = save_path / f"fig_device_identification_scores_{phase_label}.png"
+                if src.exists():
+                    src.rename(dst)
+
+                # Plot 2: Adversarial effect
+                if adv_feature_per_class or adv_pgd_per_class:
+                    generate_adversarial_effect_plot(
+                        clean_per_class_data["per_class"],
+                        adv_feature_per_class,
+                        adv_pgd_per_class,
+                        adv_fgsm_per_class,
+                        save_path,
+                        f"{self.model_name} (Phase {phase_num})",
+                    )
+                    src = save_path / "fig_adversarial_effect.png"
+                    dst = save_path / f"fig_adversarial_effect_{phase_label}.png"
+                    if src.exists():
+                        src.rename(dst)
+
+                # Plot 3: Robustness summary
+                summary_data = {"clean_metrics": {
+                    "accuracy": clean_acc,
+                    "macro_f1": clean_per_class_data["macro_f1"],
+                }}
+                if "feature_attack" in crash_results:
+                    summary_data["adv_feature_metrics"] = {
+                        "accuracy": crash_results["feature_attack"]["accuracy"],
+                        "macro_f1": crash_results["feature_attack"].get("macro_f1", 0),
+                    }
+                if "sequence_pgd" in crash_results:
+                    summary_data["adv_pgd_metrics"] = {
+                        "accuracy": crash_results["sequence_pgd"]["accuracy"],
+                        "macro_f1": crash_results["sequence_pgd"].get("macro_f1", 0),
+                    }
+                if "sequence_fgsm" in crash_results:
+                    summary_data["adv_fgsm_metrics"] = {
+                        "accuracy": crash_results["sequence_fgsm"]["accuracy"],
+                        "macro_f1": crash_results["sequence_fgsm"].get("macro_f1", 0),
+                    }
+                generate_robustness_summary_plot(
+                    summary_data, save_path,
+                    f"{self.model_name} (Phase {phase_num})",
+                )
+                src = save_path / "fig_robustness_summary.png"
+                dst = save_path / f"fig_robustness_summary_{phase_label}.png"
+                if src.exists():
+                    src.rename(dst)
+
+            except Exception as e:
+                print(f"  ⚠️ Phase {phase_num} plot error (non-fatal): {e}")
+
         return crash_results
+
 
     def fit_with_phase_checkpoints(
         self,
@@ -604,6 +751,7 @@ class AdversarialTrainer:
         y_test: Optional[np.ndarray] = None,
         batch_size: int = 64,
         is_xgboost: bool = False,
+        label_encoder=None,
     ) -> Dict:
         """Curriculum Learning avec Early Stopping par Phase & Crash Test.
 
@@ -705,7 +853,8 @@ class AdversarialTrainer:
         # Crash Test Phase 1
         crash_p1 = self._crash_test(
             1, test_loader, criterion,
-            feature_attack, sequence_attack, X_test, y_test, batch_size, num_classes
+            feature_attack, sequence_attack, X_test, y_test, batch_size, num_classes,
+            label_encoder=label_encoder, save_path=save_path
         )
         all_crash_results["phase_1"] = crash_p1
 
@@ -773,7 +922,8 @@ class AdversarialTrainer:
         # Crash Test Phase 2
         crash_p2 = self._crash_test(
             2, test_loader, criterion,
-            feature_attack, sequence_attack, X_test, y_test, batch_size, num_classes
+            feature_attack, sequence_attack, X_test, y_test, batch_size, num_classes,
+            label_encoder=label_encoder, save_path=save_path
         )
         all_crash_results["phase_2"] = crash_p2
 
@@ -839,7 +989,8 @@ class AdversarialTrainer:
         # Crash Test Phase 3 (Final)
         crash_p3 = self._crash_test(
             3, test_loader, criterion,
-            feature_attack, sequence_attack, X_test, y_test, batch_size, num_classes
+            feature_attack, sequence_attack, X_test, y_test, batch_size, num_classes,
+            label_encoder=label_encoder, save_path=save_path
         )
         all_crash_results["phase_3"] = crash_p3
 
@@ -1001,7 +1152,7 @@ class AdversarialTrainer:
         self.model.load_state_dict(best_state_p1)
         print(f"  ✓ Meilleurs poids Phase 1 rechargés (val_acc={best_val_acc_p1:.4f})")
 
-        # Test after Phase 1
+        # Crash Test after Phase 1 (clean + adversarial)
         if test_loader:
             self.test_model(test_loader, criterion, "TEST APRES PHASE 1 (Clean)")
 
@@ -1056,7 +1207,7 @@ class AdversarialTrainer:
         self.model.load_state_dict(best_state_p2)
         print(f"  ✓ Meilleurs poids Phase 2 rechargés (val_acc={best_val_acc_p2:.4f})")
 
-        # Test after Phase 2
+        # Crash Test after Phase 2
         if test_loader:
             self.test_model(test_loader, criterion, "TEST APRES PHASE 2 (Feature-Level)")
 
@@ -1107,7 +1258,7 @@ class AdversarialTrainer:
         self.model.load_state_dict(best_state_p3)
         print(f"  ✓ Meilleurs poids Phase 3 rechargés (val_acc={best_val_acc_p3:.4f})")
 
-        # Test after Phase 3 (Final)
+        # Crash Test after Phase 3 (Final)
         if test_loader:
             self.test_model(test_loader, criterion, "TEST FINAL APRES PHASE 3 (Sequence-Level)")
 
@@ -1143,6 +1294,228 @@ class AdversarialTrainer:
 
         return np.array(predictions), np.array(labels)
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PLOT GENERATION — Publication-Quality Figures for Jury Presentation
+# ═══════════════════════════════════════════════════════════════════════════
+
+def generate_device_identification_plot(
+    per_class_metrics: Dict,
+    save_path: Path,
+    model_type: str = "LSTM",
+):
+    """
+    Figure: IoT Device Identification Scores in IPFIX Records.
+    
+    Per-device Precision / Recall / F1 grouped bar chart (like Figure 6 in paper).
+    """
+    devices = sorted(per_class_metrics.keys())
+    precisions = [per_class_metrics[d]["precision"] * 100 for d in devices]
+    recalls = [per_class_metrics[d]["recall"] * 100 for d in devices]
+    f1s = [per_class_metrics[d]["f1"] * 100 for d in devices]
+
+    x = np.arange(len(devices))
+    width = 0.25
+
+    fig, ax = plt.subplots(figsize=(18, 8))
+    bars_p = ax.bar(x - width, precisions, width, label='Precision', color='#1f77b4', edgecolor='white', linewidth=0.5)
+    bars_r = ax.bar(x, recalls, width, label='Recall', color='#ff7f0e', edgecolor='white', linewidth=0.5)
+    bars_f = ax.bar(x + width, f1s, width, label='F1-Score', color='#2ca02c', edgecolor='white', linewidth=0.5)
+
+    # Add value labels
+    for bars in [bars_p, bars_r, bars_f]:
+        for bar in bars:
+            height = bar.get_height()
+            if height > 0:
+                ax.annotate(f'{height:.1f}%',
+                    xy=(bar.get_x() + bar.get_width() / 2, height),
+                    xytext=(0, 3), textcoords="offset points",
+                    ha='center', va='bottom', fontsize=6.5, fontweight='bold')
+
+    ax.set_ylabel('Score (%)', fontsize=14, fontweight='bold')
+    ax.set_title(f'IoT Device Identification Scores in IPFIX Records ({model_type.upper()})',
+                 fontsize=16, fontweight='bold', pad=15)
+    ax.set_xticks(x)
+    ax.set_xticklabels(devices, rotation=45, ha='right', fontsize=9)
+    ax.legend(fontsize=12, loc='lower right')
+    ax.set_ylim(bottom=max(0, min(min(precisions), min(recalls), min(f1s)) - 15), top=105)
+    ax.grid(axis='y', alpha=0.3)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    plt.tight_layout()
+
+    plot_path = save_path / "fig_device_identification_scores.png"
+    fig.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    print(f"  📊 Plot saved: {plot_path}")
+    return plot_path
+
+
+def generate_adversarial_effect_plot(
+    clean_per_class: Dict,
+    adv_feature_per_class: Dict,
+    adv_pgd_per_class: Dict,
+    adv_fgsm_per_class: Dict,
+    save_path: Path,
+    model_type: str = "LSTM",
+):
+    """
+    Figure: Adversarial Effect on IPFIX Records Identification Devices.
+    
+    Shows per-device accuracy under clean vs each adversarial attack.
+    """
+    devices = sorted(clean_per_class.keys())
+    clean_f1 = [clean_per_class[d]["f1"] * 100 for d in devices]
+
+    attack_data = {}
+    if adv_feature_per_class:
+        attack_data["Feature-Level"] = [adv_feature_per_class.get(d, {}).get("f1", 0) * 100 for d in devices]
+    if adv_pgd_per_class:
+        attack_data["PGD"] = [adv_pgd_per_class.get(d, {}).get("f1", 0) * 100 for d in devices]
+    if adv_fgsm_per_class:
+        attack_data["FGSM"] = [adv_fgsm_per_class.get(d, {}).get("f1", 0) * 100 for d in devices]
+
+    n_groups = 1 + len(attack_data)
+    width = 0.8 / n_groups
+    x = np.arange(len(devices))
+
+    fig, ax = plt.subplots(figsize=(18, 9))
+    colors = ['#2ca02c', '#e74c3c', '#9467bd', '#ff7f0e']
+
+    ax.bar(x - width * (n_groups - 1) / 2, clean_f1, width,
+           label='Clean (No Attack)', color=colors[0], edgecolor='white', linewidth=0.5)
+    for i, (attack_name, values) in enumerate(attack_data.items()):
+        offset = x - width * (n_groups - 1) / 2 + width * (i + 1)
+        ax.bar(offset, values, width, label=f'{attack_name} Attack',
+               color=colors[i + 1], edgecolor='white', linewidth=0.5)
+
+    ax.set_ylabel('F1-Score (%)', fontsize=14, fontweight='bold')
+    ax.set_title(f'Adversarial Effect on IPFIX Records Device Identification ({model_type.upper()})',
+                 fontsize=15, fontweight='bold', pad=15)
+    ax.set_xticks(x)
+    ax.set_xticklabels(devices, rotation=45, ha='right', fontsize=9)
+    ax.legend(fontsize=11, loc='lower right')
+    ax.set_ylim(bottom=0, top=105)
+    ax.grid(axis='y', alpha=0.3)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    plt.tight_layout()
+
+    plot_path = save_path / "fig_adversarial_effect.png"
+    fig.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    print(f"  📊 Plot saved: {plot_path}")
+    return plot_path
+
+
+def generate_robustness_summary_plot(
+    results: Dict,
+    save_path: Path,
+    model_type: str = "LSTM",
+):
+    """
+    Figure: Performance Evaluation of Device Identification in IPFIX Records
+    with Robustness Measures.
+    
+    Horizontal bar chart showing Accuracy, Macro-F1 for Clean and each attack type.
+    """
+    categories = []
+    accuracies = []
+    macro_f1s = []
+
+    # Clean
+    if "clean_metrics" in results:
+        categories.append("Clean\n(No Attack)")
+        accuracies.append(results["clean_metrics"].get("accuracy", 0) * 100)
+        macro_f1s.append(results["clean_metrics"].get("macro_f1", 0) * 100)
+
+    # Adversarial attacks
+    adv_mapping = [
+        ("adv_feature_metrics", "Feature-Level\nAttack"),
+        ("adv_pgd_metrics", "Sequence PGD\nAttack"),
+        ("adv_fgsm_metrics", "Sequence FGSM\nAttack"),
+        ("adv_hybrid_metrics", "Hybrid\nAttack"),
+    ]
+    for key, label in adv_mapping:
+        if key in results:
+            categories.append(label)
+            accuracies.append(results[key].get("accuracy", 0) * 100)
+            macro_f1s.append(results[key].get("macro_f1", 0) * 100)
+
+    if not categories:
+        return None
+
+    x = np.arange(len(categories))
+    width = 0.35
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+    bars_acc = ax.bar(x - width/2, accuracies, width, label='Accuracy',
+                       color='#3498db', edgecolor='white', linewidth=0.5)
+    bars_f1 = ax.bar(x + width/2, macro_f1s, width, label='Macro F1-Score',
+                      color='#e67e22', edgecolor='white', linewidth=0.5)
+
+    for bars in [bars_acc, bars_f1]:
+        for bar in bars:
+            height = bar.get_height()
+            ax.annotate(f'{height:.1f}%',
+                xy=(bar.get_x() + bar.get_width() / 2, height),
+                xytext=(0, 3), textcoords="offset points",
+                ha='center', va='bottom', fontsize=10, fontweight='bold')
+
+    ax.set_ylabel('Score (%)', fontsize=14, fontweight='bold')
+    ax.set_title(f'Performance Evaluation of Device Identification\nin IPFIX Records with Robustness Measures ({model_type.upper()})',
+                 fontsize=14, fontweight='bold', pad=15)
+    ax.set_xticks(x)
+    ax.set_xticklabels(categories, fontsize=11)
+    ax.legend(fontsize=12, loc='upper right')
+    ax.set_ylim(bottom=0, top=110)
+    ax.grid(axis='y', alpha=0.3)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    plt.tight_layout()
+
+    plot_path = save_path / "fig_robustness_summary.png"
+    fig.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    print(f"  📊 Plot saved: {plot_path}")
+    return plot_path
+
+
+def generate_training_history_plot(history: Dict, save_path: Path, model_type: str = "LSTM"):
+    """Plot training and validation loss/accuracy curves across phases."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+
+    epochs_range = range(1, len(history["train_loss"]) + 1)
+
+    # Loss
+    ax1.plot(epochs_range, history["train_loss"], 'b-', label='Train Loss', linewidth=2)
+    ax1.plot(epochs_range, history["val_loss"], 'r-', label='Val Loss', linewidth=2)
+    ax1.set_xlabel('Epoch', fontsize=12)
+    ax1.set_ylabel('Loss', fontsize=12)
+    ax1.set_title(f'Training & Validation Loss ({model_type.upper()})', fontsize=14, fontweight='bold')
+    ax1.legend(fontsize=11)
+    ax1.grid(alpha=0.3)
+    ax1.spines['top'].set_visible(False)
+    ax1.spines['right'].set_visible(False)
+
+    # Accuracy
+    ax2.plot(epochs_range, history["train_acc"], 'b-', label='Train Acc', linewidth=2)
+    ax2.plot(epochs_range, history["val_acc"], 'r-', label='Val Acc', linewidth=2)
+    ax2.set_xlabel('Epoch', fontsize=12)
+    ax2.set_ylabel('Accuracy', fontsize=12)
+    ax2.set_title(f'Training & Validation Accuracy ({model_type.upper()})', fontsize=14, fontweight='bold')
+    ax2.legend(fontsize=11)
+    ax2.grid(alpha=0.3)
+    ax2.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0))
+    ax2.spines['top'].set_visible(False)
+    ax2.spines['right'].set_visible(False)
+
+    plt.tight_layout()
+    plot_path = save_path / "fig_training_history.png"
+    fig.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    print(f"  📊 Plot saved: {plot_path}")
+    return plot_path
 
 def create_model(
     model_type: str,
@@ -1272,7 +1645,15 @@ def run_experiment_with_phase_checkpoints(
         y_test=y_test,
         batch_size=batch_size,
         is_xgboost=(model_type == "xgboost_lstm"),
+        label_encoder=label_encoder,
     )
+
+    # Generate training history plot
+    if save_results and save_path:
+        try:
+            generate_training_history_plot(history, save_path, model_type)
+        except Exception as e:
+            print(f"  ⚠️ Training history plot error: {e}")
 
     # Récupérer les résultats d'évaluation des phases
     phase_results = history.get("phase_checkpoints_evaluation", {})
@@ -1439,12 +1820,26 @@ def run_experiment(
         torch.cuda.empty_cache()
 
     print("\n" + "=" * 60)
-    print("EVALUATION")
+    print("EVALUATION (with per-class metrics & macro F1)")
     print("=" * 60)
 
     criterion = nn.CrossEntropyLoss()
     test_loss, test_acc = trainer.evaluate(test_loader, criterion)
     print(f"\nClean Test - Loss: {test_loss:.4f}, Acc: {test_acc:.4f}")
+
+    # ── Per-class metrics on Clean data ──────────────────────────
+    print("\n── Per-Class Metrics (Clean) ──")
+    clean_detailed = trainer.compute_per_class_metrics(
+        test_loader, label_encoder, num_classes
+    )
+    print(f"  Accuracy:        {clean_detailed['accuracy']:.4f}")
+    print(f"  Macro Precision: {clean_detailed['macro_precision']:.4f}")
+    print(f"  Macro Recall:    {clean_detailed['macro_recall']:.4f}")
+    print(f"  Macro F1-Score:  {clean_detailed['macro_f1']:.4f}")
+    print(f"\n  {'Device':<30} {'Prec':>8} {'Recall':>8} {'F1':>8} {'Support':>10}")
+    print(f"  {'-'*66}")
+    for dev, m in sorted(clean_detailed["per_class"].items()):
+        print(f"  {dev:<30} {m['precision']:>8.4f} {m['recall']:>8.4f} {m['f1']:>8.4f} {m['support']:>10,}")
 
     results = {
         "model_type": model_type,
@@ -1458,9 +1853,19 @@ def run_experiment(
         "num_classes": num_classes,
         "input_size": input_size,
         "parameters": sum(p.numel() for p in model.parameters()),
+        "clean_metrics": {
+            "accuracy": clean_detailed["accuracy"],
+            "macro_precision": clean_detailed["macro_precision"],
+            "macro_recall": clean_detailed["macro_recall"],
+            "macro_f1": clean_detailed["macro_f1"],
+            "per_class": clean_detailed["per_class"],
+        },
     }
 
     adversarial_results = {}
+    adv_feature_per_class = {}
+    adv_pgd_per_class = {}
+    adv_fgsm_per_class = {}
 
     if adv_method != "none":
         print("\nGenerating adversarial examples for evaluation...")
@@ -1470,6 +1875,7 @@ def run_experiment(
         X_eval = X_test[eval_indices].copy()
         y_eval = y_test[eval_indices].copy()
 
+        # ── Feature-level attack ────────────────────────────────
         print("  Feature-level attack...")
         seq_len = X_eval.shape[1]
         y_eval_expanded = np.repeat(y_eval, seq_len)
@@ -1480,12 +1886,23 @@ def run_experiment(
         eval_dataset = IoTSequenceDataset(X_adv_feature, y_eval)
         eval_loader = DataLoader(eval_dataset, batch_size=batch_size)
         loss_f, acc_f = trainer.evaluate(eval_loader, criterion)
-        adversarial_results["feature_level"] = {"loss": loss_f, "accuracy": acc_f}
-        print(f"  Feature-level attack - Loss: {loss_f:.4f}, Acc: {acc_f:.4f}")
+
+        feat_detailed = trainer.compute_per_class_metrics(eval_loader, label_encoder, num_classes)
+        adv_feature_per_class = feat_detailed["per_class"]
+        adversarial_results["feature_level"] = {
+            "loss": loss_f, "accuracy": acc_f,
+            "macro_f1": feat_detailed["macro_f1"],
+            "macro_precision": feat_detailed["macro_precision"],
+            "macro_recall": feat_detailed["macro_recall"],
+        }
+        results["adv_feature_metrics"] = adversarial_results["feature_level"].copy()
+        results["adv_feature_metrics"]["per_class"] = adv_feature_per_class
+        print(f"  Feature-level - Loss: {loss_f:.4f}, Acc: {acc_f:.4f}, Macro-F1: {feat_detailed['macro_f1']:.4f}")
 
         del X_adv_feature, eval_dataset, eval_loader
         gc.collect()
 
+        # ── Sequence PGD attack ─────────────────────────────────
         print("  Sequence-level PGD attack...")
         X_adv_pgd = sequence_attack.generate_batch(
             X_eval, y_eval, method="pgd", verbose=True
@@ -1494,12 +1911,23 @@ def run_experiment(
         eval_dataset = IoTSequenceDataset(X_adv_pgd, y_eval)
         eval_loader = DataLoader(eval_dataset, batch_size=batch_size)
         loss_p, acc_p = trainer.evaluate(eval_loader, criterion)
-        adversarial_results["sequence_pgd"] = {"loss": loss_p, "accuracy": acc_p}
-        print(f"  Sequence PGD attack - Loss: {loss_p:.4f}, Acc: {acc_p:.4f}")
+
+        pgd_detailed = trainer.compute_per_class_metrics(eval_loader, label_encoder, num_classes)
+        adv_pgd_per_class = pgd_detailed["per_class"]
+        adversarial_results["sequence_pgd"] = {
+            "loss": loss_p, "accuracy": acc_p,
+            "macro_f1": pgd_detailed["macro_f1"],
+            "macro_precision": pgd_detailed["macro_precision"],
+            "macro_recall": pgd_detailed["macro_recall"],
+        }
+        results["adv_pgd_metrics"] = adversarial_results["sequence_pgd"].copy()
+        results["adv_pgd_metrics"]["per_class"] = adv_pgd_per_class
+        print(f"  Sequence PGD  - Loss: {loss_p:.4f}, Acc: {acc_p:.4f}, Macro-F1: {pgd_detailed['macro_f1']:.4f}")
 
         del X_adv_pgd, eval_dataset, eval_loader
         gc.collect()
 
+        # ── Sequence FGSM attack ────────────────────────────────
         print("  Sequence-level FGSM attack...")
         X_adv_fgsm = sequence_attack.generate_batch(
             X_eval, y_eval, method="fgsm", verbose=True
@@ -1508,12 +1936,23 @@ def run_experiment(
         eval_dataset = IoTSequenceDataset(X_adv_fgsm, y_eval)
         eval_loader = DataLoader(eval_dataset, batch_size=batch_size)
         loss_fgsm, acc_fgsm = trainer.evaluate(eval_loader, criterion)
-        adversarial_results["sequence_fgsm"] = {"loss": loss_fgsm, "accuracy": acc_fgsm}
-        print(f"  Sequence FGSM attack - Loss: {loss_fgsm:.4f}, Acc: {acc_fgsm:.4f}")
+
+        fgsm_detailed = trainer.compute_per_class_metrics(eval_loader, label_encoder, num_classes)
+        adv_fgsm_per_class = fgsm_detailed["per_class"]
+        adversarial_results["sequence_fgsm"] = {
+            "loss": loss_fgsm, "accuracy": acc_fgsm,
+            "macro_f1": fgsm_detailed["macro_f1"],
+            "macro_precision": fgsm_detailed["macro_precision"],
+            "macro_recall": fgsm_detailed["macro_recall"],
+        }
+        results["adv_fgsm_metrics"] = adversarial_results["sequence_fgsm"].copy()
+        results["adv_fgsm_metrics"]["per_class"] = adv_fgsm_per_class
+        print(f"  Sequence FGSM - Loss: {loss_fgsm:.4f}, Acc: {acc_fgsm:.4f}, Macro-F1: {fgsm_detailed['macro_f1']:.4f}")
 
         del X_adv_fgsm, eval_dataset, eval_loader
         gc.collect()
 
+        # ── Hybrid attack ───────────────────────────────────────
         print("  Hybrid attack...")
         X_adv_hybrid = adv_generator.generate_batch(
             X_eval, y_eval, method="hybrid", verbose=True
@@ -1522,8 +1961,17 @@ def run_experiment(
         eval_dataset = IoTSequenceDataset(X_adv_hybrid, y_eval)
         eval_loader = DataLoader(eval_dataset, batch_size=batch_size)
         loss_h, acc_h = trainer.evaluate(eval_loader, criterion)
-        adversarial_results["hybrid"] = {"loss": loss_h, "accuracy": acc_h}
-        print(f"  Hybrid attack - Loss: {loss_h:.4f}, Acc: {acc_h:.4f}")
+
+        hybrid_detailed = trainer.compute_per_class_metrics(eval_loader, label_encoder, num_classes)
+        adversarial_results["hybrid"] = {
+            "loss": loss_h, "accuracy": acc_h,
+            "macro_f1": hybrid_detailed["macro_f1"],
+            "macro_precision": hybrid_detailed["macro_precision"],
+            "macro_recall": hybrid_detailed["macro_recall"],
+        }
+        results["adv_hybrid_metrics"] = adversarial_results["hybrid"].copy()
+        results["adv_hybrid_metrics"]["per_class"] = hybrid_detailed["per_class"]
+        print(f"  Hybrid        - Loss: {loss_h:.4f}, Acc: {acc_h:.4f}, Macro-F1: {hybrid_detailed['macro_f1']:.4f}")
 
         del X_adv_hybrid, eval_dataset, eval_loader, X_eval, y_eval
         gc.collect()
@@ -1531,15 +1979,54 @@ def run_experiment(
         results["adversarial_results"] = adversarial_results
 
         results["robustness_ratios"] = {
-            k: v["accuracy"] / test_acc for k, v in adversarial_results.items()
+            k: v["accuracy"] / max(test_acc, 1e-8) for k, v in adversarial_results.items()
         }
 
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
+    # ── Generate Plots ──────────────────────────────────────────
+    if save_results and save_path:
+        print("\n" + "=" * 60)
+        print("GENERATING PLOTS FOR PRESENTATION")
+        print("=" * 60)
+
+        try:
+            # Plot 1: Per-device P/R/F1 (Figure 6 style)
+            print("\n  [1/4] Per-device identification scores...")
+            generate_device_identification_plot(
+                clean_detailed["per_class"], save_path, model_type
+            )
+
+            # Plot 2: Adversarial effect on per-device F1
+            if adv_method != "none":
+                print("  [2/4] Adversarial effect per device...")
+                generate_adversarial_effect_plot(
+                    clean_detailed["per_class"],
+                    adv_feature_per_class,
+                    adv_pgd_per_class,
+                    adv_fgsm_per_class,
+                    save_path, model_type
+                )
+
+                # Plot 3: Robustness summary (Accuracy + Macro-F1 clean vs attacks)
+                print("  [3/4] Robustness summary...")
+                generate_robustness_summary_plot(results, save_path, model_type)
+
+            # Plot 4: Training history curves
+            print("  [4/4] Training history curves...")
+            generate_training_history_plot(history, save_path, model_type)
+
+        except Exception as e:
+            print(f"  ⚠️ Plot generation error (non-fatal): {e}")
+
+    # ── Save Results ────────────────────────────────────────────
     if save_results:
+        # Remove numpy arrays from results before JSON serialization
+        results_json = json.loads(json.dumps(results, default=str))
+
         with open(save_path / "results.json", "w") as f:
-            json.dump(results, f, indent=2)
+            json.dump(results_json, f, indent=2)
 
         with open(save_path / "history.json", "w") as f:
             json.dump(history, f, indent=2)
@@ -1555,7 +2042,7 @@ def run_experiment(
                 f,
             )
 
-        print(f"\nResults saved to: {save_path}")
+        print(f"\n✅ All results and plots saved to: {save_path}")
 
     del X_train, X_val, X_test, y_train, y_val, y_test
     del test_loader, test_dataset, train_dataset, val_dataset
