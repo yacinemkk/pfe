@@ -62,6 +62,7 @@ from config.config import (
 from src.models.lstm import LSTMClassifier, IoTSequenceDataset
 from src.models.transformer import TransformerClassifier
 from src.models.cnn_lstm import CNNLSTMClassifier, CNNClassifier
+from src.models.xgboost_lstm import XGBoostLSTMClassifier
 from src.adversarial.attacks import (
     FeatureLevelAttack,
     SequenceLevelAttack,
@@ -439,6 +440,150 @@ class AdversarialTrainer:
         print(f"{'='*50}\n")
         return test_loss, test_acc
 
+    def _compute_detailed_metrics(
+        self,
+        dataloader: DataLoader,
+        criterion: nn.Module,
+        num_classes: int,
+    ) -> Dict:
+        """Compute detailed metrics: Loss, Accuracy, Precision, Recall, F1 (macro)."""
+        from sklearn.metrics import precision_recall_fscore_support
+
+        self.model.eval()
+        total_loss, total = 0, 0
+        all_preds, all_labels = [], []
+
+        with torch.no_grad():
+            for X_batch, y_batch in dataloader:
+                X_batch = X_batch.to(self.device)
+                y_batch = y_batch.to(self.device)
+
+                outputs = self.model(X_batch)
+                loss = criterion(outputs, y_batch)
+
+                total_loss += loss.item()
+                _, predicted = outputs.max(1)
+                total += y_batch.size(0)
+
+                all_preds.extend(predicted.cpu().numpy())
+                all_labels.extend(y_batch.cpu().numpy())
+
+        all_preds = np.array(all_preds)
+        all_labels = np.array(all_labels)
+        accuracy = np.mean(all_preds == all_labels)
+        avg_loss = total_loss / max(len(dataloader), 1)
+
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            all_labels, all_preds, average="macro", zero_division=0
+        )
+
+        return {
+            "loss": float(avg_loss),
+            "accuracy": float(accuracy),
+            "precision": float(precision),
+            "recall": float(recall),
+            "f1_score": float(f1),
+        }
+
+    def _crash_test(
+        self,
+        phase_num: int,
+        test_loader: DataLoader,
+        criterion: nn.Module,
+        feature_attack: Optional[FeatureLevelAttack],
+        sequence_attack: Optional[SequenceLevelAttack],
+        X_test: Optional[np.ndarray],
+        y_test: Optional[np.ndarray],
+        batch_size: int,
+        num_classes: int,
+    ) -> Dict:
+        """Crash Test exhaustif après chaque phase.
+
+        Évalue le modèle sur 4 loaders:
+        1. Test_Loader_Normal (données pures)
+        2. Test_Loader_Adv_Feature (attaque feature-level)
+        3. Test_Loader_Adv_Seq_PGD (attaque PGD)
+        4. Test_Loader_Adv_Seq_FGSM (attaque FGSM)
+
+        Métriques par loader: Loss, Accuracy, Precision, Recall, F1, Robustness Ratio.
+        """
+        print(f"\n{'─'*60}")
+        print(f"  CRASH TEST — Phase {phase_num}")
+        print(f"{'─'*60}")
+
+        crash_results = {"phase": phase_num}
+
+        # 1. Clean Test
+        clean_metrics = self._compute_detailed_metrics(test_loader, criterion, num_classes)
+        crash_results["clean"] = clean_metrics
+        clean_acc = clean_metrics["accuracy"]
+        print(f"  [Clean]       Loss={clean_metrics['loss']:.4f}  Acc={clean_acc:.4f}  "
+              f"P={clean_metrics['precision']:.4f}  R={clean_metrics['recall']:.4f}  "
+              f"F1={clean_metrics['f1_score']:.4f}")
+
+        # 2. Feature-level attack
+        if feature_attack is not None and X_test is not None and y_test is not None:
+            n_eval = min(1000, len(X_test))
+            eval_indices = np.random.choice(len(X_test), n_eval, replace=False)
+            X_eval = X_test[eval_indices].copy()
+            y_eval = y_test[eval_indices].copy()
+
+            y_eval_expanded = np.repeat(y_eval, X_eval.shape[1])
+            X_adv_feature = feature_attack.generate_batch(
+                X_eval.reshape(-1, X_eval.shape[-1]), y_eval_expanded, verbose=False
+            ).reshape(X_eval.shape)
+
+            eval_dataset = IoTSequenceDataset(X_adv_feature, y_eval)
+            eval_loader = DataLoader(eval_dataset, batch_size=batch_size)
+            feat_metrics = self._compute_detailed_metrics(eval_loader, criterion, num_classes)
+            feat_metrics["robustness_ratio"] = feat_metrics["accuracy"] / max(clean_acc, 1e-8)
+            crash_results["feature_attack"] = feat_metrics
+            print(f"  [FeatureAdv]  Loss={feat_metrics['loss']:.4f}  Acc={feat_metrics['accuracy']:.4f}  "
+                  f"P={feat_metrics['precision']:.4f}  R={feat_metrics['recall']:.4f}  "
+                  f"F1={feat_metrics['f1_score']:.4f}  RR={feat_metrics['robustness_ratio']:.4f}")
+
+            del X_adv_feature, eval_dataset, eval_loader
+            gc.collect()
+
+        # 3. Sequence-level PGD
+        if sequence_attack is not None and X_test is not None and y_test is not None:
+            n_eval = min(1000, len(X_test))
+            eval_indices = np.random.choice(len(X_test), n_eval, replace=False)
+            X_eval = X_test[eval_indices].copy()
+            y_eval = y_test[eval_indices].copy()
+
+            X_adv_pgd = sequence_attack.generate_batch(X_eval, y_eval, method="pgd", verbose=False)
+            eval_dataset = IoTSequenceDataset(X_adv_pgd, y_eval)
+            eval_loader = DataLoader(eval_dataset, batch_size=batch_size)
+            pgd_metrics = self._compute_detailed_metrics(eval_loader, criterion, num_classes)
+            pgd_metrics["robustness_ratio"] = pgd_metrics["accuracy"] / max(clean_acc, 1e-8)
+            crash_results["sequence_pgd"] = pgd_metrics
+            print(f"  [SeqPGD]      Loss={pgd_metrics['loss']:.4f}  Acc={pgd_metrics['accuracy']:.4f}  "
+                  f"P={pgd_metrics['precision']:.4f}  R={pgd_metrics['recall']:.4f}  "
+                  f"F1={pgd_metrics['f1_score']:.4f}  RR={pgd_metrics['robustness_ratio']:.4f}")
+
+            del X_adv_pgd, eval_dataset, eval_loader
+            gc.collect()
+
+            # 4. Sequence-level FGSM
+            X_adv_fgsm = sequence_attack.generate_batch(X_eval, y_eval, method="fgsm", verbose=False)
+            eval_dataset = IoTSequenceDataset(X_adv_fgsm, y_eval)
+            eval_loader = DataLoader(eval_dataset, batch_size=batch_size)
+            fgsm_metrics = self._compute_detailed_metrics(eval_loader, criterion, num_classes)
+            fgsm_metrics["robustness_ratio"] = fgsm_metrics["accuracy"] / max(clean_acc, 1e-8)
+            crash_results["sequence_fgsm"] = fgsm_metrics
+            print(f"  [SeqFGSM]     Loss={fgsm_metrics['loss']:.4f}  Acc={fgsm_metrics['accuracy']:.4f}  "
+                  f"P={fgsm_metrics['precision']:.4f}  R={fgsm_metrics['recall']:.4f}  "
+                  f"F1={fgsm_metrics['f1_score']:.4f}  RR={fgsm_metrics['robustness_ratio']:.4f}")
+
+            del X_adv_fgsm, eval_dataset, eval_loader, X_eval, y_eval
+            gc.collect()
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        return crash_results
+
     def fit_with_phase_checkpoints(
         self,
         train_loader: DataLoader,
@@ -458,22 +603,25 @@ class AdversarialTrainer:
         X_test: Optional[np.ndarray] = None,
         y_test: Optional[np.ndarray] = None,
         batch_size: int = 64,
+        is_xgboost: bool = False,
     ) -> Dict:
-        """Training avec sauvegarde après chaque phase et évaluation finale de tous les checkpoints.
-        
-        Cette méthode:
-        1. Entraîne le modèle en 3 phases (60% clean, 20% feature, 20% sequence)
-        2. Sauvegarde le modèle à la fin de CHAQUE phase
-        3. À la fin de l'entraînement, charge chaque modèle sauvegardé et évalue les métriques
-        
-        Args:
-            test_loader: DataLoader de test obligatoire
-            feature_attack: Pour évaluation robustesse feature-level
-            sequence_attack: Pour évaluation robustesse sequence-level
-            X_test: Données test pour génération d'exemples adversariaux
-            y_test: Labels test pour génération d'exemples adversariaux
-            batch_size: Taille du batch pour évaluation
+        """Curriculum Learning avec Early Stopping par Phase & Crash Test.
+
+        Implémente le plan de dernier_correction.md:
+        1. Phase 1 (Normal)     – Entraînement sur données propres.
+        2. Phase 2 (FeatureAdv) – Perturbations feature-level.
+        3. Phase 3 (SeqAdv)     – Attaques PGD/FGSM séquentielles.
+
+        Chaque phase dispose de son propre Early Stopping:
+          - Patience réinitialisée au début de chaque phase.
+          - Meilleurs poids sauvegardés et rechargés en fin de phase.
+
+        Crash Test exhaustif après chaque phase (4 loaders × métriques complètes).
+        Pour XGBoost-LSTM: fit XGBoost avant l'évaluation Phase 3.
+        Génère un rapport JSON récapitulatif comparant P1, P2 et P3.
         """
+        import copy
+
         optimizer = torch.optim.AdamW(
             self.model.parameters(), lr=lr, weight_decay=weight_decay
         )
@@ -482,31 +630,37 @@ class AdversarialTrainer:
             optimizer, mode="min", patience=3, factor=0.5
         )
 
-        best_val_acc = 0
+        # Determine num_classes from test_loader
+        sample_y = next(iter(test_loader))[1]
+        num_classes = int(sample_y.max().item()) + 1
+
+        # Calculate phase epochs
+        phase1_epochs = max(1, int(epochs * 0.6))
+        phase2_epochs = max(1, int(epochs * 0.2))
+        phase3_epochs = max(1, epochs - phase1_epochs - phase2_epochs)
+
+        print(f"\n{'='*70}")
+        print("  CURRICULUM LEARNING — Early Stopping par Phase")
+        print(f"{'='*70}")
+        print(f"  Phase 1 (Clean Training):        max {phase1_epochs} epochs  |  patience={early_stopping_patience}")
+        if adv_generator and adv_ratio > 0:
+            print(f"  Phase 2 (Feature-Level Attack):   max {phase2_epochs} epochs  |  patience={early_stopping_patience}")
+            print(f"  Phase 3 (Sequence-Level Attack):  max {phase3_epochs} epochs  |  patience={early_stopping_patience}")
+        print(f"{'='*70}\n")
+
+        all_crash_results = {}
+
+        # ─────────────────────────────────────────────────────────
+        # PHASE 1 : Clean Training
+        # ─────────────────────────────────────────────────────────
+        print(f"\n{'='*60}")
+        print("PHASE 1: ENTRAÎNEMENT NORMAL (Benign First)")
+        print(f"{'='*60}\n")
+
+        best_val_acc_p1 = 0.0
+        best_state_p1 = copy.deepcopy(self.model.state_dict())
         patience_counter = 0
 
-        # Calculate phase epochs (60% - 20% - 20%)
-        phase1_epochs = int(epochs * 0.6)
-        phase2_epochs = int(epochs * 0.2)
-        phase3_epochs = epochs - phase1_epochs - phase2_epochs
-
-        print(f"\n{'='*60}")
-        print("PHASED ADVERSARIAL TRAINING AVEC CHECKPOINTS")
-        print(f"{'='*60}")
-        print(f"Phase 1 (Clean Training):        Epochs 1-{phase1_epochs} ({phase1_epochs} epochs)")
-        if adv_generator and adv_ratio > 0:
-            print(f"Phase 2 (Feature-Level Attack):  Epochs {phase1_epochs+1}-{phase1_epochs+phase2_epochs} ({phase2_epochs} epochs)")
-            print(f"Phase 3 (Sequence-Level Attack): Epochs {phase1_epochs+phase2_epochs+1}-{epochs} ({phase3_epochs} epochs)")
-        print(f"{'='*60}\n")
-
-        # Dictionnaire pour stocker les chemins des checkpoints
-        phase_checkpoints = {}
-
-        # Phase 1: Clean Training (60%)
-        print(f"\n{'='*60}")
-        print("PHASE 1: CLEAN TRAINING (60%)")
-        print(f"{'='*60}\n")
-        
         for epoch in range(phase1_epochs):
             train_loss, train_acc = self.train_epoch(
                 train_loader, optimizer, criterion, None, 0.0, adv_method, None
@@ -519,49 +673,64 @@ class AdversarialTrainer:
             self.history["val_loss"].append(val_loss)
             self.history["val_acc"].append(val_acc)
 
-            print(f"Phase 1 - Epoch {epoch + 1}/{phase1_epochs} (Global: {epoch + 1}/{epochs})")
-            print(f"  Train - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
-            print(f"  Val   - Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
+            print(f"  P1 Epoch {epoch+1}/{phase1_epochs}  "
+                  f"Train[loss={train_loss:.4f} acc={train_acc:.4f}]  "
+                  f"Val[loss={val_loss:.4f} acc={val_acc:.4f}]")
 
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
+            if val_acc > best_val_acc_p1:
+                best_val_acc_p1 = val_acc
+                best_state_p1 = copy.deepcopy(self.model.state_dict())
                 patience_counter = 0
             else:
                 patience_counter += 1
+                if patience_counter >= early_stopping_patience:
+                    print(f"  ⚡ Early Stopping Phase 1 à l'epoch {epoch+1}")
+                    break
+
+        # Recharger les meilleurs poids de Phase 1
+        self.model.load_state_dict(best_state_p1)
+        print(f"  ✓ Meilleurs poids Phase 1 rechargés (val_acc={best_val_acc_p1:.4f})")
 
         # Sauvegarder checkpoint Phase 1
         if save_path:
             checkpoint_path = save_path / "checkpoint_phase1.pt"
-            torch.save(
-                {
-                    "epoch": phase1_epochs,
-                    "model_state_dict": self.model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "best_val_acc": best_val_acc,
-                    "history": self.history,
-                    "phase": 1,
-                },
-                checkpoint_path,
-            )
-            phase_checkpoints[1] = str(checkpoint_path)
-            print(f"\n[CHECKPOINT] Phase 1 sauvegardée: {checkpoint_path}")
+            torch.save({
+                "model_state_dict": best_state_p1,
+                "optimizer_state_dict": optimizer.state_dict(),
+                "best_val_acc": best_val_acc_p1,
+                "phase": 1,
+            }, checkpoint_path)
+            print(f"  💾 Checkpoint P1: {checkpoint_path}")
+
+        # Crash Test Phase 1
+        crash_p1 = self._crash_test(
+            1, test_loader, criterion,
+            feature_attack, sequence_attack, X_test, y_test, batch_size, num_classes
+        )
+        all_crash_results["phase_1"] = crash_p1
 
         # Early exit si pas d'entraînement adversarial
         if adv_generator is None or adv_ratio <= 0:
-            return self._evaluate_all_checkpoints(
-                phase_checkpoints, test_loader, criterion,
-                feature_attack, sequence_attack, X_test, y_test, batch_size
-            )
+            self.history["phase_checkpoints_evaluation"] = all_crash_results
+            if save_path:
+                self._save_phase_report(all_crash_results, save_path)
+            return self.history
 
-        # Phase 2: Feature-Level Adversarial Training (20%)
+        # ─────────────────────────────────────────────────────────
+        # PHASE 2 : Feature-Level Adversarial Training
+        # ─────────────────────────────────────────────────────────
         print(f"\n{'='*60}")
-        print("PHASE 2: FEATURE-LEVEL ADVERSARIAL TRAINING (20%)")
+        print("PHASE 2: ATTAQUES FEATURE-LEVEL (Perturbations discrètes)")
         print(f"{'='*60}\n")
-        
+
+        best_val_acc_p2 = 0.0
+        best_state_p2 = copy.deepcopy(self.model.state_dict())
+        patience_counter = 0  # RESET patience
+
         for epoch in range(phase2_epochs):
             global_epoch = phase1_epochs + epoch + 1
             train_loss, train_acc = self.train_epoch(
-                train_loader, optimizer, criterion, adv_generator, adv_ratio, 
+                train_loader, optimizer, criterion, adv_generator, adv_ratio,
                 "feature", {"clean": 0.0, "feature": 1.0, "sequence": 0.0}
             )
             val_loss, val_acc = self.evaluate(val_loader, criterion)
@@ -572,38 +741,53 @@ class AdversarialTrainer:
             self.history["val_loss"].append(val_loss)
             self.history["val_acc"].append(val_acc)
 
-            print(f"Phase 2 - Epoch {epoch + 1}/{phase2_epochs} (Global: {global_epoch}/{epochs})")
-            print(f"  Train - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
-            print(f"  Val   - Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
+            print(f"  P2 Epoch {epoch+1}/{phase2_epochs} (Global: {global_epoch}/{epochs})  "
+                  f"Train[loss={train_loss:.4f} acc={train_acc:.4f}]  "
+                  f"Val[loss={val_loss:.4f} acc={val_acc:.4f}]")
 
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
+            if val_acc > best_val_acc_p2:
+                best_val_acc_p2 = val_acc
+                best_state_p2 = copy.deepcopy(self.model.state_dict())
                 patience_counter = 0
             else:
                 patience_counter += 1
+                if patience_counter >= early_stopping_patience:
+                    print(f"  ⚡ Early Stopping Phase 2 à l'epoch {epoch+1}")
+                    break
+
+        # Recharger les meilleurs poids de Phase 2
+        self.model.load_state_dict(best_state_p2)
+        print(f"  ✓ Meilleurs poids Phase 2 rechargés (val_acc={best_val_acc_p2:.4f})")
 
         # Sauvegarder checkpoint Phase 2
         if save_path:
             checkpoint_path = save_path / "checkpoint_phase2.pt"
-            torch.save(
-                {
-                    "epoch": phase1_epochs + phase2_epochs,
-                    "model_state_dict": self.model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "best_val_acc": best_val_acc,
-                    "history": self.history,
-                    "phase": 2,
-                },
-                checkpoint_path,
-            )
-            phase_checkpoints[2] = str(checkpoint_path)
-            print(f"\n[CHECKPOINT] Phase 2 sauvegardée: {checkpoint_path}")
+            torch.save({
+                "model_state_dict": best_state_p2,
+                "optimizer_state_dict": optimizer.state_dict(),
+                "best_val_acc": best_val_acc_p2,
+                "phase": 2,
+            }, checkpoint_path)
+            print(f"  💾 Checkpoint P2: {checkpoint_path}")
 
-        # Phase 3: Sequence-Level Adversarial Training (20%)
+        # Crash Test Phase 2
+        crash_p2 = self._crash_test(
+            2, test_loader, criterion,
+            feature_attack, sequence_attack, X_test, y_test, batch_size, num_classes
+        )
+        all_crash_results["phase_2"] = crash_p2
+
+        # ─────────────────────────────────────────────────────────
+        # PHASE 3 : Sequence-Level Adversarial Training (PGD/FGSM)
+        # ─────────────────────────────────────────────────────────
         print(f"\n{'='*60}")
-        print("PHASE 3: SEQUENCE-LEVEL ADVERSARIAL TRAINING (20%)")
+        print("PHASE 3: ATTAQUES SÉQUENTIELLES (PGD / FGSM — boîte blanche)")
         print(f"{'='*60}\n")
-        
+
+        best_val_acc_p3 = 0.0
+        best_state_p3 = copy.deepcopy(self.model.state_dict())
+        patience_counter = 0  # RESET patience
+
         for epoch in range(phase3_epochs):
             global_epoch = phase1_epochs + phase2_epochs + epoch + 1
             train_loss, train_acc = self.train_epoch(
@@ -618,173 +802,110 @@ class AdversarialTrainer:
             self.history["val_loss"].append(val_loss)
             self.history["val_acc"].append(val_acc)
 
-            print(f"Phase 3 - Epoch {epoch + 1}/{phase3_epochs} (Global: {global_epoch}/{epochs})")
-            print(f"  Train - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
-            print(f"  Val   - Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
+            print(f"  P3 Epoch {epoch+1}/{phase3_epochs} (Global: {global_epoch}/{epochs})  "
+                  f"Train[loss={train_loss:.4f} acc={train_acc:.4f}]  "
+                  f"Val[loss={val_loss:.4f} acc={val_acc:.4f}]")
 
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
+            if val_acc > best_val_acc_p3:
+                best_val_acc_p3 = val_acc
+                best_state_p3 = copy.deepcopy(self.model.state_dict())
                 patience_counter = 0
             else:
                 patience_counter += 1
                 if patience_counter >= early_stopping_patience:
-                    print(f"Early stopping at epoch {global_epoch}")
+                    print(f"  ⚡ Early Stopping Phase 3 à l'epoch {epoch+1}")
                     break
+
+        # Recharger les meilleurs poids de Phase 3
+        self.model.load_state_dict(best_state_p3)
+        print(f"  ✓ Meilleurs poids Phase 3 rechargés (val_acc={best_val_acc_p3:.4f})")
+
+        # XGBoost: fit l'arbre AVANT le Crash Test Phase 3
+        if is_xgboost:
+            print("\n  🌲 Fitting XGBoost sur features LSTM extraites (avant Crash Test P3)...")
+            self.model.fit_xgboost(train_loader, self.device)
 
         # Sauvegarder checkpoint Phase 3
         if save_path:
             checkpoint_path = save_path / "checkpoint_phase3.pt"
-            torch.save(
-                {
-                    "epoch": epochs,
-                    "model_state_dict": self.model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "best_val_acc": best_val_acc,
-                    "history": self.history,
-                    "phase": 3,
-                },
-                checkpoint_path,
-            )
-            phase_checkpoints[3] = str(checkpoint_path)
-            print(f"\n[CHECKPOINT] Phase 3 sauvegardée: {checkpoint_path}")
+            torch.save({
+                "model_state_dict": best_state_p3,
+                "optimizer_state_dict": optimizer.state_dict(),
+                "best_val_acc": best_val_acc_p3,
+                "phase": 3,
+            }, checkpoint_path)
+            print(f"  💾 Checkpoint P3: {checkpoint_path}")
+
+        # Crash Test Phase 3 (Final)
+        crash_p3 = self._crash_test(
+            3, test_loader, criterion,
+            feature_attack, sequence_attack, X_test, y_test, batch_size, num_classes
+        )
+        all_crash_results["phase_3"] = crash_p3
 
         # Sauvegarder modèle final
         if save_path:
             final_path = save_path / "best_model.pt"
-            torch.save(
-                {
-                    "epoch": epochs,
-                    "model_state_dict": self.model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "best_val_acc": best_val_acc,
-                    "history": self.history,
-                    "phases": {"phase1": phase1_epochs, "phase2": phase2_epochs, "phase3": phase3_epochs},
+            torch.save({
+                "model_state_dict": self.model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "best_val_acc": best_val_acc_p3,
+                "history": self.history,
+                "phases": {
+                    "phase1_epochs": phase1_epochs,
+                    "phase2_epochs": phase2_epochs,
+                    "phase3_epochs": phase3_epochs,
                 },
-                final_path,
-            )
+            }, final_path)
 
-        # Évaluer tous les checkpoints à la fin
-        return self._evaluate_all_checkpoints(
-            phase_checkpoints, test_loader, criterion,
-            feature_attack, sequence_attack, X_test, y_test, batch_size
-        )
+        # ─────────────────────────────────────────────────
+        # RAPPORT COMPARATIF P1 vs P2 vs P3
+        # ─────────────────────────────────────────────────
+        self._print_comparative_summary(all_crash_results)
 
-    def _evaluate_all_checkpoints(
-        self,
-        phase_checkpoints: Dict[int, str],
-        test_loader: DataLoader,
-        criterion: nn.Module,
-        feature_attack: Optional[FeatureLevelAttack],
-        sequence_attack: Optional[SequenceLevelAttack],
-        X_test: Optional[np.ndarray],
-        y_test: Optional[np.ndarray],
-        batch_size: int,
-    ) -> Dict:
-        """Évalue tous les checkpoints de phase sur les métriques de test."""
-        print(f"\n{'='*70}")
-        print("ÉVALUATION DE TOUS LES CHECKPOINTS DE PHASE")
-        print(f"{'='*70}\n")
+        self.history["phase_checkpoints_evaluation"] = all_crash_results
 
-        all_phase_results = {}
-
-        for phase_num, checkpoint_path in sorted(phase_checkpoints.items()):
-            print(f"\n{'-'*60}")
-            print(f"ÉVALUATION CHECKPOINT PHASE {phase_num}")
-            print(f"Checkpoint: {checkpoint_path}")
-            print(f"{'-'*60}")
-
-            # Charger le checkpoint
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
-            self.model.load_state_dict(checkpoint["model_state_dict"])
-            self.model.eval()
-
-            phase_results = {"phase": phase_num, "checkpoint": checkpoint_path}
-
-            # Test sur données clean
-            test_loss, test_acc = self.evaluate(test_loader, criterion)
-            phase_results["clean"] = {"loss": test_loss, "accuracy": test_acc}
-            print(f"  Clean Test - Loss: {test_loss:.4f}, Acc: {test_acc:.4f}")
-
-            # Test robustesse si attaques disponibles
-            if feature_attack is not None and X_test is not None and y_test is not None:
-                # Feature-level attack
-                print("  Évaluation robustesse (Feature-level)...")
-                n_eval = min(1000, len(X_test))
-                eval_indices = np.random.choice(len(X_test), n_eval, replace=False)
-                X_eval = X_test[eval_indices].copy()
-                y_eval = y_test[eval_indices].copy()
-
-                y_eval_expanded = np.repeat(y_eval, X_eval.shape[1])
-                X_adv_feature = feature_attack.generate_batch(
-                    X_eval.reshape(-1, X_eval.shape[-1]), y_eval_expanded, verbose=False
-                ).reshape(X_eval.shape)
-
-                eval_dataset = IoTSequenceDataset(X_adv_feature, y_eval)
-                eval_loader = DataLoader(eval_dataset, batch_size=batch_size)
-                loss_f, acc_f = self.evaluate(eval_loader, criterion)
-                phase_results["feature_attack"] = {"loss": loss_f, "accuracy": acc_f}
-                print(f"    Feature Attack - Loss: {loss_f:.4f}, Acc: {acc_f:.4f}")
-
-                del X_adv_feature, eval_dataset, eval_loader
-                gc.collect()
-
-            if sequence_attack is not None and X_test is not None and y_test is not None:
-                # Sequence-level PGD
-                print("  Évaluation robustesse (Sequence PGD)...")
-                n_eval = min(1000, len(X_test))
-                eval_indices = np.random.choice(len(X_test), n_eval, replace=False)
-                X_eval = X_test[eval_indices].copy()
-                y_eval = y_test[eval_indices].copy()
-
-                X_adv_pgd = sequence_attack.generate_batch(X_eval, y_eval, method="pgd", verbose=False)
-                eval_dataset = IoTSequenceDataset(X_adv_pgd, y_eval)
-                eval_loader = DataLoader(eval_dataset, batch_size=batch_size)
-                loss_p, acc_p = self.evaluate(eval_loader, criterion)
-                phase_results["sequence_pgd"] = {"loss": loss_p, "accuracy": acc_p}
-                print(f"    Sequence PGD - Loss: {loss_p:.4f}, Acc: {acc_p:.4f}")
-
-                del X_adv_pgd, eval_dataset, eval_loader
-                gc.collect()
-
-                # Sequence-level FGSM
-                print("  Évaluation robustesse (Sequence FGSM)...")
-                X_adv_fgsm = sequence_attack.generate_batch(X_eval, y_eval, method="fgsm", verbose=False)
-                eval_dataset = IoTSequenceDataset(X_adv_fgsm, y_eval)
-                eval_loader = DataLoader(eval_dataset, batch_size=batch_size)
-                loss_fgsm, acc_fgsm = self.evaluate(eval_loader, criterion)
-                phase_results["sequence_fgsm"] = {"loss": loss_fgsm, "accuracy": acc_fgsm}
-                print(f"    Sequence FGSM - Loss: {loss_fgsm:.4f}, Acc: {acc_fgsm:.4f}")
-
-                del X_adv_fgsm, eval_dataset, eval_loader, X_eval, y_eval
-                gc.collect()
-
-            all_phase_results[f"phase_{phase_num}"] = phase_results
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-        # Afficher le résumé comparatif
-        print(f"\n{'='*70}")
-        print("RÉSUMÉ COMPARATIF DES PHASES")
-        print(f"{'='*70}")
-        print(f"{'Phase':<10} {'Clean Acc':<12} {'Feature':<12} {'PGD':<12} {'FGSM':<12}")
-        print(f"{'-'*70}")
-        
-        for phase_key, results in sorted(all_phase_results.items()):
-            phase_num = results["phase"]
-            clean_acc = results.get("clean", {}).get("accuracy", 0)
-            feature_acc = results.get("feature_attack", {}).get("accuracy", 0)
-            pgd_acc = results.get("sequence_pgd", {}).get("accuracy", 0)
-            fgsm_acc = results.get("sequence_fgsm", {}).get("accuracy", 0)
-            
-            print(f"{f'Phase {phase_num}':<10} {clean_acc:<12.4f} {feature_acc:<12.4f} {pgd_acc:<12.4f} {fgsm_acc:<12.4f}")
-
-        print(f"{'='*70}\n")
-
-        # Stocker les résultats dans l'historique
-        self.history["phase_checkpoints_evaluation"] = all_phase_results
+        if save_path:
+            self._save_phase_report(all_crash_results, save_path)
 
         return self.history
+
+    def _print_comparative_summary(self, all_crash_results: Dict):
+        """Affiche le résumé comparatif avec toutes les métriques."""
+        print(f"\n{'='*90}")
+        print("  RAPPORT COMPARATIF — Curriculum Learning")
+        print(f"{'='*90}")
+        header = (f"{'Phase':<8} {'Loader':<15} {'Loss':<8} {'Acc':<8} "
+                  f"{'Prec':<8} {'Recall':<8} {'F1':<8} {'RR':<8}")
+        print(header)
+        print(f"{'-'*90}")
+
+        for phase_key in sorted(all_crash_results.keys()):
+            results = all_crash_results[phase_key]
+            phase_num = results["phase"]
+            for loader_name in ["clean", "feature_attack", "sequence_pgd", "sequence_fgsm"]:
+                if loader_name in results:
+                    m = results[loader_name]
+                    rr = m.get("robustness_ratio", 1.0) if loader_name != "clean" else 1.0
+                    print(f"  P{phase_num:<5} {loader_name:<15} "
+                          f"{m['loss']:<8.4f} {m['accuracy']:<8.4f} "
+                          f"{m.get('precision', 0):<8.4f} {m.get('recall', 0):<8.4f} "
+                          f"{m.get('f1_score', 0):<8.4f} {rr:<8.4f}")
+            print(f"{'-'*90}")
+
+        print(f"{'='*90}\n")
+
+    def _save_phase_report(self, all_crash_results: Dict, save_path: Path):
+        """Sauvegarde le rapport JSON récapitulatif comparant P1, P2 et P3."""
+        report = {
+            "model": self.model_name,
+            "description": "Curriculum Learning — Rapport comparatif par phase",
+            "phases": all_crash_results,
+        }
+        report_path = save_path / "curriculum_report.json"
+        with open(report_path, "w") as f:
+            json.dump(report, f, indent=2)
+        print(f"  📄 Rapport JSON sauvegardé: {report_path}")
 
     def fit(
         self,
@@ -801,18 +922,18 @@ class AdversarialTrainer:
         early_stopping_patience: int = 10,
         test_loader: Optional[DataLoader] = None,
     ) -> Dict:
-        """Full training loop with phased adversarial training and intermediate tests.
+        """Curriculum Learning avec Early Stopping par Phase (version légère).
         
         Phases:
         1. Phase 1 (60% epochs): Clean training only -> TEST
         2. Phase 2 (20% epochs): Feature-level adversarial training -> TEST
         3. Phase 3 (20% epochs): Sequence-level adversarial training -> TEST
         
-        Args:
-            hybrid_split: Dict with 'clean', 'feature', 'sequence' ratios
-                         Default: {'clean': 0.6, 'feature': 0.2, 'sequence': 0.2}
-            test_loader: Test dataloader for intermediate evaluations
+        Chaque phase dispose de son propre Early Stopping avec patience réinitialisée
+        et meilleurs poids rechargés en fin de phase.
         """
+        import copy
+
         optimizer = torch.optim.AdamW(
             self.model.parameters(), lr=lr, weight_decay=weight_decay
         )
@@ -821,27 +942,28 @@ class AdversarialTrainer:
             optimizer, mode="min", patience=3, factor=0.5
         )
 
-        best_val_acc = 0
-        patience_counter = 0
-
         # Calculate phase epochs (60% - 20% - 20%)
-        phase1_epochs = int(epochs * 0.6)
-        phase2_epochs = int(epochs * 0.2)
-        phase3_epochs = epochs - phase1_epochs - phase2_epochs
+        phase1_epochs = max(1, int(epochs * 0.6))
+        phase2_epochs = max(1, int(epochs * 0.2))
+        phase3_epochs = max(1, epochs - phase1_epochs - phase2_epochs)
 
         print(f"\n{'='*60}")
-        print("PHASED ADVERSARIAL TRAINING PLAN")
+        print("CURRICULUM LEARNING — Early Stopping par Phase")
         print(f"{'='*60}")
-        print(f"Phase 1 (Clean Training):        Epochs 1-{phase1_epochs} ({phase1_epochs} epochs)")
+        print(f"Phase 1 (Clean Training):        max {phase1_epochs} epochs  |  patience={early_stopping_patience}")
         if adv_generator and adv_ratio > 0:
-            print(f"Phase 2 (Feature-Level Attack):  Epochs {phase1_epochs+1}-{phase1_epochs+phase2_epochs} ({phase2_epochs} epochs)")
-            print(f"Phase 3 (Sequence-Level Attack): Epochs {phase1_epochs+phase2_epochs+1}-{epochs} ({phase3_epochs} epochs)")
+            print(f"Phase 2 (Feature-Level Attack):  max {phase2_epochs} epochs  |  patience={early_stopping_patience}")
+            print(f"Phase 3 (Sequence-Level Attack): max {phase3_epochs} epochs  |  patience={early_stopping_patience}")
         print(f"{'='*60}\n")
 
-        # Phase 1: Clean Training (60%)
+        # ─── Phase 1: Clean Training ─────────────────────────────
         print(f"\n{'='*60}")
-        print("PHASE 1: CLEAN TRAINING (60%)")
+        print("PHASE 1: ENTRAÎNEMENT NORMAL (Benign First)")
         print(f"{'='*60}\n")
+
+        best_val_acc_p1 = 0.0
+        best_state_p1 = copy.deepcopy(self.model.state_dict())
+        patience_counter = 0
         
         for epoch in range(phase1_epochs):
             train_loss, train_acc = self.train_epoch(
@@ -855,40 +977,46 @@ class AdversarialTrainer:
             self.history["val_loss"].append(val_loss)
             self.history["val_acc"].append(val_acc)
 
-            print(f"Phase 1 - Epoch {epoch + 1}/{phase1_epochs} (Global: {epoch + 1}/{epochs})")
-            print(f"  Train - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
-            print(f"  Val   - Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
+            print(f"  P1 Epoch {epoch+1}/{phase1_epochs}  "
+                  f"Train[loss={train_loss:.4f} acc={train_acc:.4f}]  "
+                  f"Val[loss={val_loss:.4f} acc={val_acc:.4f}]")
 
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
+            if val_acc > best_val_acc_p1:
+                best_val_acc_p1 = val_acc
+                best_state_p1 = copy.deepcopy(self.model.state_dict())
                 patience_counter = 0
                 if save_path:
-                    torch.save(
-                        {
-                            "epoch": epoch,
-                            "model_state_dict": self.model.state_dict(),
-                            "optimizer_state_dict": optimizer.state_dict(),
-                            "val_acc": val_acc,
-                            "history": self.history,
-                            "phase": 1,
-                        },
-                        save_path / "best_model_phase1.pt",
-                    )
+                    torch.save({
+                        "model_state_dict": self.model.state_dict(),
+                        "val_acc": val_acc,
+                        "phase": 1,
+                    }, save_path / "best_model_phase1.pt")
             else:
                 patience_counter += 1
+                if patience_counter >= early_stopping_patience:
+                    print(f"  ⚡ Early Stopping Phase 1 à l'epoch {epoch+1}")
+                    break
+
+        # Recharger meilleurs poids Phase 1
+        self.model.load_state_dict(best_state_p1)
+        print(f"  ✓ Meilleurs poids Phase 1 rechargés (val_acc={best_val_acc_p1:.4f})")
 
         # Test after Phase 1
         if test_loader:
-            self.test_model(test_loader, criterion, "TEST APRES PHASE 1 (60% Clean)")
+            self.test_model(test_loader, criterion, "TEST APRES PHASE 1 (Clean)")
 
         # Early exit if no adversarial training
         if adv_generator is None or adv_ratio <= 0:
             return self.history
 
-        # Phase 2: Feature-Level Adversarial Training (20%)
+        # ─── Phase 2: Feature-Level Adversarial Training ─────────
         print(f"\n{'='*60}")
-        print("PHASE 2: FEATURE-LEVEL ADVERSARIAL TRAINING (20%)")
+        print("PHASE 2: ATTAQUES FEATURE-LEVEL (Perturbations discrètes)")
         print(f"{'='*60}\n")
+
+        best_val_acc_p2 = 0.0
+        best_state_p2 = copy.deepcopy(self.model.state_dict())
+        patience_counter = 0  # RESET
         
         for epoch in range(phase2_epochs):
             global_epoch = phase1_epochs + epoch + 1
@@ -904,36 +1032,42 @@ class AdversarialTrainer:
             self.history["val_loss"].append(val_loss)
             self.history["val_acc"].append(val_acc)
 
-            print(f"Phase 2 - Epoch {epoch + 1}/{phase2_epochs} (Global: {global_epoch}/{epochs})")
-            print(f"  Train - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
-            print(f"  Val   - Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
+            print(f"  P2 Epoch {epoch+1}/{phase2_epochs} (Global: {global_epoch}/{epochs})  "
+                  f"Train[loss={train_loss:.4f} acc={train_acc:.4f}]  "
+                  f"Val[loss={val_loss:.4f} acc={val_acc:.4f}]")
 
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
+            if val_acc > best_val_acc_p2:
+                best_val_acc_p2 = val_acc
+                best_state_p2 = copy.deepcopy(self.model.state_dict())
                 patience_counter = 0
                 if save_path:
-                    torch.save(
-                        {
-                            "epoch": global_epoch - 1,
-                            "model_state_dict": self.model.state_dict(),
-                            "optimizer_state_dict": optimizer.state_dict(),
-                            "val_acc": val_acc,
-                            "history": self.history,
-                            "phase": 2,
-                        },
-                        save_path / "best_model_phase2.pt",
-                    )
+                    torch.save({
+                        "model_state_dict": self.model.state_dict(),
+                        "val_acc": val_acc,
+                        "phase": 2,
+                    }, save_path / "best_model_phase2.pt")
             else:
                 patience_counter += 1
+                if patience_counter >= early_stopping_patience:
+                    print(f"  ⚡ Early Stopping Phase 2 à l'epoch {epoch+1}")
+                    break
+
+        # Recharger meilleurs poids Phase 2
+        self.model.load_state_dict(best_state_p2)
+        print(f"  ✓ Meilleurs poids Phase 2 rechargés (val_acc={best_val_acc_p2:.4f})")
 
         # Test after Phase 2
         if test_loader:
-            self.test_model(test_loader, criterion, "TEST APRES PHASE 2 (20% Feature-Level)")
+            self.test_model(test_loader, criterion, "TEST APRES PHASE 2 (Feature-Level)")
 
-        # Phase 3: Sequence-Level Adversarial Training (20%)
+        # ─── Phase 3: Sequence-Level Adversarial Training ────────
         print(f"\n{'='*60}")
-        print("PHASE 3: SEQUENCE-LEVEL ADVERSARIAL TRAINING (20%)")
+        print("PHASE 3: ATTAQUES SÉQUENTIELLES (PGD / FGSM — boîte blanche)")
         print(f"{'='*60}\n")
+
+        best_val_acc_p3 = 0.0
+        best_state_p3 = copy.deepcopy(self.model.state_dict())
+        patience_counter = 0  # RESET
         
         for epoch in range(phase3_epochs):
             global_epoch = phase1_epochs + phase2_epochs + epoch + 1
@@ -949,49 +1083,47 @@ class AdversarialTrainer:
             self.history["val_loss"].append(val_loss)
             self.history["val_acc"].append(val_acc)
 
-            print(f"Phase 3 - Epoch {epoch + 1}/{phase3_epochs} (Global: {global_epoch}/{epochs})")
-            print(f"  Train - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
-            print(f"  Val   - Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
+            print(f"  P3 Epoch {epoch+1}/{phase3_epochs} (Global: {global_epoch}/{epochs})  "
+                  f"Train[loss={train_loss:.4f} acc={train_acc:.4f}]  "
+                  f"Val[loss={val_loss:.4f} acc={val_acc:.4f}]")
 
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
+            if val_acc > best_val_acc_p3:
+                best_val_acc_p3 = val_acc
+                best_state_p3 = copy.deepcopy(self.model.state_dict())
                 patience_counter = 0
                 if save_path:
-                    torch.save(
-                        {
-                            "epoch": global_epoch - 1,
-                            "model_state_dict": self.model.state_dict(),
-                            "optimizer_state_dict": optimizer.state_dict(),
-                            "val_acc": val_acc,
-                            "history": self.history,
-                            "phase": 3,
-                        },
-                        save_path / "best_model_phase3.pt",
-                    )
+                    torch.save({
+                        "model_state_dict": self.model.state_dict(),
+                        "val_acc": val_acc,
+                        "phase": 3,
+                    }, save_path / "best_model_phase3.pt")
             else:
                 patience_counter += 1
                 if patience_counter >= early_stopping_patience:
-                    print(f"Early stopping at epoch {global_epoch}")
+                    print(f"  ⚡ Early Stopping Phase 3 à l'epoch {epoch+1}")
                     break
+
+        # Recharger meilleurs poids Phase 3
+        self.model.load_state_dict(best_state_p3)
+        print(f"  ✓ Meilleurs poids Phase 3 rechargés (val_acc={best_val_acc_p3:.4f})")
 
         # Test after Phase 3 (Final)
         if test_loader:
-            self.test_model(test_loader, criterion, "TEST FINAL APRES PHASE 3 (20% Sequence-Level)")
+            self.test_model(test_loader, criterion, "TEST FINAL APRES PHASE 3 (Sequence-Level)")
 
         # Save final best model
         if save_path:
-            final_epoch = phase1_epochs + phase2_epochs + phase3_epochs
-            torch.save(
-                {
-                    "epoch": final_epoch,
-                    "model_state_dict": self.model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "best_val_acc": best_val_acc,
-                    "history": self.history,
-                    "phases": {"phase1": phase1_epochs, "phase2": phase2_epochs, "phase3": phase3_epochs},
+            torch.save({
+                "model_state_dict": self.model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "best_val_acc": best_val_acc_p3,
+                "history": self.history,
+                "phases": {
+                    "phase1_epochs": phase1_epochs,
+                    "phase2_epochs": phase2_epochs,
+                    "phase3_epochs": phase3_epochs,
                 },
-                save_path / "best_model.pt",
-            )
+            }, save_path / "best_model.pt")
 
         return self.history
 
@@ -1028,6 +1160,8 @@ def create_model(
         )
     elif model_type == "cnn_lstm":
         model = CNNLSTMClassifier(input_size, num_classes)
+    elif model_type == "xgboost_lstm":
+        model = XGBoostLSTMClassifier(input_size, num_classes, LSTM_CONFIG)
     elif model_type == "cnn":
         model = CNNClassifier(input_size, num_classes)
     else:
@@ -1137,6 +1271,7 @@ def run_experiment_with_phase_checkpoints(
         X_test=X_test,
         y_test=y_test,
         batch_size=batch_size,
+        is_xgboost=(model_type == "xgboost_lstm"),
     )
 
     # Récupérer les résultats d'évaluation des phases
@@ -1291,6 +1426,12 @@ def run_experiment(
         save_path=save_path if save_results else None,
         test_loader=test_loader,
     )
+
+    if model_type == "xgboost_lstm":
+        print("\n" + "=" * 60)
+        print("FITTING XGBOOST ON EXTRACTED LSTM FEATURES")
+        print("=" * 60)
+        model.fit_xgboost(train_loader, device)
 
     del train_loader, val_loader
     gc.collect()
@@ -1506,7 +1647,7 @@ def main():
         "--model",
         type=str,
         default="lstm",
-        choices=["lstm", "transformer", "cnn_lstm", "cnn"],
+        choices=["lstm", "transformer", "cnn_lstm", "cnn", "xgboost_lstm"],
         help="Model architecture",
     )
     parser.add_argument("--seq_length", type=int, default=10, help="Sequence length")
@@ -1560,7 +1701,7 @@ def main():
     parser.add_argument(
         "--models",
         type=str,
-        default="lstm,transformer,cnn_lstm",
+        default="lstm,transformer,cnn_lstm,xgboost_lstm",
         help="Comma-separated model types for comparison",
     )
     parser.add_argument(
@@ -1594,6 +1735,11 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Enforce sequence length of 25 for transformer if it's currently default
+    if args.model == "transformer" and args.seq_length == 10:
+        print("Transformer model selected, defaulting sequence length to 25.")
+        args.seq_length = 25
 
     # Validate hybrid split ratios
     hybrid_split = {

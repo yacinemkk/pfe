@@ -367,24 +367,21 @@ class JsonIoTDataProcessor:
 
         return df
 
+    TARGET_CLASSES = [
+        "Qrio hub", "Philips Hue lightbulb", "Planex UCA01A camera",
+        "JVC Kenwood camera", "Planex pantilt camera", "Google Home",
+        "Apple Homepod", "Sony Bravia TV", "Wansview camera", "Qwatch camera",
+        "Fredi camera", "Planex outdoor camera", "PowerElec WIFI plug",
+        "Line Clova speaker", "Sony smart speaker", "Amazon Echo", "Amazon Echo Show"
+    ]
+
     def filter_classes(self, df: pd.DataFrame,
                         min_samples: int = None) -> pd.DataFrame:
-        """Filter underrepresented classes."""
-        if min_samples is None:
-            min_samples = MIN_SAMPLES_PER_CLASS
-
-        class_counts = df["label"].value_counts()
-        valid_classes = class_counts[class_counts >= min_samples].index.tolist()
-        removed_classes = class_counts[class_counts < min_samples].index.tolist()
-
-        if removed_classes:
-            print(f"\nRemoving {len(removed_classes)} underrepresented classes "
-                  f"(< {min_samples} samples):")
-            for cls in removed_classes:
-                print(f"  - {cls}: {class_counts[cls]} samples")
-
-        df = df[df["label"].isin(valid_classes)].copy()
-        print(f"\nKept {len(valid_classes)} classes, {len(df):,} samples")
+        """Filter to only keep the 17 target classes specified for the project."""
+        initial_samples = len(df)
+        df = df[df["label"].isin(self.TARGET_CLASSES)].copy()
+        print(f"\nKept {df['label'].nunique()} target classes, {len(df):,} samples "
+              f"(filtered out {initial_samples - len(df):,} samples)")
         return df
 
     def prepare_features(self, df: pd.DataFrame):
