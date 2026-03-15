@@ -1,104 +1,34 @@
-import json
-
-notebook = {
-  "cells": [],
-  "metadata": {
-    "colab": {
-      "provenance": []
-    },
-    "kernelspec": {
-      "display_name": "Python 3",
-      "name": "python3"
-    },
-    "language_info": {
-      "name": "python"
-    }
-  },
-  "nbformat": 4,
-  "nbformat_minor": 0
-}
-
-def add_markdown(text):
-    notebook["cells"].append({
-        "cell_type": "markdown",
-        "metadata": {},
-        "source": [line + "\n" for line in text.split("\n")]
-    })
-
-def add_code(text):
-    notebook["cells"].append({
-        "cell_type": "code",
-        "execution_count": None,
-        "metadata": {},
-        "outputs": [],
-        "source": [line + "\n" for line in text.split("\n")]
-    })
-
-md_intro = """# Crash Test exhaustif par Phase pour les modèles IoT Adversarial
-Ce notebook permet d'évaluer les performances (Accuracy, Recall, Precision, F1-Score) sur:
-1. Données **Normales**
-2. Données **Adversariales Feature-Level**
-3. Données **Adversariales Sequence-Level (FGSM)**
-4. Données **Adversariales Sequence-Level (PGD)**
-
-L'évaluation se fait pour **chaque phase d'entraînement** des modèles enregistrés, permettant d'observer l'acquisition de la robustesse.
-Assurez-vous d'avoir téléchargé votre dossier de projet dans votre Google Drive."""
-add_markdown(md_intro)
-
-code_mount = """from google.colab import drive
-drive.mount('/content/drive')
-
+import sys
 import os
-# Clonage ou mise à jour du repository GitHub
-if os.path.exists('/content/pfe'):
-    !cd /content/pfe && git pull
-else:
-    !git clone https://github.com/yacinemkk/pfe.git /content/pfe
-
-%cd /content/pfe"""
-add_code(code_mount)
-
-code_path = """import sys
 from pathlib import Path
-
-# Ajouter le repo à sys.path pour les imports 'src'
-sys.path.insert(0, '/content/pfe')
-print("Projet PFE ajouté à sys.path")
-
-# Remplacez ce chemin par le chemin réel vers le dossier PFE dans votre Drive
-DRIVE_PFE_DIR = Path('/content/drive/MyDrive/PFE')
-
-# Models directory path
-MODELS_DIR = DRIVE_PFE_DIR / 'results(2)'
-DATA_DIR = DRIVE_PFE_DIR / 'IPFIX_Records'"""
-add_code(code_path)
-
-code_imports = """import torch
+import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 import numpy as np
 import pickle
 import json
 import matplotlib.pyplot as plt
-import seaborn as sns
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-from tqdm.notebook import tqdm
-import gc
 
-# Import modules from your project
+# Ajouter le repo à sys.path
+PROJECT_ROOT = Path('/home/pc/Desktop/pfe')
+sys.path.insert(0, str(PROJECT_ROOT))
+print(f"Projet PFE ajouté à sys.path: {PROJECT_ROOT}")
+
 from src.models.lstm import IoTSequenceDataset
 from src.models import LSTMClassifier, TransformerClassifier, CNNLSTMClassifier, CNNClassifier, XGBoostLSTMClassifier
 from src.adversarial.attacks import FeatureLevelAttack, SequenceLevelAttack, HybridAdversarialAttack
-from train_adversarial import load_and_preprocess_data"""
-add_code(code_imports)
+from train_adversarial import load_and_preprocess_data
 
-md_utils = """## Fonctions Utilitaires
-*   `create_model`: Instancier le modèle
-*   `evaluate_model`: Calcule Accuracy, Précision, Rappel et F1 macro
-*   `plot_phase_metrics`: Dessine les graphiques demandés par phase pour comparer les 4 types de données"""
-add_markdown(md_utils)
+# Dossiers locaux
+MODELS_DIR = PROJECT_ROOT / 'results(2)' / 'results' / 'models'
+# Le dossier "20-01-31(1)" où sont vos 3 fichiers json
+DATA_DIR = PROJECT_ROOT / 'data' / 'pcap' / 'IPFIX Records (UNSW IoT Analytics)' / '20-01-31(1)'
+OUTPUT_DIR = PROJECT_ROOT / 'results(2)' / 'crash_tests_plots'
 
-code_utils = """device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Device: {device}")
 
 def create_model(model_type, input_size, num_classes, seq_length):
@@ -106,9 +36,7 @@ def create_model(model_type, input_size, num_classes, seq_length):
     if model_type == 'lstm':
         model = LSTMClassifier(input_size, num_classes, LSTM_CONFIG)
     elif model_type == 'transformer':
-        model = TransformerClassifier(
-            input_size, num_classes, seq_length, TRANSFORMER_CONFIG
-        )
+        model = TransformerClassifier(input_size, num_classes, seq_length, TRANSFORMER_CONFIG)
     elif model_type == 'cnn_lstm':
         model = CNNLSTMClassifier(input_size, num_classes)
     elif model_type == 'xgboost_lstm':
@@ -139,7 +67,7 @@ def evaluate_model(model, dataloader):
             all_labels.extend(y_batch.cpu().numpy())
     return get_metrics(all_labels, all_preds)
 
-def plot_phase_metrics(metrics_dict, model_name):
+def plot_phase_metrics(metrics_dict, model_name, save_path):
     phases = sorted(metrics_dict.keys(), key=lambda x: int(x.split(' ')[1]))
     metric_names = ['accuracy', 'precision', 'recall', 'f1']
     
@@ -148,7 +76,7 @@ def plot_phase_metrics(metrics_dict, model_name):
     axes = axes.flatten()
     
     x = np.arange(len(phases))
-    width = 0.2  # On a 4 barres, on réduit la largeur
+    width = 0.2
     
     colors = ['royalblue', 'orange', 'mediumseagreen', 'crimson']
     
@@ -174,7 +102,6 @@ def plot_phase_metrics(metrics_dict, model_name):
         if i == 0:
             ax.legend(fontsize=11)
             
-        # Affichage des valeurs sur les barres (rotation pour gain de place)
         for rects in [rects1, rects2, rects3, rects4]:
             for rect in rects:
                 height = rect.get_height()
@@ -184,19 +111,15 @@ def plot_phase_metrics(metrics_dict, model_name):
                             ha='center', va='bottom', fontsize=8, rotation=90)
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plt.show()"""
-add_code(code_utils)
+    plt.savefig(save_path / f"metrics_évolution_{model_name}.png", dpi=300)
+    plt.close()
+    print(f"Plot enregistré: {save_path / f'metrics_évolution_{model_name}.png'}")
 
-md_eval = """## Evaluation Exhaustive des Modèles
-Ce block va scanner automatiquement le modèle sélectionné, créer les attaques Feature-Level, FGSM et PGD sur les données de test, puis évaluer les metrics pour chaque phase de ce modèle."""
-add_markdown(md_eval)
-
-code_eval = """def run_crash_test_for_all_models():
-    if not isinstance(MODELS_DIR, Path) or not MODELS_DIR.exists():
+def run_local_crash_test():
+    if not MODELS_DIR.exists():
         print(f"Modèles introuvables au chemin : {MODELS_DIR}")
         return
         
-    # On va iterer par dossier modele trouvé
     for model_folder in sorted(os.listdir(MODELS_DIR)):
         model_path = MODELS_DIR / model_folder
         if not model_path.is_dir():
@@ -223,19 +146,16 @@ code_eval = """def run_crash_test_for_all_models():
             input_size = res_data["input_size"]
             num_classes = res_data["num_classes"]
             
-        # Identifier les phases
         phase_files = [f for f in os.listdir(model_path) if f.startswith("best_model_phase") and f.endswith(".pt")]
         if not phase_files:
             print(f"Aucun checkpoint de phase trouvé pour {model_folder}")
             continue
             
-        # Tri correct : Phase 1, Phase 2, ...
         phase_files.sort(key=lambda x: int(x.split("phase")[1].split(".pt")[0]))
             
-        # Chargement des donnees correspondantes
-        print(f"Chargement des données pour seq_length={seq_length}...")
+        print(f"Chargement des données depuis {DATA_DIR}...")
         try:
-            # On charge depuis pipeline json comme l'ancien script
+            # Note: on force l'utilisation exclusive du data_dir local ("20-01-31(1)")
             data = load_and_preprocess_data(seq_length, max_records=20000, pipeline_mode="json", data_dir=DATA_DIR)
             X_test, y_test = data[2], data[5]
             label_encoder, n_continuous_features = data[8], data[9]
@@ -243,8 +163,7 @@ code_eval = """def run_crash_test_for_all_models():
             print(f"Erreur data: {e}")
             continue
             
-        # Selection de donnees de test aleatoires pour le crash test (~2000 examples max ou ce qui existe)
-        n_eval = min(2000, len(X_test))
+        n_eval = min(5000, len(X_test))
         eval_indices = np.random.choice(len(X_test), n_eval, replace=False)
         X_eval = X_test[eval_indices]
         y_eval = y_test[eval_indices]
@@ -260,7 +179,7 @@ code_eval = """def run_crash_test_for_all_models():
         eval_dataset = IoTSequenceDataset(X_eval, y_eval)
         eval_loader = DataLoader(eval_dataset, batch_size=128, shuffle=False)
         
-        print("Préparation des attaques adversariales (Feature, FGSM, PGD)...")
+        print("Préparation des attaques...")
         tmp_model = create_model(model_type, input_size, num_classes, seq_length)
         final_model_path = model_path / "best_model.pt"
         if final_model_path.exists():
@@ -272,13 +191,11 @@ code_eval = """def run_crash_test_for_all_models():
             if 'model_state_dict' in chk: tmp_model.load_state_dict(chk['model_state_dict'])
             else: tmp_model.load_state_dict(chk)
             
-        # Setup Sequence-Level Attack
         sequence_attack = SequenceLevelAttack(
             tmp_model, device, epsilon=0.1, alpha=0.01, num_steps=10, 
             n_continuous_features=n_continuous_features
         )
         
-        # Setup Feature-Level Attack
         X_eval_flat = X_eval.reshape(-1, X_eval.shape[-1])
         y_eval_expanded = np.repeat(y_eval, X_eval.shape[1])
         feature_attack = FeatureLevelAttack(
@@ -286,18 +203,16 @@ code_eval = """def run_crash_test_for_all_models():
             n_continuous_features=n_continuous_features
         )
         
-        # Generation
-        print("  -> Génération Feature-Level...")
+        print(" -> Génération Feature-Level...")
         X_adv_feature_flat = feature_attack.generate_batch(X_eval_flat, y_eval_expanded, verbose=False)
         X_adv_feature = X_adv_feature_flat.reshape(X_eval.shape)
         
-        print("  -> Génération Sequence-Level (FGSM)...")
+        print(" -> Génération Sequence-Level (FGSM)...")
         X_adv_fgsm = sequence_attack.generate_batch(X_eval, y_eval, method="fgsm", verbose=False)
         
-        print("  -> Génération Sequence-Level (PGD)...")
+        print(" -> Génération Sequence-Level (PGD)...")
         X_adv_pgd = sequence_attack.generate_batch(X_eval, y_eval, method="pgd", verbose=False)
         
-        # Loaders
         adv_feat_dataset = IoTSequenceDataset(X_adv_feature, y_eval)
         adv_feat_loader = DataLoader(adv_feat_dataset, batch_size=128, shuffle=False)
         
@@ -320,7 +235,6 @@ code_eval = """def run_crash_test_for_all_models():
             else: model.load_state_dict(chk)
             model.eval()
             
-            # Normal Evaluation
             norm_metrics = evaluate_model(model, eval_loader)
             feat_metrics = evaluate_model(model, adv_feat_loader)
             fgsm_metrics = evaluate_model(model, adv_fgsm_loader)
@@ -339,16 +253,9 @@ code_eval = """def run_crash_test_for_all_models():
             }
             
             del model
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available(): torch.cuda.empty_cache()
             
-        # Draw Plot for the model showing metrics per phase
-        plot_phase_metrics(phase_metrics, model_folder)
+        plot_phase_metrics(phase_metrics, model_folder, OUTPUT_DIR)
 
-# Lancer la boucle de test pour tous les modèles
-run_crash_test_for_all_models()"""
-add_code(code_eval)
-
-save_path = '/home/pc/Desktop/pfe/CrashTest_Phases_Colab.ipynb'
-with open(save_path, "w", encoding="utf-8") as f:
-    json.dump(notebook, f, indent=2, ensure_ascii=False)
-print(f"Notebook Created at {save_path}!")
+if __name__ == "__main__":
+    run_local_crash_test()
