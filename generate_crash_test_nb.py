@@ -54,7 +54,7 @@ import os
 from pathlib import Path
 
 # Remplacez ce chemin par le chemin réel vers le dossier PFE dans votre Drive
-PROJECT_ROOT = '/content/drive/MyDrive/pfe'
+PROJECT_ROOT = '/content/drive/MyDrive/PFE'
 sys.path.insert(0, PROJECT_ROOT)
 print(f"Project root added to sys.path: {PROJECT_ROOT}")
 
