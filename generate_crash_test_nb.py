@@ -46,22 +46,31 @@ Assurez-vous d'avoir téléchargé votre dossier de projet dans votre Google Dri
 add_markdown(md_intro)
 
 code_mount = """from google.colab import drive
-drive.mount('/content/drive')"""
+drive.mount('/content/drive')
+
+import os
+# Clonage ou mise à jour du repository GitHub
+if os.path.exists('/content/pfe'):
+    !cd /content/pfe && git pull
+else:
+    !git clone https://github.com/yacinemkk/pfe.git /content/pfe
+
+%cd /content/pfe"""
 add_code(code_mount)
 
 code_path = """import sys
-import os
 from pathlib import Path
 
+# Ajouter le repo à sys.path pour les imports 'src'
+sys.path.insert(0, '/content/pfe')
+print("Projet PFE ajouté à sys.path")
+
 # Remplacez ce chemin par le chemin réel vers le dossier PFE dans votre Drive
-PROJECT_ROOT = '/content/drive/MyDrive/PFE'
-sys.path.insert(0, PROJECT_ROOT)
-print(f"Project root added to sys.path: {PROJECT_ROOT}")
+DRIVE_PFE_DIR = Path('/content/drive/MyDrive/PFE')
 
 # Models directory path
-# Adaptez ceci si votre chemin exact est différent
-MODELS_DIR = Path(PROJECT_ROOT) / 'results(2)' / 'results' / 'models'
-DATA_DIR = Path(PROJECT_ROOT) / 'data'"""
+MODELS_DIR = DRIVE_PFE_DIR / 'results(2)' / 'results' / 'models'
+DATA_DIR = DRIVE_PFE_DIR / 'IPFIX_Records'"""
 add_code(code_path)
 
 code_imports = """import torch
@@ -227,7 +236,7 @@ code_eval = """def run_crash_test_for_all_models():
         print(f"Chargement des données pour seq_length={seq_length}...")
         try:
             # On charge depuis pipeline json comme l'ancien script
-            data = load_and_preprocess_data(seq_length, max_records=20000, pipeline_mode="json")
+            data = load_and_preprocess_data(seq_length, max_records=20000, pipeline_mode="json", data_dir=DATA_DIR)
             X_test, y_test = data[2], data[5]
             label_encoder, n_continuous_features = data[8], data[9]
         except Exception as e:
