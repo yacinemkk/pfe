@@ -231,6 +231,10 @@ code_eval = """def run_crash_test_for_all_models():
             
         # Tri correct : Phase 1, Phase 2, ...
         phase_files.sort(key=lambda x: int(x.split("phase")[1].split(".pt")[0]))
+        
+        # Add the best_model.pt as the final phase
+        if (model_path / "best_model.pt").exists():
+            phase_files.append("best_model.pt")
             
         # Chargement des donnees correspondantes
         print(f"Chargement des données pour seq_length={seq_length}...")
@@ -310,8 +314,11 @@ code_eval = """def run_crash_test_for_all_models():
         phase_metrics = {}
         
         for p_file in phase_files:
-            phase_num = p_file.split("phase")[1].split(".pt")[0]
-            phase_name = f"Phase {phase_num}"
+            if p_file == "best_model.pt":
+                phase_name = f"Phase {len(phase_files)}"
+            else:
+                phase_num = p_file.split("phase")[1].split(".pt")[0]
+                phase_name = f"Phase {phase_num}"
             print(f"\\n--- Évaluation des métriques pour {phase_name} ---")
             
             model = create_model(model_type, input_size, num_classes, seq_length)
