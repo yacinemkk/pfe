@@ -69,7 +69,7 @@ print("Projet PFE ajouté à sys.path")
 DRIVE_PFE_DIR = Path('/content/drive/MyDrive/PFE')
 
 # Models directory path
-MODELS_DIR = DRIVE_PFE_DIR / 'results(2)' / 'results' / 'models'
+MODELS_DIR = DRIVE_PFE_DIR / 'results(2)'
 DATA_DIR = DRIVE_PFE_DIR / 'IPFIX_Records'"""
 add_code(code_path)
 
