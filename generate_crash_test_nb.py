@@ -86,7 +86,7 @@ from tqdm.notebook import tqdm
 import gc
 
 # Import modules from your project
-from src.data.dataset import IoTSequenceDataset
+from src.models.lstm import IoTSequenceDataset
 from src.models import LSTMClassifier, TransformerClassifier, CNNLSTMClassifier, CNNClassifier, XGBoostLSTMClassifier
 from src.adversarial.attacks import FeatureLevelAttack, SequenceLevelAttack, HybridAdversarialAttack
 from train_adversarial import load_and_preprocess_data"""
