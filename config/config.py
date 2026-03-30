@@ -80,7 +80,7 @@ WEIGHT_DECAY = 1e-4
 
 # docs/architectures §1: 64 hidden units per layer, 2 layers, BiLSTM → 128-dim embedding
 LSTM_CONFIG = {
-    "hidden_size": 64,          # 64 per layer → 128-dim embedding (BiLSTM)
+    "hidden_size": 64,  # 64 per layer → 128-dim embedding (BiLSTM)
     "num_layers": 2,
     "bidirectional": True,
     "dropout": 0.3,
@@ -90,7 +90,7 @@ LSTM_CONFIG = {
 TRANSFORMER_CONFIG = {
     "d_model": 128,
     "nhead": 4,
-    "num_encoder_layers": 6,    # 6 per doc (MIND-IoT uses 6 encoder layers)
+    "num_encoder_layers": 6,  # 6 per doc (MIND-IoT uses 6 encoder layers)
     "dim_feedforward": 512,
     "dropout": 0.2,
 }
@@ -184,8 +184,30 @@ HYBRID_SPLIT_CONFIG = {
     "sequence": 0.2,
 }
 
-# 4.4 Classes de Dispositifs IoT (18 classes)
-# NOTE: Utiliser kebab-case pour correspondre aux noms dans les CSV
+# 4.4 Classes de Dispositifs IoT - IoT IPFIX Home Dataset (18 classes)
+# Ces classes correspondent aux appareils specifiques demandes
+IOT_IPFIX_HOME_CLASSES = [
+    "Eclear",
+    "Sleep",
+    "Esensor",
+    "Hub Plus",
+    "Humidifier",
+    "Home Unit",
+    "Ink Jet Printer",
+    "Smart Wi-Fi Plug Mini",
+    "Smart Power Strip",
+    "Echo Dot",
+    "Fire 7 Tablet",
+    "Google Nest Mini",
+    "Google Chromecast",
+    "Atom Cam",
+    "Kasa Camera Pro",
+    "Kasa Smart LED Lamp",
+    "Fire TV Stick 4K",
+    "Qrio Hub",
+]
+
+# Alias pour compatibilite (kebab-case pour CSV)
 IOT_DEVICE_CLASSES = [
     "eclear",
     "sleep",
@@ -205,6 +227,27 @@ IOT_DEVICE_CLASSES = [
     "kasa-smart-led-lamp",
     "fire-tv-stick-4k",
     "qrio-hub",
+]
+
+# IPFIX Records Dataset - 17 classes specifiques demandees
+IPFIX_RECORDS_CLASSES = [
+    "Qrio Hub",
+    "Philips Hue Light Bulb",
+    "Planex Pan–Tilt Camera 1",
+    "JVC Kenwood Camera",
+    "Planex Pan–Tilt Camera 2",
+    "Google Home",
+    "Apple HomePod",
+    "Sony Bravia TV",
+    "Wansview Camera",
+    "Qwatch Camera",
+    "Fredi Camera",
+    "Planex Outdoor Camera",
+    "Powerlec Wi-Fi Plug",
+    "LINE Clova Speaker",
+    "Sony Smart Speaker",
+    "Amazon Echo",
+    "Amazon Echo Show",
 ]
 
 # ─── CNN-BiLSTM-Transformer Configuration ─────────────────────────────────────
@@ -228,4 +271,3 @@ CNN_BILSTM_TRANSFORMER_CONFIG = {
     # FC head
     "fc_dropout": 0.4,
 }
-

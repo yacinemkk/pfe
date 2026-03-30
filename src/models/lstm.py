@@ -1,269 +1,115 @@
 """
-LSTM / BiLSTM Classifier for IoT Device Identification
-=======================================================
-Architecture per docs/architectures §1 (FL-HDECOC configuration):
+PHASE 4.1: Modèle LSTM
+Per docs/important.md
 
-  LSTM ×2 layers
-  ├── hidden_size : 64 units per layer
-  ├── activation  : ReLU (applied in classifier head)
-  └── bidirectional → output embedding = 64 × 2 = 128 dims
-
-  BiLSTM variant: processes sequences in both directions,
-  concatenates forward + backward hidden states → 128-dim embedding.
+Architecture:
+- 2 couches LSTM, 64 unités/couche
+- Activation ReLU
+- Dropout pour régularisation
+- Couche Dense de sortie (classification multi-classe)
+- Vecteur embedding: 128 dimensions
 """
 
 import torch
 import torch.nn as nn
-import numpy as np
-from torch.utils.data import Dataset, DataLoader
-from pathlib import Path
-import json
-from tqdm import tqdm
-import sys
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.config import *
-
-
-class IoTSequenceDataset(Dataset):
-    def __init__(self, X, y):
-        self.X = torch.FloatTensor(X)
-        self.y = torch.LongTensor(y)
-
-    def __len__(self):
-        return len(self.X)
-
-    def __getitem__(self, idx):
-        return self.X[idx], self.y[idx]
+from typing import Optional
+import yaml
 
 
 class LSTMClassifier(nn.Module):
     """
-    LSTM / BiLSTM classifier.
+    Classificateur LSTM pour l'identification d'appareils IoT.
 
-    Per docs/architectures §1:
-    - 2 stacked LSTM layers, 64 hidden units each
-    - ReLU activation in the classifier head
-    - Bidirectional: forward + backward → 128-dim embedding
-    - Classifier: Linear(128 → 64) → ReLU → Linear(64 → num_classes)
+    Architecture per docs/important.md §4.1:
+    - 2 couches LSTM empilées
+    - 64 unités par couche
+    - Dropout pour régularisation
+    - Classificateur dense en sortie
     """
 
-    def __init__(self, input_size, num_classes, config=None):
+    def __init__(
+        self,
+        input_size: int,
+        num_classes: int,
+        hidden_size: int = 64,
+        num_layers: int = 2,
+        dropout: float = 0.3,
+        config_path: str = "config/config.yaml",
+    ):
         super().__init__()
 
-        config = config or LSTM_CONFIG
-        hidden_size   = config.get("hidden_size", 64)    # 64 per layer per doc
-        num_layers    = config.get("num_layers", 2)
-        bidirectional = config.get("bidirectional", True)
-        dropout       = config.get("dropout", 0.3)
+        if config_path:
+            with open(config_path, "r") as f:
+                config = yaml.safe_load(f)
+            model_config = config["models"]["lstm"]
+            hidden_size = model_config.get("hidden_size", hidden_size)
+            num_layers = model_config.get("num_layers", num_layers)
+            dropout = model_config.get("dropout", dropout)
+
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
 
         self.lstm = nn.LSTM(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
-            bidirectional=bidirectional,
             dropout=dropout if num_layers > 1 else 0,
+            bidirectional=False,
         )
 
-        # embedding_size = 64×2 = 128 for BiLSTM  |  64 for unidirectional
-        embedding_size = hidden_size * 2 if bidirectional else hidden_size
-
-        # Classifier: embedding → ReLU → num_classes   (doc: ReLU activation)
         self.classifier = nn.Sequential(
             nn.Dropout(dropout),
-            nn.Linear(embedding_size, hidden_size),   # 128 → 64
+            nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
             nn.Dropout(dropout / 2),
             nn.Linear(hidden_size, num_classes),
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: (batch_size, seq_length, input_size)
+        Returns:
+            logits: (batch_size, num_classes)
+        """
         lstm_out, (hidden, cell) = self.lstm(x)
 
-        # Extract the final hidden state (embedding)
-        if self.lstm.bidirectional:
-            # Concatenate last forward + last backward hidden state → 128 dims
-            embedding = torch.cat((hidden[-2], hidden[-1]), dim=1)
-        else:
-            embedding = hidden[-1]
+        embedding = hidden[-1]
 
         return self.classifier(embedding)
 
-
-class Trainer:
-    def __init__(self, model, device="auto"):
-        if device == "auto":
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = torch.device(device)
-
-        self.model = model.to(self.device)
-        self.history = {
-            "train_loss": [],
-            "train_acc": [],
-            "val_loss": [],
-            "val_acc": [],
-        }
-
-    def train_epoch(self, dataloader, optimizer, criterion):
-        self.model.train()
-        total_loss, correct, total = 0, 0, 0
-
-        for X_batch, y_batch in tqdm(dataloader, desc="Training", leave=False):
-            X_batch = X_batch.to(self.device)
-            y_batch = y_batch.to(self.device)
-
-            optimizer.zero_grad()
-            outputs = self.model(X_batch)
-            loss = criterion(outputs, y_batch)
-            loss.backward()
-            optimizer.step()
-
-            total_loss += loss.item()
-            _, predicted = outputs.max(1)
-            total += y_batch.size(0)
-            correct += predicted.eq(y_batch).sum().item()
-
-        return total_loss / len(dataloader), correct / total
-
-    def evaluate(self, dataloader, criterion):
-        self.model.eval()
-        total_loss, correct, total = 0, 0, 0
-
-        with torch.no_grad():
-            for X_batch, y_batch in dataloader:
-                X_batch = X_batch.to(self.device)
-                y_batch = y_batch.to(self.device)
-
-                outputs = self.model(X_batch)
-                loss = criterion(outputs, y_batch)
-
-                total_loss += loss.item()
-                _, predicted = outputs.max(1)
-                total += y_batch.size(0)
-                correct += predicted.eq(y_batch).sum().item()
-
-        return total_loss / len(dataloader), correct / total
-
-    def fit(
-        self,
-        train_loader,
-        val_loader,
-        epochs=NUM_EPOCHS,
-        lr=LEARNING_RATE,
-        weight_decay=WEIGHT_DECAY,
-        save_path=None,
-    ):
-        optimizer = torch.optim.Adam(
-            self.model.parameters(), lr=lr, weight_decay=weight_decay
-        )
-        criterion = nn.CrossEntropyLoss()
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode="min", patience=3
-        )
-
-        best_val_acc = 0
-
-        for epoch in range(epochs):
-            train_loss, train_acc = self.train_epoch(train_loader, optimizer, criterion)
-            val_loss, val_acc = self.evaluate(val_loader, criterion)
-
-            scheduler.step(val_loss)
-
-            self.history["train_loss"].append(train_loss)
-            self.history["train_acc"].append(train_acc)
-            self.history["val_loss"].append(val_loss)
-            self.history["val_acc"].append(val_acc)
-
-            print(f"Epoch {epoch + 1}/{epochs}")
-            print(f"  Train - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
-            print(f"  Val   - Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
-
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
-                if save_path:
-                    torch.save(
-                        {
-                            "epoch": epoch,
-                            "model_state_dict": self.model.state_dict(),
-                            "optimizer_state_dict": optimizer.state_dict(),
-                            "val_acc": val_acc,
-                        },
-                        Path(save_path) / "best_model.pt",
-                    )
-
-        return self.history
-
-    def predict(self, dataloader):
-        self.model.eval()
-        predictions, labels = [], []
-
-        with torch.no_grad():
-            for X_batch, y_batch in dataloader:
-                X_batch = X_batch.to(self.device)
-                outputs = self.model(X_batch)
-                _, predicted = outputs.max(1)
-
-                predictions.extend(predicted.cpu().numpy())
-                labels.extend(y_batch.numpy())
-
-        return np.array(predictions), np.array(labels)
+    def get_embedding(self, x: torch.Tensor) -> torch.Tensor:
+        """Extrait l'embedding de la séquence."""
+        lstm_out, (hidden, cell) = self.lstm(x)
+        return hidden[-1]
 
 
-def train_lstm(data_path, save_path, epochs=NUM_EPOCHS):
-    data_path = Path(data_path)
-    save_path = Path(save_path)
-    save_path.mkdir(parents=True, exist_ok=True)
+class LSTMConfig:
+    """Configuration pour le modèle LSTM."""
 
-    X_train = np.load(data_path / "X_train.npy")
-    X_val = np.load(data_path / "X_val.npy")
-    X_test = np.load(data_path / "X_test.npy")
-    y_train = np.load(data_path / "y_train.npy")
-    y_val = np.load(data_path / "y_val.npy")
-    y_test = np.load(data_path / "y_test.npy")
+    def __init__(self, config_path: str = "config/config.yaml"):
+        with open(config_path, "r") as f:
+            self.config = yaml.safe_load(f)["models"]["lstm"]
 
-    input_size = X_train.shape[2]
-    num_classes = len(np.unique(y_train))
-
-    print(f"Input size: {input_size}, Classes: {num_classes}")
-    print(f"Architecture: 2×LSTM(64 units, BiLSTM) → 128-dim embedding → Classifier")
-
-    train_dataset = IoTSequenceDataset(X_train, y_train)
-    val_dataset   = IoTSequenceDataset(X_val,   y_val)
-    test_dataset  = IoTSequenceDataset(X_test,  y_test)
-
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    val_loader   = DataLoader(val_dataset,   batch_size=BATCH_SIZE)
-    test_loader  = DataLoader(test_dataset,  batch_size=BATCH_SIZE)
-
-    model = LSTMClassifier(input_size, num_classes)
-    trainer = Trainer(model)
-
-    print(f"\nTraining on: {trainer.device}")
-    history = trainer.fit(train_loader, val_loader, epochs=epochs, save_path=save_path)
-
-    test_loss, test_acc = trainer.evaluate(test_loader, nn.CrossEntropyLoss())
-    print(f"\nTest Accuracy: {test_acc:.4f}")
-
-    with open(save_path / "history.json", "w") as f:
-        json.dump(history, f)
-
-    results = {
-        "model": "BiLSTM",
-        "test_accuracy": test_acc,
-        "test_loss": test_loss,
-        "best_val_accuracy": max(history["val_acc"]),
-        "num_classes": num_classes,
-        "input_size": input_size,
-        "architecture": "2xLSTM(64, BiLSTM) → 128-dim embedding → ReLU → num_classes",
-    }
-
-    with open(save_path / "results.json", "w") as f:
-        json.dump(results, f, indent=2)
-
-    return model, history
+        self.hidden_size = self.config.get("hidden_size", 64)
+        self.num_layers = self.config.get("num_layers", 2)
+        self.dropout = self.config.get("dropout", 0.3)
+        self.embedding_dim = self.config.get("embedding_dim", 128)
 
 
 if __name__ == "__main__":
-    train_lstm(PROCESSED_DATA_DIR, RESULTS_DIR / "models" / "lstm")
+    batch_size = 32
+    seq_length = 10
+    input_size = 36
+    num_classes = 18
+
+    model = LSTMClassifier(input_size, num_classes)
+    x = torch.randn(batch_size, seq_length, input_size)
+
+    output = model(x)
+    print(f"Input: {x.shape} -> Output: {output.shape}")
+    print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
+
+    assert output.shape == (batch_size, num_classes)
+    print("✅ LSTM OK")

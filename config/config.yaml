@@ -1,0 +1,205 @@
+# Configuration IoT Device Identification
+# Per docs/important.md
+
+paths:
+  base_dir: "."
+  data_dir: "data"
+  raw_data_dir: "data/pcap/IPFIX ML Instances"
+  processed_data_dir: "data/processed"
+  results_dir: "results"
+  models_dir: "results/models"
+
+data:
+  label_column: "name"
+  sequence_length: 10
+  stride: 5
+  min_samples_per_class: 500
+  
+  sdn_excluded_columns:
+    - start
+    - srcMac
+    - destMac
+    - srcIP
+    - destIP
+    - srcPort
+    - destPort
+    - device
+  
+  features_to_keep:
+    - duration
+    - ipProto
+    - outPacketCount
+    - outByteCount
+    - inPacketCount
+    - inByteCount
+    - outSmallPktCount
+    - outLargePktCount
+    - outNonEmptyPktCount
+    - outDataByteCount
+    - outAvgIAT
+    - outFirstNonEmptyPktSize
+    - outMaxPktSize
+    - outStdevPayloadSize
+    - outStdevIAT
+    - outAvgPacketSize
+    - inSmallPktCount
+    - inLargePktCount
+    - inNonEmptyPktCount
+    - inDataByteCount
+    - inAvgIAT
+    - inFirstNonEmptyPktSize
+    - inMaxPktSize
+    - inStdevPayloadSize
+    - inStdevIAT
+    - inAvgPacketSize
+    - http
+    - https
+    - smb
+    - dns
+    - ntp
+    - tcp
+    - udp
+    - ssdp
+    - lan
+    - wan
+    - deviceInitiated
+
+  protocols_to_filter:
+    - ARP
+    - DHCP
+    - ICMP
+    - NTP
+
+  iot_ipfix_home_classes:
+    - Eclear
+    - Sleep
+    - Esensor
+    - Hub Plus
+    - Humidifier
+    - Home Unit
+    - Ink Jet Printer
+    - Smart Wi-Fi Plug Mini
+    - Smart Power Strip
+    - Echo Dot
+    - Fire 7 Tablet
+    - Google Nest Mini
+    - Google Chromecast
+    - Atom Cam
+    - Kasa Camera Pro
+    - Kasa Smart LED Lamp
+    - Fire TV Stick 4K
+    - Qrio Hub
+
+split:
+  test_size: 0.2
+  val_size: 0.1
+  random_state: 42
+
+training:
+  batch_size: 64
+  num_epochs: 30
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  early_stopping_patience: 5
+  early_stopping_min_delta: 0.001
+
+models:
+  lstm:
+    hidden_size: 64
+    num_layers: 2
+    bidirectional: true
+    dropout: 0.3
+    embedding_dim: 128
+  
+  bilstm:
+    hidden_size: 64
+    num_layers: 2
+    dropout: 0.3
+  
+  cnn_lstm:
+    lstm_hidden: 64
+    lstm_layers: 1
+    cnn_channels: 64
+    cnn_kernel_size: 3
+    pool_size: 2
+    dense_units: 100
+    dropout: 0.3
+  
+  xgboost_lstm:
+    lstm_hidden: 64
+    lstm_layers: 2
+    bidirectional: true
+    dropout: 0.3
+    n_estimators: 200
+    learning_rate: 0.1
+    max_depth: 6
+    min_child_weight: 3
+    gamma: 0.1
+    subsample: 0.8
+    colsample_bytree: 0.8
+  
+  transformer:
+    d_model: 768
+    nhead: 12
+    num_encoder_layers: 6
+    dim_feedforward: 3072
+    dropout: 0.2
+    activation: "gelu"
+    max_seq_length: 512
+  
+  hybrid:
+    cnn_channels: 64
+    cnn_kernel_small: 3
+    cnn_kernel_large: 5
+    cnn_pool_size: 2
+    bilstm_hidden: 128
+    bilstm_layers: 2
+    bilstm_dropout: 0.3
+    transformer_d_model: 256
+    transformer_nhead: 4
+    transformer_layers: 2
+    transformer_ff_dim: 512
+    transformer_dropout: 0.2
+    fc_dropout: 0.4
+
+tokenizer:
+  vocab_size: 52000
+  max_length: 512
+  special_tokens:
+    - "<s>"
+    - "</s>"
+    - "<pad>"
+    - "<unk>"
+    - "<mask>"
+
+adversarial:
+  feature_level:
+    max_iter: 20
+    c: 0.1
+    contamination: 0.05
+  
+  sequence_level:
+    epsilon: 0.1
+    alpha: 0.01
+    num_steps: 10
+    clip_min: -3.0
+    clip_max: 3.0
+  
+  attacks:
+    - fgsm
+    - bim
+    - pgd
+  
+  hybrid_training:
+    clean_ratio: 0.6
+    feature_ratio: 0.2
+    sequence_ratio: 0.2
+
+evaluation:
+  metrics:
+    - accuracy
+    - macro_f1
+    - precision
+    - recall
+  confusion_matrix: true
+  per_class_metrics: true

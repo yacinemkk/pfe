@@ -1,52 +1,92 @@
 """
-XGBoost-LSTM Hybrid Classifier for IoT Device Identification
-=============================================================
-Architecture per docs/architectures §3:
+PHASE 4.4: Modèle XGBoost-LSTM
+Per docs/important.md
 
-  Input
-    └── LSTM (temporal feature extractor)
-         └── Embedding vector (fixed-size latent representation)
-              └── XGBoost classifier (final classification)
-
-  XGBoost hyper-parameter ranges (per doc):
-    - learning_rate  : 0.01 – 0.3
-    - max_depth      : 3    – 15
-    - min_child_weight: 1   – 7
-    - gamma          : 0    – 0.5
-
-  For gradient-based adversarial attacks, a PyTorch surrogate linear
-  head is attached to the LSTM so gradients can flow during attack generation.
+Architecture:
+- LSTM pré-entraîné comme extracteur de features
+- Sortie: vecteur latent de taille fixe
+- XGBoost avec hyperparamètres:
+  - lr: [0.01-0.3]
+  - max_depth: [3-15]
+  - min_child_weight: [1-7]
+  - gamma: [0-0.5]
 """
 
 import torch
 import torch.nn as nn
 import numpy as np
-import xgboost as xgb
-from torch.utils.data import DataLoader
+from typing import Optional, Tuple
+import yaml
+
+try:
+    import xgboost as xgb
+
+    XGBOOST_AVAILABLE = True
+except ImportError:
+    XGBOOST_AVAILABLE = False
+    print("Warning: xgboost not available. Install with: pip install xgboost")
 
 
 class XGBoostLSTMClassifier(nn.Module):
     """
-    XGBoost-LSTM hybrid model.
+    Classificateur hybride XGBoost-LSTM.
 
-    The LSTM is pre-trained end-to-end via a surrogate PyTorch classifier.
-    Once the LSTM is trained, XGBoost is fitted on the extracted embeddings
-    for the final classification step.
-
-    During adversarial attack generation (PGD), the surrogate head is used
-    to compute gradients, making the attacks white-box compatible.
+    Architecture per docs/important.md §4.4:
+    - LSTM comme extracteur de features
+    - Embedding de taille fixe (128 dims pour BiLSTM)
+    - XGBoost pour la classification finale
     """
 
-    def __init__(self, input_size: int, num_classes: int, lstm_config: dict):
+    def __init__(
+        self,
+        input_size: int,
+        num_classes: int,
+        hidden_size: int = 64,
+        num_layers: int = 2,
+        bidirectional: bool = True,
+        dropout: float = 0.3,
+        config_path: str = "config/config.yaml",
+    ):
         super().__init__()
+
+        if config_path:
+            with open(config_path, "r") as f:
+                config = yaml.safe_load(f)
+            model_config = config["models"]["xgboost_lstm"]
+            hidden_size = model_config.get("lstm_hidden", hidden_size)
+            num_layers = model_config.get("lstm_layers", num_layers)
+            bidirectional = model_config.get("bidirectional", bidirectional)
+            dropout = model_config.get("dropout", dropout)
+
+            self.xgb_params = {
+                "n_estimators": model_config.get("n_estimators", 200),
+                "learning_rate": model_config.get("learning_rate", 0.1),
+                "max_depth": model_config.get("max_depth", 6),
+                "min_child_weight": model_config.get("min_child_weight", 3),
+                "gamma": model_config.get("gamma", 0.1),
+                "subsample": model_config.get("subsample", 0.8),
+                "colsample_bytree": model_config.get("colsample_bytree", 0.8),
+                "eval_metric": "mlogloss",
+                "use_label_encoder": False,
+                "tree_method": "hist",
+            }
+        else:
+            self.xgb_params = {
+                "n_estimators": 200,
+                "learning_rate": 0.1,
+                "max_depth": 6,
+                "min_child_weight": 3,
+                "gamma": 0.1,
+                "subsample": 0.8,
+                "colsample_bytree": 0.8,
+                "eval_metric": "mlogloss",
+                "use_label_encoder": False,
+                "tree_method": "hist",
+            }
+
         self.num_classes = num_classes
+        self.bidirectional = bidirectional
 
-        hidden_size   = lstm_config.get("hidden_size", 64)   # 64 per doc
-        num_layers    = lstm_config.get("num_layers", 2)
-        bidirectional = lstm_config.get("bidirectional", True)
-        dropout       = lstm_config.get("dropout", 0.3)
-
-        # ── LSTM feature extractor ──────────────────────────────────────────
         self.lstm = nn.LSTM(
             input_size=input_size,
             hidden_size=hidden_size,
@@ -56,11 +96,9 @@ class XGBoostLSTMClassifier(nn.Module):
             dropout=dropout if num_layers > 1 else 0,
         )
 
-        # embedding_size: 128 for BiLSTM (64×2), 64 for unidirectional
         embedding_size = hidden_size * 2 if bidirectional else hidden_size
 
-        # ── Surrogate PyTorch head (for gradient-based adversarial attacks) ─
-        self.surrogate_classifier = nn.Sequential(
+        self.surrogate_head = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(embedding_size, embedding_size // 2),
             nn.ReLU(),
@@ -68,72 +106,108 @@ class XGBoostLSTMClassifier(nn.Module):
             nn.Linear(embedding_size // 2, num_classes),
         )
 
-        # ── XGBoost classifier ──────────────────────────────────────────────
-        # Hyper-parameters per docs/architectures §3
-        self.xgb_model = xgb.XGBClassifier(
-            n_estimators=200,
-            learning_rate=0.1,        # in [0.01, 0.3] per doc
-            max_depth=6,              # in [3, 15] per doc
-            min_child_weight=3,       # in [1, 7] per doc
-            gamma=0.1,                # in [0, 0.5] per doc
-            subsample=0.8,
-            colsample_bytree=0.8,
-            eval_metric="mlogloss",
-            use_label_encoder=False,
-            tree_method="hist",       # fast CPU/GPU training
-        )
+        if XGBOOST_AVAILABLE:
+            self.xgb_model = xgb.XGBClassifier(**self.xgb_params)
+        else:
+            self.xgb_model = None
         self.xgb_fitted = False
 
-    # ── Feature extraction ──────────────────────────────────────────────────
-
     def extract_features(self, x: torch.Tensor) -> torch.Tensor:
-        """Run LSTM and return the final hidden-state embedding."""
+        """Extrait l'embedding LSTM."""
         _, (hidden, _) = self.lstm(x)
-        if self.lstm.bidirectional:
-            # Concatenate last forward + last backward hidden → 128-dim
+
+        if self.bidirectional:
             embedding = torch.cat((hidden[-2], hidden[-1]), dim=1)
         else:
             embedding = hidden[-1]
+
         return embedding
 
-    # ── Forward pass ────────────────────────────────────────────────────────
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: (batch_size, seq_length, input_size)
+        Returns:
+            logits: (batch_size, num_classes)
+        """
         embedding = self.extract_features(x)
 
-        # Inference / evaluation: use the robust XGBoost predictions
-        if self.xgb_fitted and not x.requires_grad:
+        if self.xgb_fitted and not x.requires_grad and self.xgb_model is not None:
             features_np = embedding.detach().cpu().numpy()
             probs = self.xgb_model.predict_proba(features_np)
             return torch.tensor(probs, device=x.device, dtype=torch.float32)
 
-        # Training / attack generation: use surrogate classifier
-        return self.surrogate_classifier(embedding)
+        return self.surrogate_head(embedding)
 
-    # ── XGBoost fitting ─────────────────────────────────────────────────────
+    def fit_xgboost(self, X: np.ndarray, y: np.ndarray, device: torch.device = None):
+        """
+        Entraîne XGBoost sur les embeddings extraits.
 
-    def fit_xgboost(self, dataloader: DataLoader, device: torch.device):
+        Args:
+            X: Séquences d'entrée (n_samples, seq_length, input_size)
+            y: Labels (n_samples,)
+            device: Device pour l'extraction
         """
-        Extract LSTM embeddings from all batches and fit XGBoost.
-        Called once after LSTM training (Phase 3).
-        """
+        if not XGBOOST_AVAILABLE or self.xgb_model is None:
+            raise RuntimeError("XGBoost not available")
+
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
         self.eval()
-        X_feats, Y_labels = [], []
+        self.to(device)
+
+        X_tensor = torch.FloatTensor(X).to(device)
 
         with torch.no_grad():
-            for X_batch, y_batch in dataloader:
-                X_batch = X_batch.to(device)
-                feats = self.extract_features(X_batch)
-                X_feats.append(feats.cpu().numpy())
-                Y_labels.append(y_batch.numpy())
+            embeddings = self.extract_features(X_tensor)
 
-        X_all = np.vstack(X_feats)
-        Y_all = np.concatenate(Y_labels)
+        features_np = embeddings.cpu().numpy()
 
-        print(f"Fitting XGBoost on {X_all.shape[0]:,} samples "
-              f"with {X_all.shape[1]} LSTM embedding features...")
-        print(f"  lr=0.1, max_depth=6, min_child_weight=3, gamma=0.1")
+        print(f"  Entraînement XGBoost sur {len(features_np):,} échantillons...")
+        print(
+            f"    lr={self.xgb_params['learning_rate']}, "
+            f"max_depth={self.xgb_params['max_depth']}, "
+            f"min_child_weight={self.xgb_params['min_child_weight']}, "
+            f"gamma={self.xgb_params['gamma']}"
+        )
 
-        self.xgb_model.fit(X_all, Y_all)
+        self.xgb_model.fit(features_np, y)
         self.xgb_fitted = True
-        print("XGBoost trained successfully. ✅")
+
+        print("  XGBoost entraîné avec succès ✓")
+
+
+class XGBoostLSTMConfig:
+    """Configuration pour le modèle XGBoost-LSTM."""
+
+    def __init__(self, config_path: str = "config/config.yaml"):
+        with open(config_path, "r") as f:
+            self.config = yaml.safe_load(f)["models"]["xgboost_lstm"]
+
+        self.lstm_hidden = self.config.get("lstm_hidden", 64)
+        self.lstm_layers = self.config.get("lstm_layers", 2)
+        self.bidirectional = self.config.get("bidirectional", True)
+        self.dropout = self.config.get("dropout", 0.3)
+        self.n_estimators = self.config.get("n_estimators", 200)
+        self.learning_rate = self.config.get("learning_rate", 0.1)
+        self.max_depth = self.config.get("max_depth", 6)
+        self.min_child_weight = self.config.get("min_child_weight", 3)
+        self.gamma = self.config.get("gamma", 0.1)
+
+
+if __name__ == "__main__":
+    batch_size = 32
+    seq_length = 10
+    input_size = 36
+    num_classes = 18
+
+    model = XGBoostLSTMClassifier(input_size, num_classes)
+    x = torch.randn(batch_size, seq_length, input_size)
+
+    output = model(x)
+    print(f"Input: {x.shape} -> Output: {output.shape}")
+    print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
+
+    assert output.shape == (batch_size, num_classes)
+    print("✅ XGBoost-LSTM OK")
