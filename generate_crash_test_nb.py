@@ -87,7 +87,7 @@ import gc
 
 # Import modules from your project
 from src.models.lstm import IoTSequenceDataset
-from src.models import LSTMClassifier, TransformerClassifier, CNNLSTMClassifier, CNNClassifier, XGBoostLSTMClassifier
+from src.models import LSTMClassifier, TransformerClassifier, CNNLSTMClassifier, CNNClassifier, XGBoostLSTMClassifier, CNNBiLSTMTransformerClassifier
 from src.adversarial.attacks import FeatureLevelAttack, SequenceLevelAttack, HybridAdversarialAttack
 from train_adversarial import load_and_preprocess_data"""
 add_code(code_imports)
@@ -102,9 +102,20 @@ code_utils = """device = torch.device('cuda' if torch.cuda.is_available() else '
 print(f"Device: {device}")
 
 def create_model(model_type, input_size, num_classes, seq_length):
-    from config.config import LSTM_CONFIG, TRANSFORMER_CONFIG
+    from config.config import LSTM_CONFIG, TRANSFORMER_CONFIG, CNN_BILSTM_TRANSFORMER_CONFIG
     if model_type == 'lstm':
         model = LSTMClassifier(input_size, num_classes, LSTM_CONFIG)
+    elif model_type == 'bilstm':
+        from src.models.bilstm import BiLSTMClassifier
+        model = BiLSTMClassifier(input_size, num_classes)
+    elif model_type == 'cnn_bilstm':
+        from src.models.cnn_bilstm import CNNBiLSTMClassifier
+        model = CNNBiLSTMClassifier(input_size, num_classes)
+    elif model_type == 'nlp_transformer':
+        from src.models.transformer import NLPTransformerClassifier
+        model = NLPTransformerClassifier(52000, num_classes, 512)
+    elif model_type == 'cnn_bilstm_transformer':
+        model = CNNBiLSTMTransformerClassifier(input_size, num_classes, seq_length, CNN_BILSTM_TRANSFORMER_CONFIG)
     elif model_type == 'transformer':
         model = TransformerClassifier(
             input_size, num_classes, seq_length, TRANSFORMER_CONFIG
