@@ -67,6 +67,7 @@ from src.models.lstm import LSTMClassifier, IoTSequenceDataset
 from src.models.transformer import TransformerClassifier
 from src.models.cnn_lstm import CNNLSTMClassifier, CNNClassifier
 from src.models.xgboost_lstm import XGBoostLSTMClassifier
+from src.models.cnn_bilstm_transformer import CNNBiLSTMTransformerClassifier
 from src.adversarial.attacks import (
     FeatureLevelAttack,
     SequenceLevelAttack,
@@ -119,18 +120,25 @@ def create_sequences_with_stride(
 def load_and_preprocess_data(
     seq_length: int, stride: int = 5, max_files: Optional[int] = None,
     data_dir: Optional[Path] = None, pipeline_mode: Optional[str] = None,
-    max_records: Optional[int] = None,
+    max_records: Optional[int] = None, dataset: Optional[str] = None,
 ) -> Tuple[np.ndarray, ...]:
     """Load and preprocess data with specified sequence length.
     
     Supports two pipeline modes:
-    - 'csv': Original CSV pipeline (IoT IPFIX Home dataset, 18 classes)
-    - 'json': New JSON-native pipeline (IPFIX Records dataset, 17-26 classes)
+    - 'csv': CSV pipeline (IPFIX ML Instances, 18 classes) — anti-leakage temporal split
+    - 'json': JSON-native pipeline (IPFIX Records, 17-26 classes)
+    
+    Args:
+        dataset: Explicit override for pipeline selection ('csv' or 'json').
+                 Takes precedence over pipeline_mode / PIPELINE_MODE config.
     
     Returns:
         Tuple of (X_train, X_val, X_test, y_train, y_val, y_test,
                   features, scaler, label_encoder, n_continuous_features)
     """
+    # Explicit --dataset arg overrides config PIPELINE_MODE
+    if dataset is not None:
+        pipeline_mode = dataset
     if pipeline_mode is None:
         pipeline_mode = PIPELINE_MODE
     
@@ -192,98 +200,39 @@ def _load_csv_pipeline(
     max_files: Optional[int] = None,
     data_dir: Optional[Path] = None,
 ) -> Tuple[np.ndarray, ...]:
-    """Original CSV pipeline (backward compatible)."""
-    from sklearn.preprocessing import StandardScaler, LabelEncoder
-    from sklearn.model_selection import train_test_split
-    import pandas as pd
+    """CSV pipeline — delegates to IoTDataProcessor for strict anti-leakage split.
+
+    Uses IoTDataProcessor.process_all() which implements:
+      - Per-device temporal 80/20 split (docs/general §Étape 3)
+      - Sequences built independently on train and test (docs/general §Étape 4)
+      - StandardScaler fitted on training data ONLY
+    """
+    from src.data.preprocessor import IoTDataProcessor
 
     print(f"Loading CSV data with sequence length={seq_length}, stride={stride}")
-    
+
     if data_dir is None:
         data_dir = RAW_DATA_DIR
-    
+
     print(f"  Data directory: {data_dir}")
 
-    dfs = []
-    csv_files = sorted(data_dir.glob("home*_labeled.csv"))
-
-    if len(csv_files) == 0:
-        print(f"\n⚠️  ERROR: No CSV files found in {data_dir}")
-        print(f"    Expected files matching pattern: home*_labeled.csv")
-        print(f"\n    To fix this:")
-        print(f"    1. If running locally: Ensure data is at {data_dir}")
-        print(f"    2. If running on Colab: Use --data_dir /content/drive/MyDrive/PFE/IPFIX_ML_Instances")
-        raise FileNotFoundError(f"No CSV files found in {data_dir}")
-
-    if max_files:
-        csv_files = csv_files[:max_files]
-
-    for f in csv_files:
-        print(f"  Loading {f.name}...")
-        df = pd.read_csv(f)
-        df["source_file"] = f.stem
-        dfs.append(df)
-
-    df = pd.concat(dfs, ignore_index=True)
-
-    df = df.drop_duplicates()
-    df = df.dropna(subset=["name"])
-
-    from config.config import IOT_DEVICE_CLASSES
-
-    df = df[df["name"].isin(IOT_DEVICE_CLASSES)]
-
-    class_counts = df["name"].value_counts()
-    valid_classes = class_counts.index
-    df = df[df["name"].isin(valid_classes)]
-
-    print(f"  Samples: {len(df):,} | Classes: {len(valid_classes)} (filtered to 18 IoT classes)")
-
-    features = [c for c in FEATURES_TO_KEEP if c in df.columns]
-    X = df[features].values
-    y = df["name"].values
-    source_groups = df["source_file"].values if "source_file" in df.columns else None
-
-    del df, dfs
-    gc.collect()
-
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
-    label_encoder = LabelEncoder()
-    y_encoded = label_encoder.fit_transform(y)
-
-    del X, y
-    gc.collect()
-
-    print(f"  Creating sequences...")
-    X_seq, y_seq = create_sequences_with_stride(
-        X_scaled, y_encoded, seq_length, stride, source_groups
+    processor = IoTDataProcessor()
+    result = processor.process_all(
+        max_files=max_files,
+        data_dir=data_dir,
+        seq_length=seq_length,
+        stride=stride,
     )
 
-    del X_scaled, y_encoded, source_groups
-    gc.collect()
-
-    print(f"  Total sequences: {len(X_seq):,}")
-
-    X_train, X_temp, y_train, y_temp = train_test_split(
-        X_seq, y_seq, test_size=0.2, random_state=42, stratify=y_seq
-    )
-
-    del X_seq, y_seq
-    gc.collect()
-
-    X_val, X_test, y_val, y_test = train_test_split(
-        X_temp, y_temp, test_size=0.5, random_state=42, stratify=y_temp
-    )
-
-    del X_temp, y_temp
-    gc.collect()
-
-    print(f"  Train: {len(X_train):,} | Val: {len(X_val):,} | Test: {len(X_test):,}")
+    X_train, X_val, X_test, y_train, y_val, y_test, features, scaler, label_encoder = result
 
     # CSV pipeline: all features are continuous (no binary packet direction bits)
     n_continuous = len(features)
+
+    print(f"\n  CSV Pipeline Summary:")
+    print(f"    Features: {n_continuous} (all continuous)")
+    print(f"    Classes: {len(label_encoder.classes_)}")
+    print(f"    Train: {len(X_train):,} | Val: {len(X_val):,} | Test: {len(X_test):,}")
 
     return (
         X_train, X_val, X_test,
@@ -1531,14 +1480,33 @@ def create_model(
         model = TransformerClassifier(
             input_size, num_classes, seq_length, TRANSFORMER_CONFIG
         )
+    elif model_type == "bilstm":
+        from config.config import LSTM_CONFIG
+        _bilstm_cfg = dict(LSTM_CONFIG)
+        _bilstm_cfg["bidirectional"] = True  # always bidirectional
+        model = LSTMClassifier(input_size, num_classes, _bilstm_cfg)
     elif model_type == "cnn_lstm":
         model = CNNLSTMClassifier(input_size, num_classes)
     elif model_type == "xgboost_lstm":
         model = XGBoostLSTMClassifier(input_size, num_classes, LSTM_CONFIG)
     elif model_type == "cnn":
         model = CNNClassifier(input_size, num_classes)
+    elif model_type == "cnn_bilstm_transformer":
+        from config.config import CNN_BILSTM_TRANSFORMER_CONFIG
+        model = CNNBiLSTMTransformerClassifier(
+            input_size, num_classes, seq_length, CNN_BILSTM_TRANSFORMER_CONFIG
+        )
+    elif model_type == "cnn_bilstm":
+        from src.models.cnn_bilstm import CNNBiLSTMClassifier
+        model = CNNBiLSTMClassifier(input_size, num_classes)
+    elif model_type == "nlp_transformer":
+        from src.models.transformer import NLPTransformerClassifier
+        model = NLPTransformerClassifier(vocab_size=52000, num_classes=num_classes, seq_length=512)
     else:
-        raise ValueError(f"Unknown model type: {model_type}")
+        raise ValueError(
+            f"Unknown model type: {model_type}. "
+            "Choices: lstm, bilstm, transformer, nlp_transformer, cnn_lstm, xgboost_lstm, cnn, cnn_bilstm, cnn_bilstm_transformer"
+        )
 
     return model.to(device)
 
@@ -1554,6 +1522,8 @@ def run_experiment_with_phase_checkpoints(
     save_results: bool = True,
     hybrid_split: Optional[Dict[str, float]] = None,
     data_dir: Optional[Path] = None,
+    dataset: Optional[str] = None,
+    max_records: Optional[int] = None,
 ) -> Dict:
     """Run experiment avec sauvegarde et evaluation des checkpoints de phase."""
     device = get_device()
@@ -1574,7 +1544,8 @@ def run_experiment_with_phase_checkpoints(
         label_encoder,
         n_continuous_features,
     ) = load_and_preprocess_data(
-        seq_length, stride=max(1, seq_length // 2), max_files=max_files, data_dir=data_dir
+        seq_length, stride=max(1, seq_length // 2), max_files=max_files, data_dir=data_dir,
+        dataset=dataset, max_records=max_records,
     )
 
     train_dataset = IoTSequenceDataset(X_train, y_train)
@@ -1586,7 +1557,7 @@ def run_experiment_with_phase_checkpoints(
     test_loader = DataLoader(test_dataset, batch_size=batch_size)
 
     input_size = X_train.shape[2]
-    num_classes = len(np.unique(y_train))
+    num_classes = len(label_encoder.classes_)
 
     print(f"\nInput size: {input_size}, Classes: {num_classes}")
     print(f"Continuous features: {n_continuous_features}, Binary features: {input_size - n_continuous_features}")
@@ -1721,6 +1692,8 @@ def run_experiment(
     save_results: bool = True,
     hybrid_split: Optional[Dict[str, float]] = None,
     data_dir: Optional[Path] = None,
+    dataset: Optional[str] = None,
+    max_records: Optional[int] = None,
 ) -> Dict:
     """Run a single experiment."""
     device = get_device()
@@ -1741,7 +1714,8 @@ def run_experiment(
         label_encoder,
         n_continuous_features,
     ) = load_and_preprocess_data(
-        seq_length, stride=max(1, seq_length // 2), max_files=max_files, data_dir=data_dir
+        seq_length, stride=max(1, seq_length // 2), max_files=max_files, data_dir=data_dir,
+        dataset=dataset, max_records=max_records,
     )
 
     train_dataset = IoTSequenceDataset(X_train, y_train)
@@ -2125,6 +2099,71 @@ def compare_models(
     return all_results
 
 
+def run_dual_dataset_study(
+    model_type: str,
+    seq_length: int,
+    adv_method: str,
+    adv_ratio: float,
+    epochs: int,
+    batch_size: int,
+    max_files: Optional[int] = None,
+    max_records: Optional[int] = None,
+    hybrid_split: Optional[Dict[str, float]] = None,
+    csv_data_dir: Optional[Path] = None,
+    json_data_dir: Optional[Path] = None,
+) -> Dict:
+    """
+    Runs the full adversarial-training study on BOTH datasets:
+      1. IPFIX ML Instances (CSV, 18 classes) ← per-device temporal split
+      2. IPFIX Records (JSON, 17 classes) ← per-device temporal split
+
+    Generates a comparison report: results/dual_study_<model>_<timestamp>.json
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    comparison = {}
+
+    datasets = [
+        ("csv", csv_data_dir),
+        ("json", json_data_dir),
+    ]
+
+    for ds_name, ds_dir in datasets:
+        print(f"\n{'#' * 70}")
+        print(f"  DUAL-DATASET STUDY — Dataset: {ds_name.upper()}")
+        print(f"{'#' * 70}")
+        try:
+            result = run_experiment_with_phase_checkpoints(
+                model_type=model_type,
+                seq_length=seq_length,
+                adv_method=adv_method,
+                adv_ratio=adv_ratio,
+                epochs=epochs,
+                batch_size=batch_size,
+                max_files=max_files if ds_name == "csv" else None,
+                save_results=True,
+                hybrid_split=hybrid_split,
+                data_dir=ds_dir,
+                dataset=ds_name,
+                max_records=max_records if ds_name == "json" else None,
+            )
+            comparison[ds_name] = result
+        except Exception as e:
+            print(f"  ⚠️  {ds_name.upper()} study failed: {e}")
+            comparison[ds_name] = {"error": str(e)}
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    # Save comparison report
+    report_path = RESULTS_DIR / f"dual_study_{model_type}_{timestamp}.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(report_path, "w") as f:
+        json.dump(comparison, f, indent=2, default=str)
+    print(f"\n📊 Dual-dataset comparison report: {report_path}")
+
+    return comparison
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Adversarial Training for IoT Device Identification"
@@ -2134,8 +2173,28 @@ def main():
         "--model",
         type=str,
         default="lstm",
-        choices=["lstm", "transformer", "cnn_lstm", "cnn", "xgboost_lstm"],
-        help="Model architecture",
+        choices=[
+            "lstm", "bilstm", "transformer", "cnn_lstm", "cnn",
+            "xgboost_lstm", "cnn_bilstm_transformer",
+        ],
+        help="Model architecture (bilstm = bidirectional LSTM)",
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        choices=["csv", "json"],
+        help=(
+            "Dataset to use: 'csv' (IPFIX ML Instances, 18 classes) or "
+            "'json' (IPFIX Records, 17 classes). "
+            "Defaults to the PIPELINE_MODE value in config.py."
+        ),
+    )
+    parser.add_argument(
+        "--max_records",
+        type=int,
+        default=None,
+        help="Maximum JSON records to load (for quick smoke tests; JSON pipeline only)",
     )
     parser.add_argument("--seq_length", type=int, default=10, help="Sequence length")
     parser.add_argument(
@@ -2220,6 +2279,26 @@ def main():
         action="store_true",
         help="Utiliser la méthode avec sauvegarde et évaluation de checkpoints après chaque phase",
     )
+    parser.add_argument(
+        "--dual_dataset",
+        action="store_true",
+        help=(
+            "Run the full study on BOTH datasets (CSV + JSON) sequentially "
+            "and generate a comparison report (requires --phase_checkpoints logic)."
+        ),
+    )
+    parser.add_argument(
+        "--csv_data_dir",
+        type=str,
+        default=None,
+        help="Path to CSV data directory for dual-dataset study (default: config RAW_DATA_DIR)",
+    )
+    parser.add_argument(
+        "--json_data_dir",
+        type=str,
+        default=None,
+        help="Path to JSON data directory for dual-dataset study (default: config JSON_DATA_DIR)",
+    )
 
     args = parser.parse_args()
 
@@ -2275,6 +2354,8 @@ def main():
             save_results=True,
             hybrid_split=hybrid_split,
             data_dir=data_dir,
+            dataset=args.dataset,
+            max_records=getattr(args, 'max_records', None),
         )
     else:
         run_experiment(
@@ -2288,6 +2369,8 @@ def main():
             save_results=True,
             hybrid_split=hybrid_split,
             data_dir=data_dir,
+            dataset=args.dataset,
+            max_records=getattr(args, 'max_records', None),
         )
 
 

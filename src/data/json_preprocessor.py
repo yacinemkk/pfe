@@ -15,7 +15,7 @@ import json
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, LabelEncoder
 from sklearn.model_selection import train_test_split
 import pickle
 import gc
@@ -236,6 +236,7 @@ class JsonIoTDataProcessor:
     """
 
     def __init__(self):
+        self.minmax_scaler = MinMaxScaler(feature_range=(0,1))
         self.scaler = StandardScaler()
         self.label_encoder = LabelEncoder()
         self.feature_names = None
@@ -459,15 +460,16 @@ class JsonIoTDataProcessor:
                      max_records: int = None, seq_length: int = None,
                      stride: int = None, min_samples: int = None):
         """
-        Full processing pipeline for JSON IPFIX Records.
+        Full anti-leakage pipeline for JSON IPFIX Records.
 
-        Args:
-            data_dir: JSON data directory
-            save_path: Where to save processed numpy arrays
-            max_records: Limit total records loaded (for debugging)
-            seq_length: Sequence window length
-            stride: Step between windows
-            min_samples: Minimum samples per class
+        Implements strict per-device temporal 80/20 split (docs/general §Étape 3-4):
+          1. Load & label flows via MAC lookup
+          2. Filter to target classes
+          3. Group flows by device, sort each group by flow_start
+          4. Per-device 80/20 temporal split (first 80% → train, last 20% → test)
+          5. Fit StandardScaler on training continuous features ONLY
+          6. Create sliding-window sequences INDEPENDENTLY on train and test
+          7. Carve validation from training sequences (stratified 10%)
 
         Returns:
             Tuple of (X_train, X_val, X_test, y_train, y_val, y_test,
@@ -479,105 +481,132 @@ class JsonIoTDataProcessor:
             stride = STRIDE
 
         print("=" * 60)
-        print("JSON-NATIVE IPFIX RECORDS PREPROCESSOR")
+        print("JSON-NATIVE IPFIX RECORDS PREPROCESSOR (Anti-Leakage)")
         print("=" * 60)
 
         # Step 1: Load and label JSON data
-        print("\n[1/6] Loading JSON data...")
+        print("\n[1/7] Loading JSON data...")
         df = self.load_json_files(data_dir, max_records=max_records)
 
-        # Step 2: Filter underrepresented classes
-        print("\n[2/6] Filtering classes...")
+        # Step 2: Filter to target classes
+        print("\n[2/7] Filtering classes...")
         df = self.filter_classes(df, min_samples)
 
-        # Step 3: Extract features
-        print("\n[3/6] Extracting features...")
+        # Step 3: Extract features (do NOT scale yet — must avoid leakage)
+        print("\n[3/7] Extracting features...")
         X_continuous, X_binary, y_str, flow_start = self.prepare_features(df)
-
-        # Sort by flow_start within each device for temporal ordering
-        if flow_start is not None:
-            print("  Sorting by flow_start for temporal ordering...")
-            sort_idx = np.argsort(flow_start)
-            X_continuous = X_continuous[sort_idx]
-            X_binary = X_binary[sort_idx]
-            y_str = y_str[sort_idx]
-
         del df
         gc.collect()
 
-        # Step 4: Encode labels
-        print("\n[4/6] Encoding labels...")
-        y_encoded = self.label_encoder.fit_transform(y_str)
+        # Step 4: Encode labels (fit on full data — class list is known a priori)
+        print("\n[4/7] Encoding labels...")
+        self.label_encoder.fit(y_str)
+        y_encoded = self.label_encoder.transform(y_str)
         self.num_classes = len(self.label_encoder.classes_)
         print(f"  Classes: {self.num_classes}")
         for i, cls in enumerate(self.label_encoder.classes_):
-            count = np.sum(y_encoded == i)
+            count = int(np.sum(y_encoded == i))
             print(f"    {i}: {cls} ({count:,} samples)")
 
-        # Step 5: Scale continuous features ONLY
-        print("\n[5/6] Scaling continuous features (binary features preserved)...")
-        X_continuous_scaled = self.scaler.fit_transform(X_continuous)
-        print(f"  Continuous features: {X_continuous_scaled.shape[1]}")
-        print(f"  Binary features: {X_binary.shape[1]} (NOT scaled)")
+        # Step 5: Per-device temporal 80/20 split  ← STRICT ANTI-LEAKAGE
+        print("\n[5/7] Applying per-device temporal 80/20 split (anti-leakage)...")
+        train_mask = np.zeros(len(y_str), dtype=bool)
 
-        # Step 6: Create sequences
-        print(f"\n[6/6] Creating sequences (length={seq_length}, stride={stride})...")
-        X_seq, y_seq = self.create_sequences(
-            X_continuous_scaled, X_binary, y_encoded, y_str,
+        for device in np.unique(y_str):
+            dev_indices = np.where(y_str == device)[0]
+
+            # Sort device flows chronologically by flow_start
+            if flow_start is not None:
+                sort_order = np.argsort(flow_start[dev_indices])
+                dev_indices = dev_indices[sort_order]
+
+            n = len(dev_indices)
+            split_idx = max(1, int(n * 0.8))
+            train_mask[dev_indices[:split_idx]] = True
+
+        test_mask = ~train_mask
+
+        X_cont_train = X_continuous[train_mask].copy()
+        X_bin_train  = X_binary[train_mask].copy()
+        y_enc_train  = y_encoded[train_mask].copy()
+        y_str_train  = y_str[train_mask].copy()
+
+        X_cont_test  = X_continuous[test_mask].copy()
+        X_bin_test   = X_binary[test_mask].copy()
+        y_enc_test   = y_encoded[test_mask].copy()
+        y_str_test   = y_str[test_mask].copy()
+
+        print(f"  Train rows: {len(y_enc_train):,} | Test rows: {len(y_enc_test):,}")
+
+        del X_continuous, X_binary, y_encoded, y_str, flow_start, train_mask, test_mask
+        gc.collect()
+
+        # Step 6: Scale continuous features — fit ONLY on training rows
+        print("\n[6/7] Scaling continuous features (fit on train only)...")
+        # Step A: Min-Max (0 to 1)
+        X_cont_train_minmax = self.minmax_scaler.fit_transform(X_cont_train)
+        X_cont_test_minmax  = self.minmax_scaler.transform(X_cont_test)
+        
+        # Step B: Standardisation (mean 0, std 1)
+        X_cont_train_scaled = self.scaler.fit_transform(X_cont_train_minmax).astype(np.float32)
+        X_cont_test_scaled  = self.scaler.transform(X_cont_test_minmax).astype(np.float32)
+        print(f"  Continuous features: {X_cont_train_scaled.shape[1]}")
+        print(f"  Binary features: {X_bin_train.shape[1]} (NOT scaled)")
+
+        del X_cont_train, X_cont_test
+        gc.collect()
+
+        # Step 7: Create sequences INDEPENDENTLY on train and test partitions
+        print(f"\n[7/7] Creating sequences (length={seq_length}, stride={stride})...")
+
+        X_train_seq, y_train_seq = self.create_sequences(
+            X_cont_train_scaled, X_bin_train, y_enc_train, y_str_train,
             seq_length, stride
         )
-        print(f"  Total sequences: {len(X_seq):,}")
-        print(f"  Sequence shape: {X_seq.shape}")
-        print(f"  Features per timestep: {X_seq.shape[2]} "
-              f"({len(self.continuous_feature_names)} continuous + "
-              f"{len(self.binary_feature_names)} binary)")
-
-        del X_continuous, X_continuous_scaled, X_binary, y_encoded, y_str
-        gc.collect()
-
-        # Train/Val/Test split with stratification
-        print("\nSplitting data...")
-        X_train, X_temp, y_train, y_temp = train_test_split(
-            X_seq, y_seq, test_size=TEST_SIZE,
-            random_state=RANDOM_STATE, stratify=y_seq
+        X_test_seq, y_test_seq = self.create_sequences(
+            X_cont_test_scaled, X_bin_test, y_enc_test, y_str_test,
+            seq_length, stride
         )
 
-        val_ratio = VAL_SIZE / (1 - TEST_SIZE)
-        X_val, X_test, y_val, y_test = train_test_split(
-            X_temp, y_temp, test_size=(1 - val_ratio),
-            random_state=RANDOM_STATE, stratify=y_temp
-        )
+        print(f"  Train sequences: {len(X_train_seq):,}")
+        print(f"  Test  sequences: {len(X_test_seq):,}")
+        if len(X_train_seq) > 0:
+            print(f"  Sequence shape:  {X_train_seq.shape}")
+            print(f"  Features per timestep: {X_train_seq.shape[2]} "
+                  f"({len(self.continuous_feature_names)} continuous + "
+                  f"{len(self.binary_feature_names)} binary)")
 
-        del X_seq, y_seq, X_temp, y_temp
+        del X_cont_train_scaled, X_bin_train, y_enc_train, y_str_train
+        del X_cont_test_scaled, X_bin_test, y_enc_test, y_str_test
         gc.collect()
 
-        # Diminuer le nombre train de 300 000 et ajouter aux sequences de validation
-        transfer_size = 300000
-        if len(X_train) > transfer_size:
-            X_train, X_transfer, y_train, y_transfer = train_test_split(
-                X_train, y_train, test_size=transfer_size,
-                random_state=RANDOM_STATE, stratify=y_train
-            )
-            X_val = np.concatenate([X_val, X_transfer])
-            y_val = np.concatenate([y_val, y_transfer])
-
-        print(f"  Train: {len(X_train):,} | Val: {len(X_val):,} | Test: {len(X_test):,}")
+        # Carve validation from training sequences (stratified ~10%)
+        print("\nCarving validation from training sequences (stratified 10%)...")
+        val_ratio = VAL_SIZE / (1 - TEST_SIZE)  # ~12.5% of train, gives ~10% of total
+        X_train_seq, X_val_seq, y_train_seq, y_val_seq = train_test_split(
+            X_train_seq, y_train_seq,
+            test_size=val_ratio,
+            random_state=RANDOM_STATE,
+            stratify=y_train_seq,
+        )
+        print(f"  Train: {len(X_train_seq):,} | Val: {len(X_val_seq):,} | Test: {len(X_test_seq):,}")
 
         # Save if path provided
         if save_path:
             save_path = Path(save_path)
             save_path.mkdir(parents=True, exist_ok=True)
 
-            np.save(save_path / "X_train.npy", X_train)
-            np.save(save_path / "X_val.npy", X_val)
-            np.save(save_path / "X_test.npy", X_test)
-            np.save(save_path / "y_train.npy", y_train)
-            np.save(save_path / "y_val.npy", y_val)
-            np.save(save_path / "y_test.npy", y_test)
+            np.save(save_path / "X_train.npy", X_train_seq)
+            np.save(save_path / "X_val.npy",   X_val_seq)
+            np.save(save_path / "X_test.npy",  X_test_seq)
+            np.save(save_path / "y_train.npy", y_train_seq)
+            np.save(save_path / "y_val.npy",   y_val_seq)
+            np.save(save_path / "y_test.npy",  y_test_seq)
 
             with open(save_path / "preprocessor.pkl", "wb") as f:
                 pickle.dump(
                     {
+                        "minmax_scaler": self.minmax_scaler,
                         "scaler": self.scaler,
                         "label_encoder": self.label_encoder,
                         "feature_names": self.feature_names,
@@ -589,12 +618,11 @@ class JsonIoTDataProcessor:
                     },
                     f,
                 )
-
             print(f"\nData saved to {save_path}")
 
         return (
-            X_train, X_val, X_test,
-            y_train, y_val, y_test,
+            X_train_seq, X_val_seq, X_test_seq,
+            y_train_seq, y_val_seq, y_test_seq,
             self.feature_names, self.scaler, self.label_encoder,
         )
 

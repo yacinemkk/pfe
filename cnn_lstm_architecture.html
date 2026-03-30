@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CNN-LSTM Hybrid Architecture</title>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap"
+        rel="stylesheet">
+    <style>
+        :root {
+            --bg: #050505;
+            --surface: #121212;
+            --cnn-accent: #00f2ff;
+            --lstm-accent: #bd00ff;
+            --attn-accent: #ffae00;
+            --dense-accent: #00ff88;
+            --text-primary: #ffffff;
+            --text-secondary: #a0a0a0;
+            --border: #2a2a2a;
+            --glow-cnn: rgba(0, 242, 255, 0.3);
+            --glow-lstm: rgba(189, 0, 255, 0.3);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg);
+            color: var(--text-primary);
+            font-family: 'Inter', sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 50px 20px;
+            overflow-x: hidden;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 60px;
+        }
+
+        header h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            letter-spacing: 0.05em;
+            background: linear-gradient(135deg, var(--cnn-accent), var(--lstm-accent));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+        }
+
+        header p {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.3em;
+        }
+
+        .architecture-container {
+            width: 100%;
+            max-width: 900px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+        }
+
+        /* ── Input Layer ── */
+        .input-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 40px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .input-tile {
+            width: 45px;
+            height: 45px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--surface);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Fira Code', monospace;
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+            transition: all 0.3s ease;
+        }
+
+        .input-tile:hover {
+            border-color: var(--cnn-accent);
+            box-shadow: 0 0 15px var(--glow-cnn);
+            transform: translateY(-5px);
+            color: var(--cnn-accent);
+        }
+
+        /* ── Connectors ── */
+        .arrow-down {
+            width: 2px;
+            height: 40px;
+            background: linear-gradient(to bottom, var(--border), var(--cnn-accent));
+            position: relative;
+        }
+
+        .arrow-down::after {
+            content: '';
+            position: absolute;
+            bottom: -5px;
+            left: 50%;
+            transform: translateX(-50%);
+            border-left: 6px solid transparent;
+            border-right: 6px solid transparent;
+            border-top: 8px solid var(--cnn-accent);
+        }
+
+        /* ── CNN Block ── */
+        .cnn-block {
+            width: 100%;
+            border: 2px solid var(--cnn-accent);
+            background: rgba(0, 242, 255, 0.03);
+            border-radius: 12px;
+            padding: 25px;
+            position: relative;
+            box-shadow: 0 0 20px rgba(0, 242, 255, 0.05);
+        }
+
+        .block-header {
+            font-weight: 800;
+            font-size: 1.1rem;
+            color: var(--cnn-accent);
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .window-demo {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin: 15px 0;
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            font-family: 'Fira Code', monospace;
+            font-size: 0.8rem;
+        }
+
+        .window-row {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .window-box {
+            padding: 4px 10px;
+            border: 1px dashed var(--cnn-accent);
+            border-radius: 4px;
+            color: var(--cnn-accent);
+        }
+
+        .window-arrow {
+            color: var(--text-secondary);
+        }
+
+        /* ── LSTM Block ── */
+        .lstm-block {
+            width: 100%;
+            border: 2px solid var(--lstm-accent);
+            background: rgba(189, 0, 255, 0.03);
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 0 20px rgba(189, 0, 255, 0.05);
+        }
+
+        .lstm-header {
+            font-weight: 800;
+            font-size: 1.1rem;
+            color: var(--lstm-accent);
+            margin-bottom: 20px;
+        }
+
+        .lstm-sequence {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            overflow-x: auto;
+            padding: 10px 0;
+        }
+
+        .lstm-cell {
+            min-width: 50px;
+            height: 50px;
+            border: 1px solid var(--lstm-accent);
+            background: rgba(189, 0, 255, 0.1);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Fira Code', monospace;
+            color: var(--lstm-accent);
+            position: relative;
+        }
+
+        .lstm-cell-arrow {
+            color: var(--lstm-accent);
+            font-size: 1rem;
+        }
+
+        .hidden-state-out {
+            position: absolute;
+            bottom: -25px;
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+        }
+
+        /* ── Attention Block ── */
+        .attention-block {
+            width: 100%;
+            border: 2px solid var(--attn-accent);
+            background: rgba(255, 174, 0, 0.03);
+            border-radius: 12px;
+            padding: 25px;
+        }
+
+        .attn-header {
+            font-weight: 800;
+            font-size: 1.1rem;
+            color: var(--attn-accent);
+            margin-bottom: 15px;
+        }
+
+        .attn-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+            font-size: 0.85rem;
+        }
+
+        .attn-table th {
+            text-align: left;
+            padding: 8px;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.7rem;
+        }
+
+        .attn-table td {
+            padding: 10px 8px;
+            border-bottom: 1px solid rgba(255, 174, 0, 0.05);
+        }
+
+        .highlight-row {
+            background: rgba(255, 174, 0, 0.1);
+            color: var(--attn-accent);
+            font-weight: 700;
+        }
+
+        .weight-bar {
+            height: 6px;
+            background: var(--attn-accent);
+            border-radius: 3px;
+            display: inline-block;
+            margin-right: 10px;
+        }
+
+        /* ── Final Dense & Softmax ── */
+        .dense-block {
+            padding: 15px 40px;
+            border: 1.5px solid var(--dense-accent);
+            background: rgba(0, 255, 136, 0.05);
+            border-radius: 12px;
+            color: var(--dense-accent);
+            font-weight: 700;
+            text-align: center;
+        }
+
+        .output-badge {
+            margin-top: 20px;
+            padding: 20px 50px;
+            background: linear-gradient(135deg, #00f2ff, #bd00ff);
+            border-radius: 50px;
+            color: white;
+            font-weight: 900;
+            font-size: 1.4rem;
+            box-shadow: 0 10px 30px rgba(189, 0, 255, 0.4);
+            animation: pulse 2s infinite ease-in-out;
+        }
+
+        @keyframes pulse {
+            0% {
+                transform: scale(1);
+                box-shadow: 0 10px 30px rgba(189, 0, 255, 0.4);
+            }
+
+            50% {
+                transform: scale(1.03);
+                box-shadow: 0 15px 40px rgba(189, 0, 255, 0.6);
+            }
+
+            100% {
+                transform: scale(1);
+                box-shadow: 0 10px 30px rgba(189, 0, 255, 0.4);
+            }
+        }
+
+        .math-expr {
+            font-family: 'Fira Code', monospace;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            margin-top: 15px;
+            border-left: 3px solid var(--attn-accent);
+        }
+    </style>
+</head>
+
+<body>
+
+    <header>
+        <h1>CNN-LSTM HYBRID</h1>
+        <p>Dynamic Temporal Feature Engineering</p>
+    </header>
+
+    <div class="architecture-container">
+
+        <!-- INPUT -->
+        <div class="input-row">
+            <div class="input-tile">x1</div>
+            <div class="input-tile">x2</div>
+            <div class="input-tile">x3</div>
+            <div class="input-tile">x4</div>
+            <div class="input-tile">x5</div>
+            <div class="input-tile">x6</div>
+            <div class="input-tile">x7</div>
+            <div class="input-tile" style="border: none; background: transparent; color: var(--text-secondary)">...
+            </div>
+            <div class="input-tile">x20</div>
+        </div>
+
+        <div class="arrow-down"></div>
+
+        <!-- CNN LAYER 1 -->
+        <div class="cnn-block">
+            <div class="block-header">
+                <span>🟦 CNN 1D — LAYER 1</span>
+                <span style="font-size: 0.8rem; font-weight: 400; color: var(--text-secondary)">(64 filters,
+                    kernel=3)</span>
+            </div>
+            <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 10px;">
+                Captures local spatial dependencies within the packet sequence.
+            </p>
+            <div class="window-demo">
+                <div class="window-row">
+                    <div class="window-box">x1, x2, x3</div>
+                    <span class="window-arrow">──→</span>
+                    <span style="color: var(--dense-accent)">feature_1</span>
+                </div>
+                <div class="window-row">
+                    <div class="window-box">x2, x3, x4</div>
+                    <span class="window-arrow">──→</span>
+                    <span style="color: var(--dense-accent)">feature_2</span>
+                </div>
+            </div>
+            <p style="font-size: 0.7rem; color: var(--cnn-accent); font-weight: 700; text-transform: uppercase;">
+                Output: 18 positions × 64 maps + ReLU + BatchNorm
+            </p>
+        </div>
+
+        <div class="arrow-down" style="height: 20px;"></div>
+
+        <!-- CNN LAYER 2 -->
+        <div class="cnn-block" style="border-style: dashed;">
+            <div class="block-header">
+                <span>🟦 CNN 1D — LAYER 2</span>
+                <span style="font-size: 0.8rem; font-weight: 400; color: var(--text-secondary)">(128 filters,
+                    kernel=3)</span>
+            </div>
+            <p style="font-size: 0.8rem; color: var(--text-secondary);">
+                Detects <strong>compound patterns</strong> (e.g., "burst THEN pause").
+            </p>
+            <div class="math-expr" style="border-color: var(--cnn-accent);">
+                Pattern[L1] ⊕ Pattern[L1] → High-Level Feature[L2]
+            </div>
+            <p
+                style="font-size: 0.7rem; color: var(--cnn-accent); font-weight: 700; text-transform: uppercase; margin-top: 15px;">
+                Output: 16 time steps × 128 features
+            </p>
+        </div>
+
+        <div class="arrow-down" style="background: linear-gradient(to bottom, var(--cnn-accent), var(--lstm-accent))">
+        </div>
+
+        <!-- LSTM LAYER -->
+        <div class="lstm-block">
+            <div class="lstm-header">🟪 LSTM (128 hidden units)</div>
+            <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 20px;">
+                Processes high-level CNN features sequentially to model long-term temporal context.
+            </p>
+            <div class="lstm-sequence">
+                <div class="lstm-cell">h1 <div class="hidden-state-out">o[1]</div>
+                </div>
+                <div class="lstm-cell-arrow">➔</div>
+                <div class="lstm-cell">h2 <div class="hidden-state-out">o[2]</div>
+                </div>
+                <div class="lstm-cell-arrow">➔</div>
+                <div class="lstm-cell">h3 <div class="hidden-state-out">o[3]</div>
+                </div>
+                <div class="lstm-cell-arrow">➔</div>
+                <div class="lstm-cell">h4 <div class="hidden-state-out">o[4]</div>
+                </div>
+                <div class="lstm-cell-arrow">➔</div>
+                <div style="color: var(--lstm-accent); padding: 0 10px;">...</div>
+                <div class="lstm-cell-arrow">➔</div>
+                <div class="lstm-cell">h16 <div class="hidden-state-out">o[16]</div>
+                </div>
+            </div>
+            <p
+                style="font-size: 0.7rem; color: var(--lstm-accent); font-weight: 700; margin-top: 35px; text-transform: uppercase;">
+                Output: ALL 16 hidden states (Many-to-Many)
+            </p>
+        </div>
+
+        <div class="arrow-down" style="background: linear-gradient(to bottom, var(--lstm-accent), var(--attn-accent))">
+        </div>
+
+        <!-- ATTENTION LAYER -->
+        <div class="attention-block">
+            <div class="attn-header">🟧 ATTENTION MECHANISM</div>
+            <table class="attn-table">
+                <thead>
+                    <tr>
+                        <th>Step</th>
+                        <th>Weight (α)</th>
+                        <th>Interpretation</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>o[1]</td>
+                        <td>
+                            <div class="weight-bar" style="width: 10px;"></div>0.02
+                        </td>
+                        <td>Boring, ignore</td>
+                    </tr>
+                    <tr>
+                        <td>o[2]</td>
+                        <td>
+                            <div class="weight-bar" style="width: 15px;"></div>0.03
+                        </td>
+                        <td>Noise</td>
+                    </tr>
+                    <tr class="highlight-row">
+                        <td>o[3]</td>
+                        <td>
+                            <div class="weight-bar" style="width: 80px; background: white;"></div>0.35
+                        </td>
+                        <td>★ KEY SIGNATURE! ★</td>
+                    </tr>
+                    <tr class="highlight-row">
+                        <td>o[4]</td>
+                        <td>
+                            <div class="weight-bar" style="width: 70px; background: white;"></div>0.30
+                        </td>
+                        <td>★ IMPORTANT TOO ★</td>
+                    </tr>
+                    <tr>
+                        <td>...</td>
+                        <td>...</td>
+                        <td>...</td>
+                    </tr>
+                </tbody>
+            </table>
+            <div class="math-expr">
+                Context = Σ α[t] · o[t] ➜ 128-dim weighted vector
+            </div>
+        </div>
+
+        <div class="arrow-down" style="background: linear-gradient(to bottom, var(--attn-accent), var(--dense-accent))">
+        </div>
+
+        <!-- FINAL STAGES -->
+        <div class="dense-block">Dense (128) + ReLU</div>
+
+        <div class="arrow-down" style="height: 20px; background: var(--dense-accent)"></div>
+
+        <div class="dense-block"
+            style="border-radius: 40px; border-color: #ff4757; color: #ff4757; background: rgba(255,71,87,0.05)">
+            Softmax (17+)
+        </div>
+
+        <!-- OUTPUT -->
+        <div class="output-badge">
+            🔊 Smart Speaker <span style="font-weight: 400; font-size: 0.9rem; opacity: 0.8;">(class 12)</span>
+        </div>
+
+    </div>
+
+</body>
+
+</html>

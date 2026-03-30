@@ -1,5 +1,15 @@
 """
-LSTM Model for IoT Device Identification
+LSTM / BiLSTM Classifier for IoT Device Identification
+=======================================================
+Architecture per docs/architectures §1 (FL-HDECOC configuration):
+
+  LSTM ×2 layers
+  ├── hidden_size : 64 units per layer
+  ├── activation  : ReLU (applied in classifier head)
+  └── bidirectional → output embedding = 64 × 2 = 128 dims
+
+  BiLSTM variant: processes sequences in both directions,
+  concatenates forward + backward hidden states → 128-dim embedding.
 """
 
 import torch
@@ -28,14 +38,24 @@ class IoTSequenceDataset(Dataset):
 
 
 class LSTMClassifier(nn.Module):
+    """
+    LSTM / BiLSTM classifier.
+
+    Per docs/architectures §1:
+    - 2 stacked LSTM layers, 64 hidden units each
+    - ReLU activation in the classifier head
+    - Bidirectional: forward + backward → 128-dim embedding
+    - Classifier: Linear(128 → 64) → ReLU → Linear(64 → num_classes)
+    """
+
     def __init__(self, input_size, num_classes, config=None):
         super().__init__()
 
         config = config or LSTM_CONFIG
-        hidden_size = config["hidden_size"]
-        num_layers = config["num_layers"]
-        bidirectional = config["bidirectional"]
-        dropout = config["dropout"]
+        hidden_size   = config.get("hidden_size", 64)    # 64 per layer per doc
+        num_layers    = config.get("num_layers", 2)
+        bidirectional = config.get("bidirectional", True)
+        dropout       = config.get("dropout", 0.3)
 
         self.lstm = nn.LSTM(
             input_size=input_size,
@@ -46,26 +66,29 @@ class LSTMClassifier(nn.Module):
             dropout=dropout if num_layers > 1 else 0,
         )
 
-        lstm_output_size = hidden_size * 2 if bidirectional else hidden_size
+        # embedding_size = 64×2 = 128 for BiLSTM  |  64 for unidirectional
+        embedding_size = hidden_size * 2 if bidirectional else hidden_size
 
+        # Classifier: embedding → ReLU → num_classes   (doc: ReLU activation)
         self.classifier = nn.Sequential(
             nn.Dropout(dropout),
-            nn.Linear(lstm_output_size, hidden_size),
+            nn.Linear(embedding_size, hidden_size),   # 128 → 64
             nn.ReLU(),
-            nn.Dropout(dropout),
+            nn.Dropout(dropout / 2),
             nn.Linear(hidden_size, num_classes),
         )
 
     def forward(self, x):
         lstm_out, (hidden, cell) = self.lstm(x)
 
+        # Extract the final hidden state (embedding)
         if self.lstm.bidirectional:
-            hidden = torch.cat((hidden[-2], hidden[-1]), dim=1)
+            # Concatenate last forward + last backward hidden state → 128 dims
+            embedding = torch.cat((hidden[-2], hidden[-1]), dim=1)
         else:
-            hidden = hidden[-1]
+            embedding = hidden[-1]
 
-        output = self.classifier(hidden)
-        return output
+        return self.classifier(embedding)
 
 
 class Trainer:
@@ -132,7 +155,6 @@ class Trainer:
         weight_decay=WEIGHT_DECAY,
         save_path=None,
     ):
-
         optimizer = torch.optim.Adam(
             self.model.parameters(), lr=lr, weight_decay=weight_decay
         )
@@ -205,14 +227,15 @@ def train_lstm(data_path, save_path, epochs=NUM_EPOCHS):
     num_classes = len(np.unique(y_train))
 
     print(f"Input size: {input_size}, Classes: {num_classes}")
+    print(f"Architecture: 2×LSTM(64 units, BiLSTM) → 128-dim embedding → Classifier")
 
     train_dataset = IoTSequenceDataset(X_train, y_train)
-    val_dataset = IoTSequenceDataset(X_val, y_val)
-    test_dataset = IoTSequenceDataset(X_test, y_test)
+    val_dataset   = IoTSequenceDataset(X_val,   y_val)
+    test_dataset  = IoTSequenceDataset(X_test,  y_test)
 
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE)
+    val_loader   = DataLoader(val_dataset,   batch_size=BATCH_SIZE)
+    test_loader  = DataLoader(test_dataset,  batch_size=BATCH_SIZE)
 
     model = LSTMClassifier(input_size, num_classes)
     trainer = Trainer(model)
@@ -227,12 +250,13 @@ def train_lstm(data_path, save_path, epochs=NUM_EPOCHS):
         json.dump(history, f)
 
     results = {
-        "model": "LSTM",
+        "model": "BiLSTM",
         "test_accuracy": test_acc,
         "test_loss": test_loss,
         "best_val_accuracy": max(history["val_acc"]),
         "num_classes": num_classes,
         "input_size": input_size,
+        "architecture": "2xLSTM(64, BiLSTM) → 128-dim embedding → ReLU → num_classes",
     }
 
     with open(save_path / "results.json", "w") as f:

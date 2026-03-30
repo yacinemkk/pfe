@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Transformer Architecture</title>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap"
+        rel="stylesheet" />
+    <style>
+        :root {
+            --bg: #030712;
+            --surface: #111827;
+            --surface-light: #1f2937;
+            --border: #374151;
+            --accent-gold: #fbbf24;
+            --accent-purple: #818cf8;
+            --accent-teal: #2dd4bf;
+            --accent-red: #f87171;
+            --text-main: #f3f4f6;
+            --text-dim: #9ca3af;
+            --glow-purple: rgba(129, 140, 248, 0.4);
+            --glow-gold: rgba(251, 191, 36, 0.3);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text-main);
+            font-family: 'Inter', sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 60px 20px;
+            min-height: 100vh;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        header h1 {
+            font-size: 2.2rem;
+            font-weight: 800;
+            letter-spacing: 0.1em;
+            background: linear-gradient(to right, var(--accent-teal), var(--accent-purple), var(--accent-gold));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+        }
+
+        header p {
+            color: var(--text-dim);
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.2em;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 800px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        /* ── INPUT ── */
+        .input-row {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 30px;
+        }
+
+        .input-box {
+            width: 60px;
+            height: 60px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Fira Code', monospace;
+            transition: all 0.3s ease;
+        }
+
+        .input-box:hover {
+            border-color: var(--accent-teal);
+            transform: translateY(-5px);
+            box-shadow: 0 5px 15px rgba(45, 212, 191, 0.2);
+        }
+
+        .input-box span:first-child {
+            color: var(--accent-teal);
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+
+        .input-box span:last-child {
+            color: var(--text-dim);
+            font-size: 0.6rem;
+        }
+
+        .ellipsis {
+            align-self: center;
+            color: var(--text-dim);
+            font-size: 1.5rem;
+        }
+
+        /* ── ARROWS ── */
+        .arrow-v {
+            height: 30px;
+            width: 2px;
+            background: linear-gradient(to bottom, var(--border), var(--accent-purple));
+            position: relative;
+        }
+
+        .arrow-v::after {
+            content: '';
+            position: absolute;
+            bottom: -6px;
+            left: 50%;
+            transform: translateX(-50%);
+            border-left: 6px solid transparent;
+            border-right: 6px solid transparent;
+            border-top: 8px solid var(--accent-purple);
+        }
+
+        /* ── BOX STYLES ── */
+        .box {
+            width: 100%;
+            padding: 20px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            border-radius: 12px;
+            margin: 10px 0;
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+
+        .box:hover {
+            border-color: var(--accent-purple);
+            box-shadow: 0 0 20px var(--glow-purple);
+        }
+
+        .box-title {
+            font-weight: 700;
+            font-size: 1rem;
+            margin-bottom: 5px;
+            color: var(--accent-purple);
+        }
+
+        .box-desc {
+            font-size: 0.8rem;
+            color: var(--text-dim);
+        }
+
+        /* ── POSITIONAL ENCODING ── */
+        .pe-container {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            justify-content: center;
+            margin-top: 10px;
+        }
+
+        .pe-label {
+            font-family: 'Fira Code', monospace;
+            font-size: 0.7rem;
+            color: var(--accent-gold);
+        }
+
+        /* ── ENCODER BLOCK ── */
+        .encoder-block {
+            width: 100%;
+            border: 2px solid var(--accent-purple);
+            background: rgba(17, 24, 39, 0.8);
+            border-radius: 16px;
+            padding: 30px;
+            margin: 20px 0;
+            position: relative;
+            box-shadow: 0 0 30px rgba(129, 140, 248, 0.1);
+        }
+
+        .encoder-tag {
+            position: absolute;
+            top: -12px;
+            left: 20px;
+            background: var(--accent-purple);
+            color: var(--bg);
+            padding: 2px 12px;
+            border-radius: 20px;
+            font-weight: 800;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+        }
+
+        .sub-block {
+            background: var(--surface-light);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 15px;
+            margin: 15px 0;
+        }
+
+        .mha-heads {
+            display: flex;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 15px;
+            flex-wrap: wrap;
+        }
+
+        .head-pill {
+            background: rgba(45, 212, 191, 0.1);
+            border: 1px solid var(--accent-teal);
+            color: var(--accent-teal);
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 0.65rem;
+            font-family: 'Fira Code', monospace;
+        }
+
+        .norm-block {
+            background: rgba(251, 191, 36, 0.05);
+            border: 1px dashed var(--accent-gold);
+            color: var(--accent-gold);
+            padding: 8px;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin: 10px 0;
+        }
+
+        .ffn-grid {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            font-family: 'Fira Code', monospace;
+            font-size: 0.75rem;
+            margin-top: 10px;
+        }
+
+        .ffn-arrow {
+            color: var(--text-dim);
+        }
+
+        /* ── REPEATED BLOCKS ── */
+        .repeated-block {
+            width: 90%;
+            height: 40px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8rem;
+            color: var(--text-dim);
+            margin: 5px 0;
+            opacity: 0.6;
+        }
+
+        /* ── POOLING & OUTPUT ── */
+        .gap-box {
+            border: 1px solid var(--accent-gold);
+            background: rgba(251, 191, 36, 0.05);
+        }
+
+        .gap-box .box-title {
+            color: var(--accent-gold);
+        }
+
+        .output-box {
+            background: linear-gradient(135deg, var(--accent-purple), var(--accent-teal));
+            padding: 15px 40px;
+            border-radius: 40px;
+            color: var(--bg);
+            font-weight: 800;
+            font-size: 1.1rem;
+            box-shadow: 0 10px 25px rgba(45, 212, 191, 0.3);
+            margin-top: 20px;
+            animation: float 3s ease-in-out infinite;
+        }
+
+        @keyframes float {
+
+            0%,
+            100% {
+                transform: translateY(0);
+            }
+
+            50% {
+                transform: translateY(-10px);
+            }
+        }
+
+        /* ── DECORATIVE ── */
+        .residual-path {
+            position: absolute;
+            right: 10px;
+            top: 20%;
+            bottom: 20%;
+            width: 20px;
+            border-right: 2px dashed var(--text-dim);
+            border-top: 2px dashed var(--text-dim);
+            border-bottom: 2px dashed var(--text-dim);
+            opacity: 0.3;
+        }
+
+        .residual-label {
+            position: absolute;
+            right: -35px;
+            top: 50%;
+            transform: rotate(90deg) translateY(-50%);
+            font-size: 0.6rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <header>
+        <h1>TRANSFORMER ARCHITECTURE</h1>
+        <p>Spatial-Temporal Intelligence</p>
+    </header>
+
+    <div class="container">
+
+        <!-- INPUT -->
+        <div class="input-row">
+            <div class="input-box"><span>x[1]</span><span>37-d</span></div>
+            <div class="input-box"><span>x[2]</span><span>37-d</span></div>
+            <div class="input-box"><span>x[3]</span><span>37-d</span></div>
+            <div class="input-box"><span>x[4]</span><span>37-d</span></div>
+            <div class="ellipsis">...</div>
+            <div class="input-box"><span>x[10]</span><span>37-d</span></div>
+        </div>
+
+        <div class="arrow-v"></div>
+
+        <!-- PROJECTION -->
+        <div class="box">
+            <div class="box-title">LINEAR PROJECTION</div>
+            <div class="box-desc">Learned embedding mapping: 37-dim → 64-dim</div>
+        </div>
+
+        <div class="arrow-v"></div>
+
+        <!-- POSITIONAL ENCODING -->
+        <div class="box" style="border-style: dashed;">
+            <div class="box-title" style="color: var(--accent-gold);">POSITIONAL ENCODING</div>
+            <div class="pe-container">
+                <div class="pe-label">e[t] = embed[t] + PE(t)</div>
+                <svg width="100" height="20" style="opacity: 0.5;">
+                    <path d="M0 10 Q 25 0, 50 10 T 100 10" stroke="#fbbf24" fill="transparent" stroke-width="2" />
+                </svg>
+            </div>
+            <div class="box-desc" style="margin-top: 8px;">Sinusoidal encoding injected to preserve temporal order</div>
+        </div>
+
+        <div class="arrow-v"></div>
+
+        <!-- ENCODER BLOCK 1 -->
+        <div class="encoder-block">
+            <div class="encoder-tag">Encoder Block 1 of 4</div>
+            <div class="residual-path">
+                <div class="residual-label">Residual Path</div>
+            </div>
+
+            <!-- MHA -->
+            <div class="sub-block">
+                <div class="box-title" style="color: var(--accent-teal);">Multi-Head Self-Attention</div>
+                <div class="box-desc">8 parallel heads capturing different temporal features</div>
+                <div class="mha-heads">
+                    <div class="head-pill">Head 1: Bursts</div>
+                    <div class="head-pill">Head 2: Sizes</div>
+                    <div class="head-pill">Head 3: Gaps</div>
+                    <div class="head-pill">...</div>
+                    <div class="head-pill">Head 8: Dir</div>
+                </div>
+            </div>
+
+            <div class="norm-block">Add & Layer Norm</div>
+
+            <!-- FFN -->
+            <div class="sub-block">
+                <div class="box-title">Feed-Forward Network</div>
+                <div class="ffn-grid">
+                    <span>64</span> <span class="ffn-arrow">→</span>
+                    <span style="color: var(--accent-purple);">Linear</span> <span class="ffn-arrow">→</span>
+                    <span>256</span> <span class="ffn-arrow">→</span>
+                    <span style="color: var(--accent-teal);">GELU</span> <span class="ffn-arrow">→</span>
+                    <span>64</span>
+                </div>
+            </div>
+
+            <div class="norm-block">Add & Layer Norm</div>
+        </div>
+
+        <!-- STACKED BLOCKS -->
+        <div class="repeated-block">ENCODER BLOCK 2 of 4</div>
+        <div class="repeated-block">ENCODER BLOCK 3 of 4</div>
+        <div class="repeated-block">ENCODER BLOCK 4 of 4</div>
+
+        <div class="arrow-v" style="height: 40px;"></div>
+
+        <!-- POOLING -->
+        <div class="box gap-box">
+            <div class="box-title">GLOBAL AVERAGE POOL</div>
+            <div class="box-desc">Mean reduction over 10 time steps → 64-d vector</div>
+        </div>
+
+        <div class="arrow-v"></div>
+
+        <!-- DENSE -->
+        <div class="box" style="width: auto; padding: 15px 50px;">
+            <div class="box-title" style="color: var(--accent-red);">Dense + Softmax</div>
+            <div class="box-desc">Final classification logit distribution</div>
+        </div>
+
+        <div class="arrow-v"></div>
+
+        <!-- OUTPUT -->
+        <div class="output-box">
+            🔒 Security Camera (class 3)
+        </div>
+
+    </div>
+
+</body>
+
+</html>

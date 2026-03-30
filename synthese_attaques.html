@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="fr">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Synthèse des Attaques Adversarielles - IoT Security</title>
+    <!-- Inclure MathJax pour les formules mathématiques -->
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <style>
+        :root {
+            --bg: #f8fafc;
+            --header-bg: #0284c7;
+            --text-main: #1e293b;
+            --accent: #4f46e5;
+            --card-bg: #ffffff;
+            --border: #e2e8f0;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background-color: var(--bg);
+            color: var(--text-main);
+            margin: 0;
+            padding: 0;
+            line-height: 1.6;
+        }
+
+        header {
+            background: linear-gradient(135deg, var(--header-bg), var(--accent));
+            color: white;
+            padding: 40px 20px;
+            text-align: center;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 2.5rem;
+        }
+
+        .subtitle {
+            opacity: 0.9;
+            font-size: 1.1rem;
+            margin-top: 10px;
+        }
+
+        .container {
+            max-width: 1100px;
+            margin: 40px auto;
+            padding: 0 20px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+            gap: 25px;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 25px;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05);
+            transition: transform 0.2s;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            border-color: var(--header-bg);
+        }
+
+        h2 {
+            color: var(--header-bg);
+            margin-top: 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border-bottom: 2px solid #f1f5f9;
+            padding-bottom: 15px;
+        }
+
+        .tag {
+            font-size: 0.75rem;
+            background: #e0f2fe;
+            color: #0369a1;
+            padding: 4px 12px;
+            border-radius: 20px;
+            text-transform: uppercase;
+            font-weight: bold;
+        }
+
+        .formula-box {
+            background: #f1f5f9;
+            padding: 20px;
+            border-radius: 12px;
+            margin: 20px 0;
+            text-align: center;
+            font-size: 1.2rem;
+            color: #0f172a;
+            border-left: 5px solid var(--header-bg);
+        }
+
+        .description b {
+            color: var(--accent);
+        }
+
+        .footer {
+            text-align: center;
+            padding: 40px;
+            color: #64748b;
+            font-size: 0.9rem;
+        }
+
+        .logic-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            font-size: 0.9rem;
+        }
+
+        .logic-item {
+            background: #fafafa;
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px dashed #cbd5e1;
+        }
+    </style>
+</head>
+
+<body>
+
+    <header>
+        <h1>Synthèse des Attaques Adversarielles</h1>
+        <div class="subtitle">Analyse Technique & Fondements Mathématiques - PFE IoT Security</div>
+    </header>
+
+    <div class="container">
+
+        <!-- Feature Level -->
+        <div class="card">
+            <h2>Feature-Level Attack <span class="tag">Sémantique</span></h2>
+            <div class="description">
+                Cible les <b>statistiques de flux</b> (octets, paquets, durées) tout en respectant les contraintes
+                physiques du réseau.
+            </div>
+            <div class="formula-box">
+                \[x_{adv} = \text{Proj} ( x_0 + c \cdot t \cdot \mathcal{M} \cdot \text{sign}(\mu_{target} - x_0) \cdot
+                |\Delta| )\]
+            </div>
+            <div class="logic-grid">
+                <div class="logic-item"><b>Usage :</b> Simuler une usurpation d'identité (Mimicry) par modification du
+                    comportement.</div>
+                <div class="logic-item"><b>Force :</b> Très difficile à détecter par des méthodes statistiques
+                    classiques.</div>
+            </div>
+        </div>
+
+        <!-- FGSM -->
+        <div class="card">
+            <h2>FGSM <span class="tag">Gradient One-Step</span></h2>
+            <div class="description">
+                <b>Fast Gradient Sign Method</b> : Une attaque rapide et simple basée sur la direction du gradient de la
+                fonction de perte.
+            </div>
+            <div class="formula-box">
+                \[x_{adv} = x + \epsilon \cdot \text{sign}(\nabla_x \mathcal{L}(\theta, x, y))\]
+            </div>
+            <div class="logic-grid">
+                <div class="logic-item"><b>Usage :</b> Évaluation de base de la sensibilité du modèle.</div>
+                <div class="logic-item"><b>Force :</b> Calcul extrêmement rapide (1 step).</div>
+            </div>
+        </div>
+
+        <!-- PGD -->
+        <div class="card">
+            <h2>PGD Attack <span class="tag">Gradient Iterative</span></h2>
+            <div class="description">
+                <b>Projected Gradient Descent</b> : L'attaque itérative la plus puissante. Trouve la perturbation
+                optimale dans une sphère d'erreur fixée.
+            </div>
+            <div class="formula-box">
+                \[x_{t+1} = \text{Clip}_{x, \epsilon} ( x_t + \alpha \cdot \text{sign}(\nabla_x \mathcal{L}(\theta, x_t,
+                y)) )\]
+            </div>
+            <div class="logic-grid">
+                <div class="logic-item"><b>Usage :</b> Standard pour l'entraînement robuste (Adversarial Training).
+                </div>
+                <div class="logic-item"><b>Force :</b> Maximise l'erreur locale du modèle de manière exhaustive.</div>
+            </div>
+        </div>
+
+        <!-- Bit-Flip -->
+        <div class="card">
+            <h2>Bit-Flipping <span class="tag">Discrete Attack</span></h2>
+            <div class="description">
+                Adaptation pour les **caractéristiques binaires** (direction des paquets). Le gradient guide l'inversion
+                d'un bit (0 ou 1).
+            </div>
+            <div class="formula-box">
+                \[i = \text{argmax}(|\nabla_{x_{bin}} \mathcal{L}|) \implies x_i' = 1 - x_i\]
+            </div>
+            <div class="logic-grid">
+                <div class="logic-item"><b>Usage :</b> Manipuler les caractéristiques discrètes impossibles à attaquer
+                    avec +0.01.</div>
+                <div class="logic-item"><b>Force :</b> Garantit des entrées réseau sémantiquement valides.</div>
+            </div>
+        </div>
+
+        <!-- Adversarial Training -->
+        <div class="card" style="grid-column: span 1; background: #f0f9ff; border-color: #0ea5e9;">
+            <h2 style="color: #0369a1;">Entraînement Adversarial <span class="tag"
+                    style="background: #0ea5e9; color: white;">Défense</span></h2>
+            <div class="description">
+                Minimiser la perte maximale pour garantir une <b>immunité</b> contre les perturbations adverses.
+            </div>
+            <div class="formula-box" style="background: #e0f2fe;">
+                \[ \min_\theta \mathbb{E} [ \max_{\delta \in \Delta} \mathcal{L}(\theta, x + \delta, y) ] \]
+            </div>
+            <div class="logic-grid">
+                <div class="logic-item"><b>Mécanique :</b> Entraînement sur un mélange dynamique (60% Clean / 40% Adv).
+                </div>
+                <div class="logic-item"><b>Résultat :</b> Frontière de décision plus lisse et résistante.</div>
+            </div>
+        </div>
+
+    </div>
+
+    <div class="footer">
+        &copy; 2026 Projet Fin d'Études - Sécurité des Réseaux IoT par Deep Learning
+    </div>
+
+</body>
+
+</html>

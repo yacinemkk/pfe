@@ -1,0 +1,47 @@
+Voici le plan détaillé d'entraînement et de test en deux phases, à appliquer systématiquement à chaque modèle (LSTM, CNN-LSTM, XGBoost-LSTM, Transformer, CNN-BiLSTM, puis l'architecture hybride finale CNN-BiLSTM-Transformer) :
+PHASE 1 : Entraînement Standard et Constat de Vulnérabilité
+L'objectif de cette phase est d'établir les performances de base dans un environnement sain, puis de démontrer la "chute" (le crash) de ces performances face à des attaquants furtifs (évasion).
+1. Entraînement initial (Données Bénignes Uniquement)
+
+    Entraînez chaque modèle de bout en bout en utilisant uniquement le jeu de données contenant les flux de trafic IoT normaux (bénignes).
+    Note pour XGBoost-LSTM : Utilisez le LSTM entraîné pour extraire les caractéristiques (vecteurs d'intégration), puis entraînez XGBoost sur ces caractéristiques.
+
+2. Évaluation Standard (Trafic Normal) Évaluez les performances du modèle sur un jeu de test purement bénin pour obtenir les scores idéaux.
+
+    Métriques globales : Calculez le Macro F1-Score (crucial pour éviter les biais liés aux appareils générant plus ou moins de trafic).
+    Métriques par classe : Extrayez la Précision, le Rappel, et le F1-Score pour chaque classe d'appareil IoT afin de vérifier que tous les appareils sont bien identifiés.
+
+3. Le "Crash Test 1" (Test de Vulnérabilité) Soumettez le modèle entraîné à trois scénarios de test pour observer son comportement :
+
+    Test 1 (Données Bénignes) : Vous devriez obtenir des scores élevés (souvent > 90%).
+    Test 2 (Données Adversaires Uniquement) : Soumettez des instances adversaires générées par des attaques (ex: FGSM, BIM, PGD). Objectif : Observer la chute. Les recherches montrent que les modèles non protégés s'effondrent ici : par exemple, le F1-Score d'un modèle XGBoost peut chuter de plus de 88% à environ 44% (voire moins de 20% sur certains datasets), et celui des réseaux profonds (DNN) peut chuter de 82% à 43%.
+    Test 3 (Mélange Bénignes + Adversaires) : Évaluez le modèle sur un trafic réaliste où des attaques d'usurpation se cachent au milieu du trafic normal.
+
+
+--------------------------------------------------------------------------------
+PHASE 2 : Entraînement Antagoniste (Adversarial Training) et Robustesse
+L'objectif de cette phase est de "vacciner" les modèles contre les attaques observées lors de la Phase 1 et de prouver la remontée de leurs performances.
+1. Création du Corpus Conjoint (Génération de la Défense)
+
+    Générez des échantillons adversaires à partir de vos données d'entraînement bénignes.
+    Mélangez ces échantillons adversaires (étiquetés avec leur véritable classe d'appareil) avec les données bénignes pures pour former un nouveau "corpus conjoint" d'entraînement.
+
+2. Ré-entraînement (Adversarial Training)
+
+    Prenez chaque modèle et ré-entraînez-le sur ce nouveau corpus conjoint.
+    Explication : Exposer le modèle à des perturbations calculées pendant l'entraînement élargit ses frontières de décision et augmente sa tolérance aux petites modifications sémantiques imposées par l'attaquant.
+
+3. Le "Crash Test 2" (Vérification de la Résilience) Soumettez ce nouveau modèle "robuste" aux mêmes trois scénarios de test qu'à la Phase 1 pour observer la récupération des performances :
+
+    Test 1 (Données Bénignes) : Vérifiez le compromis (Trade-off). L'entraînement antagoniste peut entraîner une très légère baisse des performances sur le trafic parfaitement normal (par exemple, une perte d'environ 0.02 ou 2% sur l'Accuracy ou le F1-Score), ce qui est un sacrifice normal et acceptable pour obtenir la sécurité.
+    Test 2 (Données Adversaires Uniquement) : Objectif : Observer la remontée. Vous devriez constater une récupération spectaculaire. Les études montrent qu'après cet entraînement, le F1-Score d'un XGBoost sous attaque peut remonter de 19,9% à 87%, et celui d'un modèle DL de 28,6% à 84%.
+    Test 3 (Mélange Bénignes + Adversaires) : Confirmez que le modèle gère désormais efficacement un réseau réel compromis.
+
+
+--------------------------------------------------------------------------------
+Comparaison Finale et Conclusion de l'Étude
+Une fois ces deux phases exécutées pour l'ensemble des modèles individuels (LSTM, CNN-LSTM, Transformer, etc.), appliquez ce même protocole complet à votre Architecture Hybride (CNN-BiLSTM-Transformer).
+Vous pourrez ainsi démontrer de manière irréfutable dans votre rapport de projet que :
+
+    Phase 1 : Tous les modèles, même l'hybride, sont vulnérables sans défense proactive.
+    Phase 2 : L'entraînement antagoniste restaure la sécurité, et l'architecture hybride CNN-BiLSTM-Transformer combinée à cette défense offre le meilleur équilibre : la plus haute précision sur les données normales grâce à sa vision spatio-temporelle et globale, et la meilleure résilience face aux données adversaires.

@@ -1,0 +1,28 @@
+1. Modèle LSTM / BiLSTM
+
+    Architecture de base : Les réseaux LSTM (Long Short-Term Memory) utilisent des mécanismes de portes (portes d'entrée, d'oubli et de sortie) pour propager les informations critiques sur de longues séquences et atténuer les problèmes d'évanouissement du gradient. La variante bidirectionnelle (BiLSTM) traite les séquences d'entrée indépendamment dans les deux directions (avant et arrière) pour capturer de manière exhaustive les dépendances temporelles.
+    Configuration type (ex. FL-HDECOC) : Le modèle utilise un réseau LSTM à deux couches, avec 64 unités cachées par couche et une fonction d'activation ReLU. Le LSTM compresse la séquence temporelle en un vecteur d'intégration (embedding) de taille fixe (généralement 128).
+
+2. Modèle CNN-LSTM (ou LSTM-1DCNN / LSTM-MLP)
+
+    Architecture : Ce modèle combine la capacité de mémoire du LSTM pour extraire les motifs récurrents avec l'extraction de motifs spatiaux du CNN (ou d'un perceptron multicouche - MLP).
+    Configuration : L'architecture classique comprend une couche d'entrée de séries temporelles, suivie d'une couche LSTM configurée pour retourner des séquences (ex. avec 64 neurones). Ensuite, une couche de convolution 1D (1D-CNN) applique des noyaux aux caractéristiques proches. La séquence passe ensuite par une couche de Max-Pooling 1D, un aplatissement (Flatten), puis une couche dense (entièrement connectée) de 100 neurones, pour aboutir à la couche de sortie.
+
+3. Modèle XGBoost-LSTM
+
+    Architecture : Dans cette approche, le réseau LSTM sert d'extracteur de caractéristiques temporelles. Les représentations compressées (vecteurs d'intégration ou embeddings) générées par le LSTM sont ensuite utilisées comme données d'entrée pour entraîner le classificateur XGBoost.
+    Configuration XGBoost : L'algorithme XGBoost est optimisé avec des hyperparamètres tels que le taux d'apprentissage (lr entre 0,01 et 0,3), la profondeur maximale de l'arbre (max_depth entre 3 et 15), le poids minimum des enfants (min_child_weight entre 1 et 7), et gamma (entre 0 et 0,5).
+
+4. Modèle Transformer (ex. framework MIND-IoT)
+
+    Architecture : Le Transformer repose sur l'empilement de couches d'encodeurs utilisant un mécanisme d'attention multi-têtes (Multi-Head Self-Attention) et des réseaux neuronaux feed-forward (FFN). Il intègre des connexions résiduelles et une normalisation de couche (LayerNorm) pour garantir un entraînement stable.
+    Configuration : La configuration moyenne (utilisée pour équilibrer efficacité et performance) comprend un encodeur Transformer à 6 couches, avec des états à 768 dimensions et 12 têtes d'attention. Le réseau feed-forward interne possède 3072 dimensions avec une activation GELU. La couche d'intégration (embedding) utilise un vocabulaire de 52 000 jetons (tokens) et une longueur de séquence maximale de 576.
+
+5. L'Architecture Hybride CNN-BiLSTM-Transformer Cette architecture en cascade permet d'effectuer séquentiellement l'extraction spatiale, la modélisation temporelle, puis la capture des dépendances globales.
+
+    Module CNN (Extraction spatiale locale) : Les données entrent dans deux branches de convolution parallèles. L'une utilise un petit noyau convolutif (taille 3) et l'autre un grand noyau (taille 5).
+        Chaque branche applique une couche de convolution 1D (Conv1d), une fonction d'activation ReLU, une couche de réduction de dimension (MaxPool1d), une normalisation par lots (BatchNorm1d) pour stabiliser l'apprentissage, et enfin une opération d'aplatissement (Flatten) pour convertir les caractéristiques en un vecteur 1D.
+        Couche de Fusion : Les sorties des deux branches CNN sont fusionnées pour former la représentation spatiale finale.
+    Module BiLSTM (Modélisation temporelle) : Les caractéristiques fusionnées sont introduites dans la couche BiLSTM, qui traite la séquence dans les directions avant et arrière, fournissant une représentation riche des dépendances temporelles.
+    Module Transformer (Modélisation globale) : La sortie du BiLSTM passe par des encodeurs Transformer. Le mécanisme d'attention multi-têtes calcule des poids d'attention en multipliant des matrices de requêtes (Query) et de clés (Key), puis pondère les valeurs (Value) pour capturer les relations globales sur de longues séquences.
+    Module de sortie (FC Module) : L'architecture se termine par une couche de Mean Pooling et des couches entièrement connectées (Fully Connected - FC) avec une fonction d'activation (par exemple Sigmoid) pour fournir la prédiction finale

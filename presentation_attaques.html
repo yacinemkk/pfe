@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="fr">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Présentation : Attaques Adversarielles sur l'IoT</title>
+    <!-- Reveal.js CSS -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/reveal.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/theme/white.min.css">
+    <style>
+        :root {
+            --r-main-color: #0f172a;
+            --r-heading-color: #0284c7;
+            --r-link-color: #4f46e5;
+            --r-selection-background-color: #bae6fd;
+        }
+
+        .reveal h1,
+        .reveal h2,
+        .reveal h3 {
+            text-transform: none;
+            font-weight: 700;
+        }
+
+        .reveal .slides section {
+            text-align: left;
+        }
+
+        .reveal .slides section.center {
+            text-align: center;
+        }
+
+        .highlight-box {
+            background: #f1f5f9;
+            padding: 20px;
+            border-left: 5px solid #0284c7;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+
+        .attack-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .attack-card {
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            padding: 15px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        .code-snippet {
+            font-family: 'Courier New', Courier, monospace;
+            background: #1e293b;
+            color: #f8fafc;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 0.8em;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="reveal">
+        <div class="slides">
+
+            <!-- Slide 1: Titre -->
+            <section class="center">
+                <h1 style="font-size: 2.5em;">Sécurisation des Objets IoT</h1>
+                <h3 style="color: #64748b;">Attaques Adversarielles & Robustesse</h3>
+                <p style="margin-top: 50px; font-size: 0.8em; color: #94a3b8;">Présentation du Pipeline de Défense</p>
+                <div style="margin-top: 100px; display: flex; justify-content: center; gap: 40px;">
+                    <div
+                        style="padding: 10px 20px; background: #e0f2fe; border-radius: 20px; color: #0369a1; font-weight: bold;">
+                        DL Models</div>
+                    <div
+                        style="padding: 10px 20px; background: #fef2f2; border-radius: 20px; color: #b91c1c; font-weight: bold;">
+                        Adversarial</div>
+                </div>
+            </section>
+
+            <!-- Slide 2: Contexte -->
+            <section>
+                <h2>Pourquoi l'Adversarial ?</h2>
+                <ul>
+                    <li class="fragment">Les modèles d'identification IoT se basent sur des <b>flux réseau</b>.</li>
+                    <li class="fragment">Un attaquant peut modifier légèrement ces flux pour <b>tromper l'IA</b>
+                        (usurpation d'identité).</li>
+                    <li class="fragment">L'objectif est de prédire une autre classe (ex: faire passer une caméra pour un
+                        haut-parleur).</li>
+                </ul>
+                <div class="highlight-box fragment">
+                    <b>Menace</b> : Une petite perturbation invisible suffit à faire chuter la précision de 99% à moins
+                    de 10%.
+                </div>
+            </section>
+
+            <!-- Slide 3: Attaque de Niveau Caractéristique (Flow-Level) -->
+            <section>
+                <h2>1. Attaque au Niveau Flux</h2>
+                <p style="font-size: 0.8em;">Inspirée du style <i>IoT-SDN</i>. Elle cible les statistiques globales d'un
+                    flux.</p>
+                <div class="attack-grid">
+                    <div class="attack-card fragment">
+                        <h4 style="margin:0; color: #4f46e5;">Méthode</h4>
+                        <p style="font-size: 0.7em;">Perturbation des moyennes (octets, paquets, temps inter-arrivée)
+                            vers un centroïde cible.</p>
+                    </div>
+                    <div class="attack-card fragment">
+                        <h4 style="margin:0; color: #059669;">Contraintes</h4>
+                        <p style="font-size: 0.7em;">Projection sémantique : On assure que les corrélations restent
+                            réalistes (ex: Octets entrants / Paquets entrants).</p>
+                    </div>
+                </div>
+                <div class="code-snippet fragment" style="margin-top: 20px;">
+                    x_adv = Projection[x0 + step * mask * direction * distance]
+                </div>
+            </section>
+
+            <!-- Slide 4: Attaque au Niveau Séquence -->
+            <section>
+                <h2>2. Attaque au Niveau Séquence</h2>
+                <p style="font-size: 0.8em;">Utilise les gradients du modèle (BPTT) pour une perturbation optimale.</p>
+                <ul>
+                    <li class="fragment"><b>PGD (Projected Gradient Descent)</b> : Attaque itérative puissante.</li>
+                    <li class="fragment"><b>FGSM</b> : Attaque rapide en une étape.</li>
+                </ul>
+                <div class="highlight-box fragment">
+                    <b>Cible</b> : La structure temporelle. En modifiant les dépendances entre les flux successifs, on
+                    brise la "mémoire" du LSTM ou du Transformer.
+                </div>
+            </section>
+
+            <!-- Slide 5: Le Cas des Caractéristiques Discrètes -->
+            <section>
+                <h2>Le Défi du Binaire</h2>
+                <p style="font-size: 0.8em;">Comment attaquer des bits de direction de paquets (0 ou 1) avec des
+                    gradients ?</p>
+                <div class="attack-card fragment" style="border-left: 5px solid #dc2626;">
+                    <h4>Gradient-Guided Bit-Flipping</h4>
+                    <p style="font-size: 0.8em;">1. Calcul du gradient pour les bits de direction.<br>
+                        2. Sélection des <b>K bits</b> ayant le plus d'influence.<br>
+                        3. Inversion (Flip) des bits : 0 → 1 ou 1 → 0.</p>
+                </div>
+                <p class="fragment" style="font-size: 0.7em; color: #64748b;">Cela garantit que l'entrée reste valide
+                    (on ne peut pas avoir une direction de "0.4").</p>
+            </section>
+
+            <!-- Slide 6: Défense Hybride -->
+            <section>
+                <h2>La Riposte : Entraînement Hybride</h2>
+                <p>On n'entraîne pas seulement sur des données propres.</p>
+                <div style="display: flex; gap: 20px; align-items: center; margin-top: 30px;">
+                    <div class="center" style="flex: 1; padding: 20px; background: #f0fdf4; border-radius: 15px;">
+                        <h2 style="margin:0; color: #15803d;">60%</h2>
+                        <p style="font-size: 0.6em;">Data Propres</p>
+                    </div>
+                    <div class="center" style="flex: 1; padding: 20px; background: #eff6ff; border-radius: 15px;">
+                        <h2 style="margin:0; color: #1d4ed8;">20%</h2>
+                        <p style="font-size: 0.6em;">Attaques Flux</p>
+                    </div>
+                    <div class="center" style="flex: 1; padding: 20px; background: #fff1f2; border-radius: 15px;">
+                        <h2 style="margin:0; color: #be123c;">20%</h2>
+                        <p style="font-size: 0.6em;">Attaques Séquence</p>
+                    </div>
+                </div>
+                <p class="fragment" style="margin-top: 40px; font-size: 0.8em;"><b>Résultat</b> : Le modèle devient
+                    "immunisé" contre les perturbations courantes tout en gardant sa précision sur le trafic normal.</p>
+            </section>
+
+            <!-- Slide 7: Conclusion -->
+            <section class="center">
+                <h2>Conclusion</h2>
+                <p>Un pipeline de défense multicouche</p>
+                <div class="attack-grid" style="grid-template-columns: repeat(3, 1fr); margin-top: 50px;">
+                    <div class="attack-card">
+                        <b>Prétraitement</b><br>Nettoyage & Sécurité
+                    </div>
+                    <div class="attack-card">
+                        <b>Attaques</b><br>Tests de Stress
+                    </div>
+                    <div class="attack-card">
+                        <b>Robustesse</b><br>Immunité par l'entraînement
+                    </div>
+                </div>
+                <h3 style="margin-top: 80px; color: #4f46e5;">Merci de votre attention !</h3>
+            </section>
+
+        </div>
+    </div>
+
+    <!-- Reveal.js Scripts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/reveal.min.js"></script>
+    <script>
+        Reveal.initialize({
+            hash: true,
+            slideNumber: 'c/t',
+            transition: 'convex', // none/fade/slide/convex/concave/zoom
+            backgroundTransition: 'fade'
+        });
+    </script>
+</body>
+
+</html>

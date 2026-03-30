@@ -1,0 +1,952 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bidirectional LSTM Architecture</title>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap"
+    rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0a0c14;
+      --surface: #111827;
+      --surface2: #1a2236;
+      --border: #2a3a55;
+      --accent1: #4f8ef7;
+      /* forward / blue  */
+      --accent2: #e85d8a;
+      /* backward / pink */
+      --accent3: #a78bfa;
+      /* concat / purple */
+      --accent4: #34d399;
+      /* dense / green   */
+      --accent5: #fbbf24;
+      /* dropout / amber */
+      --accent6: #f87171;
+      /* softmax / red   */
+      --text: #e2e8f0;
+      --text-dim: #94a3b8;
+      --glow1: rgba(79, 142, 247, .35);
+      --glow2: rgba(232, 93, 138, .35);
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 48px 24px 80px;
+    }
+
+    /* ── HEADER ────────────────────────────────────────────── */
+    header {
+      text-align: center;
+      margin-bottom: 56px;
+    }
+
+    header h1 {
+      font-size: clamp(1.4rem, 3vw, 2.4rem);
+      font-weight: 800;
+      letter-spacing: .06em;
+      background: linear-gradient(135deg, var(--accent1) 0%, var(--accent3) 60%, var(--accent2) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    header p {
+      margin-top: 8px;
+      color: var(--text-dim);
+      font-size: .9rem;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    .separator {
+      width: 100%;
+      max-width: 900px;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--border), transparent);
+      margin: 0 auto 56px;
+    }
+
+    /* ── MAIN WRAPPER ──────────────────────────────────────── */
+    .arch {
+      width: 100%;
+      max-width: 940px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0;
+    }
+
+    /* ── INPUT SECTION ─────────────────────────────────────── */
+    .section-label {
+      font-size: .7rem;
+      font-weight: 600;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      margin-bottom: 12px;
+      align-self: flex-start;
+    }
+
+    .input-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      justify-content: center;
+      flex-wrap: nowrap;
+    }
+
+    .input-box {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      width: 70px;
+      height: 64px;
+      border: 1.5px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      font-family: 'Fira Code', monospace;
+      font-size: .72rem;
+      color: var(--text-dim);
+      transition: border-color .3s, box-shadow .3s, transform .3s;
+      cursor: default;
+      position: relative;
+    }
+
+    .input-box:hover {
+      border-color: var(--accent1);
+      box-shadow: 0 0 16px var(--glow1);
+      transform: translateY(-3px);
+      color: var(--text);
+    }
+
+    .input-box .label {
+      font-weight: 600;
+      color: var(--accent1);
+      font-size: .78rem;
+    }
+
+    .input-box .dim {
+      font-size: .6rem;
+      margin-top: 2px;
+    }
+
+    .ellipsis {
+      font-size: 1.4rem;
+      color: var(--text-dim);
+      letter-spacing: .1em;
+      padding: 0 4px;
+    }
+
+    /* ── CONNECTOR ARROWS ──────────────────────────────────── */
+    .connector-row {
+      display: flex;
+      width: 100%;
+      justify-content: center;
+      align-items: flex-start;
+      gap: 8px;
+      height: 36px;
+      position: relative;
+    }
+
+    .arrow-down {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0;
+    }
+
+    .arrow-down .line {
+      width: 2px;
+      height: 24px;
+      background: var(--accent1);
+      opacity: .5;
+    }
+
+    .arrow-down .head {
+      width: 0;
+      height: 0;
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-top: 8px solid var(--accent1);
+      opacity: .7;
+    }
+
+    /* phantom spacer for "..." gap */
+    .arrow-gap {
+      width: 36px;
+    }
+
+    /* ── BILSTM LAYER BOX ──────────────────────────────────── */
+    .bilstm-box {
+      width: 100%;
+      border: 1.5px solid var(--border);
+      border-radius: 16px;
+      background: var(--surface);
+      padding: 20px 24px 24px;
+      position: relative;
+      margin-bottom: 0;
+      transition: box-shadow .4s;
+    }
+
+    .bilstm-box:hover {
+      box-shadow: 0 0 40px rgba(79, 142, 247, .14);
+    }
+
+    .bilstm-box .box-title {
+      font-size: .8rem;
+      font-weight: 700;
+      color: var(--accent1);
+      letter-spacing: .08em;
+      text-align: center;
+      margin-bottom: 20px;
+    }
+
+    .bilstm-box .box-sub {
+      font-size: .68rem;
+      color: var(--text-dim);
+      text-align: center;
+      margin-top: 6px;
+    }
+
+    /* Forward / Backward rows */
+    .dir-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 14px;
+    }
+
+    .dir-label {
+      width: 100px;
+      font-size: .68rem;
+      font-weight: 600;
+      font-family: 'Fira Code', monospace;
+      color: var(--text-dim);
+      flex-shrink: 0;
+    }
+
+    .dir-label.fwd {
+      color: var(--accent1);
+    }
+
+    .dir-label.bwd {
+      color: var(--accent2);
+    }
+
+    .lstm-cells {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      flex: 1;
+      justify-content: flex-start;
+    }
+
+    .cell {
+      width: 42px;
+      height: 36px;
+      border-radius: 7px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: .9rem;
+      font-weight: 700;
+      flex-shrink: 0;
+      transition: transform .25s, box-shadow .25s;
+      cursor: default;
+    }
+
+    .cell:hover {
+      transform: scale(1.12);
+    }
+
+    .cell.fwd {
+      border: 1.5px solid var(--accent1);
+      background: rgba(79, 142, 247, .12);
+      color: var(--accent1);
+    }
+
+    .cell.fwd:hover {
+      box-shadow: 0 0 14px var(--glow1);
+    }
+
+    .cell.bwd {
+      border: 1.5px solid var(--accent2);
+      background: rgba(232, 93, 138, .12);
+      color: var(--accent2);
+    }
+
+    .cell.bwd:hover {
+      box-shadow: 0 0 14px var(--glow2);
+    }
+
+    .h-arrow {
+      display: flex;
+      align-items: center;
+      height: 36px;
+      position: relative;
+    }
+
+    .h-arrow .h-line {
+      height: 2px;
+      width: 18px;
+      opacity: .6;
+    }
+
+    .h-arrow .h-head {
+      width: 0;
+      height: 0;
+    }
+
+    /* forward arrow → */
+    .h-arrow.fwd .h-line {
+      background: var(--accent1);
+    }
+
+    .h-arrow.fwd .h-head {
+      border-top: 4px solid transparent;
+      border-bottom: 4px solid transparent;
+      border-left: 7px solid var(--accent1);
+      opacity: .8;
+    }
+
+    /* backward arrow ← */
+    .h-arrow.bwd .h-line {
+      background: var(--accent2);
+    }
+
+    .h-arrow.bwd .h-head {
+      order: -1;
+      border-top: 4px solid transparent;
+      border-bottom: 4px solid transparent;
+      border-right: 7px solid var(--accent2);
+      opacity: .8;
+    }
+
+    .lstm-ellipsis {
+      font-size: .9rem;
+      color: var(--text-dim);
+      padding: 0 6px;
+    }
+
+    /* hidden state labels on the ends */
+    .h-state {
+      font-family: 'Fira Code', monospace;
+      font-size: .62rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: 500;
+      margin-left: 8px;
+      flex-shrink: 0;
+    }
+
+    .h-state.fwd {
+      color: var(--accent1);
+      border: 1px solid var(--accent1);
+      background: rgba(79, 142, 247, .1);
+    }
+
+    .h-state.bwd {
+      color: var(--accent2);
+      border: 1px solid var(--accent2);
+      background: rgba(232, 93, 138, .1);
+    }
+
+    /* ── BETWEEN LAYERS CONNECTOR ────────────────────────── */
+    .between-layers {
+      width: 100%;
+      display: flex;
+      justify-content: space-between;
+      padding: 0 38px;
+      height: 40px;
+      position: relative;
+    }
+
+    .side-arrow {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .side-arrow .s-line {
+      width: 2px;
+      height: 28px;
+    }
+
+    .side-arrow .s-head {
+      width: 0;
+      height: 0;
+    }
+
+    .side-arrow.left .s-line {
+      background: var(--accent2);
+    }
+
+    .side-arrow.left .s-head {
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-top: 8px solid var(--accent2);
+    }
+
+    .side-arrow.right .s-line {
+      background: var(--accent1);
+    }
+
+    .side-arrow.right .s-head {
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-top: 8px solid var(--accent1);
+    }
+
+    /* ── MERGE CONNECTOR (after layer 2) ─────────────────── */
+    .merge-section {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin-top: 0;
+    }
+
+    /* Two vertical arrows + h_b / h_f labels + merge line */
+    .merge-top {
+      width: 100%;
+      display: flex;
+      justify-content: space-between;
+      padding: 0 70px;
+      height: 52px;
+      position: relative;
+    }
+
+    .merge-arm {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .merge-arm .arm-label {
+      font-family: 'Fira Code', monospace;
+      font-size: .65rem;
+      font-weight: 600;
+    }
+
+    .merge-arm.left .arm-label {
+      color: var(--accent2);
+    }
+
+    .merge-arm.right .arm-label {
+      color: var(--accent1);
+    }
+
+    .merge-arm .arm-line {
+      width: 2px;
+      flex: 1;
+    }
+
+    .merge-arm.left .arm-line {
+      background: var(--accent2);
+    }
+
+    .merge-arm.right .arm-line {
+      background: var(--accent1);
+    }
+
+    /* SVG connector lines from arms to center */
+    .merge-svg-wrap {
+      width: 100%;
+      max-width: 940px;
+      height: 60px;
+      position: relative;
+    }
+
+    .merge-svg-wrap svg {
+      width: 100%;
+      height: 100%;
+      overflow: visible;
+    }
+
+    /* ── DOWNSTREAM BLOCKS ───────────────────────────────── */
+    .block-col {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0;
+    }
+
+    .block-arrow {
+      width: 2px;
+      height: 28px;
+      background: var(--text-dim);
+      opacity: .4;
+      position: relative;
+    }
+
+    .block-arrow::after {
+      content: '';
+      position: absolute;
+      bottom: -7px;
+      left: 50%;
+      transform: translateX(-50%);
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-top: 8px solid var(--text-dim);
+      opacity: .6;
+    }
+
+    .block {
+      width: 200px;
+      border-radius: 12px;
+      padding: 14px 18px;
+      text-align: center;
+      position: relative;
+      cursor: default;
+      transition: transform .25s, box-shadow .25s;
+    }
+
+    .block:hover {
+      transform: translateY(-3px);
+    }
+
+    .block .b-title {
+      font-size: .85rem;
+      font-weight: 700;
+      letter-spacing: .04em;
+    }
+
+    .block .b-sub {
+      font-size: .68rem;
+      margin-top: 4px;
+      font-family: 'Fira Code', monospace;
+    }
+
+    /* CONCAT block */
+    .block.concat {
+      border: 1.5px solid var(--accent3);
+      background: rgba(167, 139, 250, .1);
+    }
+
+    .block.concat .b-title {
+      color: var(--accent3);
+    }
+
+    .block.concat .b-sub {
+      color: var(--accent3);
+      opacity: .8;
+    }
+
+    .block.concat:hover {
+      box-shadow: 0 0 24px rgba(167, 139, 250, .3);
+    }
+
+    /* DENSE block */
+    .block.dense {
+      border: 1.5px solid var(--accent4);
+      background: rgba(52, 211, 153, .1);
+    }
+
+    .block.dense .b-title {
+      color: var(--accent4);
+    }
+
+    .block.dense .b-sub {
+      color: var(--accent4);
+      opacity: .8;
+    }
+
+    .block.dense:hover {
+      box-shadow: 0 0 24px rgba(52, 211, 153, .3);
+    }
+
+    /* DROPOUT block */
+    .block.dropout {
+      border: 1.5px solid var(--accent5);
+      background: rgba(251, 191, 36, .1);
+    }
+
+    .block.dropout .b-title {
+      color: var(--accent5);
+    }
+
+    .block.dropout .b-sub {
+      color: var(--accent5);
+      opacity: .8;
+    }
+
+    .block.dropout:hover {
+      box-shadow: 0 0 24px rgba(251, 191, 36, .3);
+    }
+
+    /* SOFTMAX block */
+    .block.softmax {
+      border: 1.5px solid var(--accent6);
+      background: rgba(248, 113, 113, .1);
+    }
+
+    .block.softmax .b-title {
+      color: var(--accent6);
+    }
+
+    .block.softmax .b-sub {
+      color: var(--accent6);
+      opacity: .8;
+    }
+
+    .block.softmax:hover {
+      box-shadow: 0 0 24px rgba(248, 113, 113, .3);
+    }
+
+    /* OUTPUT badge */
+    .output-badge {
+      margin-top: 8px;
+      padding: 10px 28px;
+      background: linear-gradient(135deg, rgba(79, 142, 247, .2), rgba(167, 139, 250, .2));
+      border: 1.5px solid var(--accent3);
+      border-radius: 24px;
+      font-size: .85rem;
+      font-weight: 700;
+      color: var(--accent3);
+      letter-spacing: .06em;
+      box-shadow: 0 0 20px rgba(167, 139, 250, .2);
+      animation: pulse 2.5s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        box-shadow: 0 0 20px rgba(167, 139, 250, .2);
+      }
+
+      50% {
+        box-shadow: 0 0 36px rgba(167, 139, 250, .45);
+      }
+    }
+
+    /* ── ANIMATED FLOW DOTS ──────────────────────────────── */
+    .flow-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      position: absolute;
+      animation: flowDown 2s linear infinite;
+    }
+
+    @keyframes flowDown {
+      0% {
+        top: 0;
+        opacity: 1;
+      }
+
+      90% {
+        opacity: 1;
+      }
+
+      100% {
+        top: 100%;
+        opacity: 0;
+      }
+    }
+
+    /* ── LEGEND ──────────────────────────────────────────── */
+    .legend {
+      display: flex;
+      gap: 24px;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin-top: 56px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: .75rem;
+      color: var(--text-dim);
+    }
+
+    .legend-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+  </style>
+</head>
+
+<body>
+
+  <header>
+    <h1>BIDIRECTIONAL LSTM ARCHITECTURE</h1>
+    <p>IoT Device Identification · Deep Learning Pipeline</p>
+  </header>
+  <div class="separator"></div>
+
+  <div class="arch">
+
+    <!-- ══════════════════════ INPUT ══════════════════════ -->
+    <div class="section-label">Input Sequence &nbsp;(10 time steps × 37 features each)</div>
+
+    <div class="input-row">
+      <div class="input-box"><span class="label">x[1]</span><span class="dim">37-d</span></div>
+      <div class="input-box"><span class="label">x[2]</span><span class="dim">37-d</span></div>
+      <div class="input-box"><span class="label">x[3]</span><span class="dim">37-d</span></div>
+      <div class="input-box"><span class="label">x[4]</span><span class="dim">37-d</span></div>
+      <div class="input-box"><span class="label">x[5]</span><span class="dim">37-d</span></div>
+      <div class="ellipsis">···</div>
+      <div class="input-box"><span class="label">x[10]</span><span class="dim">37-d</span></div>
+    </div>
+
+    <!-- arrows down to layer 1 -->
+    <div class="connector-row" style="margin-top:2px; gap:8px;">
+      <div class="arrow-down">
+        <div class="line"></div>
+        <div class="head"></div>
+      </div>
+      <div class="arrow-down">
+        <div class="line"></div>
+        <div class="head"></div>
+      </div>
+      <div class="arrow-down">
+        <div class="line"></div>
+        <div class="head"></div>
+      </div>
+      <div class="arrow-down">
+        <div class="line"></div>
+        <div class="head"></div>
+      </div>
+      <div class="arrow-down">
+        <div class="line"></div>
+        <div class="head"></div>
+      </div>
+      <div class="arrow-gap"></div>
+      <div class="arrow-down">
+        <div class="line"></div>
+        <div class="head"></div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════ Bi-LSTM 1 ══════════════════════ -->
+    <div class="bilstm-box">
+      <div class="box-title">⚡ Bi-LSTM Layer 1 &nbsp;·&nbsp; 128 units</div>
+
+      <!-- Forward row -->
+      <div class="dir-row">
+        <div class="dir-label fwd">Forward →</div>
+        <div class="lstm-cells">
+          <div class="cell fwd">→</div>
+          <div class="h-arrow fwd">
+            <div class="h-line"></div>
+            <div class="h-head"></div>
+          </div>
+          <div class="cell fwd">→</div>
+          <div class="h-arrow fwd">
+            <div class="h-line"></div>
+            <div class="h-head"></div>
+          </div>
+          <div class="cell fwd">→</div>
+          <div class="h-arrow fwd">
+            <div class="h-line"></div>
+            <div class="h-head"></div>
+          </div>
+          <div class="cell fwd">→</div>
+          <div class="lstm-ellipsis">···</div>
+          <div class="cell fwd">→</div>
+          <span class="h-state fwd">h_f</span>
+        </div>
+      </div>
+
+      <!-- Backward row -->
+      <div class="dir-row" style="margin-bottom:0;">
+        <div class="dir-label bwd">Backward ←</div>
+        <div class="lstm-cells">
+          <div class="cell bwd">←</div>
+          <div class="h-arrow bwd">
+            <div class="h-head"></div>
+            <div class="h-line"></div>
+          </div>
+          <div class="cell bwd">←</div>
+          <div class="h-arrow bwd">
+            <div class="h-head"></div>
+            <div class="h-line"></div>
+          </div>
+          <div class="cell bwd">←</div>
+          <div class="h-arrow bwd">
+            <div class="h-head"></div>
+            <div class="h-line"></div>
+          </div>
+          <div class="cell bwd">←</div>
+          <div class="lstm-ellipsis">···</div>
+          <div class="cell bwd">←</div>
+          <span class="h-state bwd">h_b</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- between-layer connectors -->
+    <div class="between-layers">
+      <div class="side-arrow left">
+        <div class="s-line"></div>
+        <div class="s-head"></div>
+      </div>
+      <div class="side-arrow right">
+        <div class="s-line"></div>
+        <div class="s-head"></div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════ Bi-LSTM 2 ══════════════════════ -->
+    <div class="bilstm-box">
+      <div class="box-title">⚡ Bi-LSTM Layer 2 &nbsp;·&nbsp; 128 units</div>
+
+      <!-- Forward row -->
+      <div class="dir-row">
+        <div class="dir-label fwd">Forward →</div>
+        <div class="lstm-cells">
+          <div class="cell fwd">→</div>
+          <div class="h-arrow fwd">
+            <div class="h-line"></div>
+            <div class="h-head"></div>
+          </div>
+          <div class="cell fwd">→</div>
+          <div class="h-arrow fwd">
+            <div class="h-line"></div>
+            <div class="h-head"></div>
+          </div>
+          <div class="cell fwd">→</div>
+          <div class="h-arrow fwd">
+            <div class="h-line"></div>
+            <div class="h-head"></div>
+          </div>
+          <div class="cell fwd">→</div>
+          <div class="lstm-ellipsis">···</div>
+          <div class="cell fwd">→</div>
+          <span class="h-state fwd">h_f (128-d)</span>
+        </div>
+      </div>
+
+      <!-- Backward row -->
+      <div class="dir-row" style="margin-bottom:0;">
+        <div class="dir-label bwd">Backward ←</div>
+        <div class="lstm-cells">
+          <div class="cell bwd">←</div>
+          <div class="h-arrow bwd">
+            <div class="h-head"></div>
+            <div class="h-line"></div>
+          </div>
+          <div class="cell bwd">←</div>
+          <div class="h-arrow bwd">
+            <div class="h-head"></div>
+            <div class="h-line"></div>
+          </div>
+          <div class="cell bwd">←</div>
+          <div class="h-arrow bwd">
+            <div class="h-head"></div>
+            <div class="h-line"></div>
+          </div>
+          <div class="cell bwd">←</div>
+          <div class="lstm-ellipsis">···</div>
+          <div class="cell bwd">←</div>
+          <span class="h-state bwd">h_b (128-d)</span>
+        </div>
+      </div>
+
+      <div class="box-sub">(Same structure, deeper abstraction)</div>
+    </div>
+
+    <!-- merge SVG: two arms converge to center -->
+    <div class="merge-svg-wrap">
+      <svg viewBox="0 0 940 60" preserveAspectRatio="none">
+        <!-- left arm (h_b) -->
+        <line x1="120" y1="0" x2="120" y2="30" stroke="#e85d8a" stroke-width="2" />
+        <line x1="120" y1="30" x2="470" y2="54" stroke="#e85d8a" stroke-width="2" />
+        <text x="80" y="20" fill="#e85d8a" font-family="Fira Code,monospace" font-size="11">h_b</text>
+
+        <!-- right arm (h_f) -->
+        <line x1="820" y1="0" x2="820" y2="30" stroke="#4f8ef7" stroke-width="2" />
+        <line x1="820" y1="30" x2="470" y2="54" stroke="#4f8ef7" stroke-width="2" />
+        <text x="830" y="20" fill="#4f8ef7" font-family="Fira Code,monospace" font-size="11">h_f</text>
+
+        <!-- central arrow head -->
+        <polygon points="470,60 465,50 475,50" fill="#a78bfa" />
+      </svg>
+    </div>
+
+    <!-- ══════════════════════ DOWNSTREAM ══════════════════════ -->
+    <div class="block-col">
+
+      <div class="block concat">
+        <div class="b-title">CONCATENATE</div>
+        <div class="b-sub">[ h_f ; h_b ] = 256-dim</div>
+      </div>
+
+      <div class="block-arrow" style="background:var(--accent3); opacity:.6;"></div>
+
+      <div class="block dense">
+        <div class="b-title">Dense (128)</div>
+        <div class="b-sub">+ ReLU</div>
+      </div>
+
+      <div class="block-arrow" style="background:var(--accent4); opacity:.6;"></div>
+
+      <div class="block dropout">
+        <div class="b-title">Dropout (0.3)</div>
+        <div class="b-sub">regularization</div>
+      </div>
+
+      <div class="block-arrow" style="background:var(--accent5); opacity:.6;"></div>
+
+      <div class="block softmax">
+        <div class="b-title">Softmax (17+ classes)</div>
+        <div class="b-sub">multi-class classification</div>
+      </div>
+
+      <div class="block-arrow" style="background:var(--accent6); opacity:.5;"></div>
+
+      <div class="output-badge">🏷️ &nbsp;"Smart TV" (class 7)</div>
+
+    </div>
+
+  </div><!-- .arch -->
+
+  <!-- ── LEGEND ── -->
+  <div class="legend">
+    <div class="legend-item">
+      <div class="legend-dot" style="background:var(--accent1)"></div>Forward pass
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:var(--accent2)"></div>Backward pass
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:var(--accent3)"></div>Concatenation / output
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:var(--accent4)"></div>Dense + activation
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:var(--accent5)"></div>Regularization
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:var(--accent6)"></div>Classification head
+    </div>
+  </div>
+
+</body>
+
+</html>

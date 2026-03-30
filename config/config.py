@@ -78,18 +78,20 @@ NUM_EPOCHS = 30
 LEARNING_RATE = 1e-3
 WEIGHT_DECAY = 1e-4
 
+# docs/architectures §1: 64 hidden units per layer, 2 layers, BiLSTM → 128-dim embedding
 LSTM_CONFIG = {
-    "hidden_size": 128,
+    "hidden_size": 64,          # 64 per layer → 128-dim embedding (BiLSTM)
     "num_layers": 2,
     "bidirectional": True,
     "dropout": 0.3,
 }
 
+# docs/architectures §4 (MIND-IoT): 6 encoder layers, GELU, d_model=128 (scaled from 768)
 TRANSFORMER_CONFIG = {
-    "d_model": 64,
+    "d_model": 128,
     "nhead": 4,
-    "num_encoder_layers": 3,
-    "dim_feedforward": 256,
+    "num_encoder_layers": 6,    # 6 per doc (MIND-IoT uses 6 encoder layers)
+    "dim_feedforward": 512,
     "dropout": 0.2,
 }
 
@@ -204,3 +206,26 @@ IOT_DEVICE_CLASSES = [
     "fire-tv-stick-4k",
     "qrio-hub",
 ]
+
+# ─── CNN-BiLSTM-Transformer Configuration ─────────────────────────────────────
+# Architecture hybride (docs/architectures §5)
+CNN_BILSTM_TRANSFORMER_CONFIG = {
+    # CNN branches (deux branches parallèles, noyaux 3 et 5)
+    "cnn_channels": 64,
+    "cnn_kernel_small": 3,
+    "cnn_kernel_large": 5,
+    "cnn_pool_size": 2,
+    # BiLSTM
+    "bilstm_hidden": 128,
+    "bilstm_layers": 2,
+    "bilstm_dropout": 0.3,
+    # Transformer encoder
+    "transformer_d_model": 256,
+    "transformer_nhead": 4,
+    "transformer_layers": 2,
+    "transformer_ff_dim": 512,
+    "transformer_dropout": 0.2,
+    # FC head
+    "fc_dropout": 0.4,
+}
+

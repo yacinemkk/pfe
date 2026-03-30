@@ -232,20 +232,52 @@ code_eval = """def run_crash_test_for_all_models():
         # Tri correct : Phase 1, Phase 2, ...
         phase_files.sort(key=lambda x: int(x.split("phase")[1].split(".pt")[0]))
         
+        print(f"Chargement des données pour le test...")
+        try:
+            if input_size == 37:
+                print(" -> Modèle (CSV) détecté. Chargement des données via l'ancien Pipeline strict...")
+                
+                scaler = prep_data["scaler"]
+                label_encoder = prep_data["label_encoder"]
+                if "feature_names" in prep_data:
+                    old_features = prep_data["feature_names"]
+                elif "features" in prep_data:
+                    old_features = prep_data["features"]
+                else: raise ValueError("Failed to retrieve feature list.")
+                
+                proc = IoTDataProcessor()
+                csv_dir = PROJECT_ROOT / 'data' / 'pcap' / 'IPFIX ML Instances'
+                csv_file = sorted(csv_dir.glob("home*_labeled.csv"))[0]
+                df = pd.read_csv(csv_file, nrows=200000)
+                
+                df = df.drop_duplicates().dropna(subset=[LABEL_COLUMN])
+                df = df[df[LABEL_COLUMN].isin(label_encoder.classes_)]
+                
+                X_mat = df[old_features].values
+                y_raw = df[LABEL_COLUMN].values
+                
+                X_norm = scaler.transform(X_mat)
+                y_enc = label_encoder.transform(y_raw)
+                
+                X_test, y_test = proc.create_sequences(X_norm, y_enc, seq_length=seq_length) # Added seq_length here
+                n_continuous_features = 37
+                features = old_features
+                print(f"  Load OK: shape={X_test.shape}")
+                del df, proc, X_mat, y_raw, X_norm, y_enc; import gc; gc.collect()
+            else:
+                print(f" -> Modèle (JSON) détecté. Chargement des données via nouveau Pipeline (JSON)...")
+                data = load_and_preprocess_data(seq_length, max_records=20000, pipeline_mode="json", data_dir=DATA_DIR)
+                X_test, y_test = data[2], data[5]
+                label_encoder, n_continuous_features = data[8], data[9]
+                features = data[6]
+        except Exception as e:
+            print(f"Erreur data: {e}")
+            import traceback; traceback.print_exc()
+            continue
+            
         # Add the best_model.pt as the final phase
         if (model_path / "best_model.pt").exists():
             phase_files.append("best_model.pt")
-            
-        # Chargement des donnees correspondantes
-        print(f"Chargement des données pour seq_length={seq_length}...")
-        try:
-            # On charge depuis pipeline json comme l'ancien script
-            data = load_and_preprocess_data(seq_length, max_records=20000, pipeline_mode="json", data_dir=DATA_DIR)
-            X_test, y_test = data[2], data[5]
-            label_encoder, n_continuous_features = data[8], data[9]
-        except Exception as e:
-            print(f"Erreur data: {e}")
-            continue
             
         # Selection de donnees de test aleatoires pour le crash test (~2000 examples max ou ce qui existe)
         n_eval = min(2000, len(X_test))

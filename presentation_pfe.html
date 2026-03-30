@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="fr">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Présentation PFE - Version Complète</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/reveal.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/theme/black.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <style>
+        :root {
+            --primary: #4f8ef7;
+            --secondary: #a78bfa;
+            --dark: #0a0c14;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+
+        .reveal {
+            background-color: var(--dark);
+        }
+
+        /* General items */
+        .slide-header {
+            position: absolute;
+            top: 15px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 0.45em;
+            opacity: 0.25;
+            text-transform: uppercase;
+            width: 100%;
+            text-align: center;
+            letter-spacing: 0.1em;
+        }
+
+        .slide-footer {
+            position: absolute;
+            bottom: 15px;
+            right: 20px;
+            font-size: 0.4em;
+            opacity: 0.2;
+        }
+
+        .layout-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            align-items: center;
+            width: 100%;
+        }
+
+        .full-width {
+            grid-column: 1 / -1;
+        }
+
+        .arch-frame {
+            width: 100vw;
+            height: 90vh;
+            border: none;
+            background: #000;
+        }
+
+        /* White Slide Overrides */
+        .white-slide {
+            background-color: #fff !important;
+            color: #000 !important;
+            padding: 40px !important;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .white-slide h1,
+        .white-slide h2,
+        .white-slide h3,
+        .white-slide p,
+        .white-slide li,
+        .white-slide div {
+            color: #000 !important;
+        }
+
+        /* Title Page Components */
+        .tp-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+            margin-bottom: 20px;
+        }
+
+        .tp-logo {
+            width: 140px;
+        }
+
+        .tp-header-text {
+            text-align: center;
+            flex: 1;
+            line-height: 1.2;
+        }
+
+        .tp-header-text h3 {
+            font-size: 0.9em !important;
+            margin: 0 !important;
+            font-weight: 500 !important;
+        }
+
+        .tp-header-text h2 {
+            font-size: 1.2em !important;
+            margin: 5px 0 !important;
+            font-weight: 700 !important;
+            border: none !important;
+            padding: 0 !important;
+        }
+
+        .tp-header-text p {
+            font-size: 0.6em !important;
+            margin: 0 !important;
+        }
+
+        .tp-mid-section {
+            text-align: center;
+            margin: 20px 0;
+        }
+
+        .tp-mid-section h3 {
+            font-size: 1em !important;
+            font-weight: 800 !important;
+            margin-bottom: 5px !important;
+        }
+
+        .tp-separator {
+            height: 2px;
+            background-color: #4f8ef7;
+            width: 100%;
+            margin: 15px 0;
+        }
+
+        .tp-main-title {
+            font-size: 1.6em !important;
+            font-weight: 700 !important;
+            text-align: center;
+            padding: 20px 0;
+            line-height: 1.3;
+        }
+
+        .tp-bottom-grid {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+            font-size: 0.65em;
+            text-align: left;
+            margin-top: 20px;
+        }
+
+        .tp-bottom-col {
+            line-height: 1.4;
+        }
+
+        .tp-bottom-label {
+            font-weight: 400;
+            margin-bottom: 5px;
+        }
+
+        .tp-bottom-content {
+            font-weight: 700;
+        }
+
+        .tp-date {
+            text-align: center;
+            margin-top: 30px;
+            font-size: 0.55em;
+            font-weight: 500;
+        }
+
+        /* Rest of project styles */
+        .text-content {
+            text-align: left;
+            font-size: 0.6em;
+            line-height: 1.4;
+        }
+
+        .text-content ul {
+            padding-left: 20px;
+            list-style-type: disc;
+        }
+
+        .text-content li {
+            margin-bottom: 10px;
+            color: #fff;
+        }
+
+        .image-gallery {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .image-gallery img {
+            max-height: 450px;
+            max-width: 100%;
+            border-radius: 10px;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            transition: transform 0.3s ease;
+        }
+
+        h2 {
+            color: var(--primary) !important;
+            font-weight: 800 !important;
+            letter-spacing: -0.02em !important;
+            font-size: 1.6em !important;
+            border-bottom: 2px solid rgba(79, 142, 247, 0.2);
+            padding-bottom: 10px;
+            margin-bottom: 30px !important;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="reveal">
+        <div class="slides">
+
+            <!-- SLIDE 1: FORMAL WHITE TITLE PAGE -->
+            <section data-background="#ffffff">
+                <div class="white-slide">
+                    <div class="tp-top">
+                        <img src="presentation_assets/media/image1.png" class="tp-logo">
+                        <div class="tp-header-text">
+                            <h3>Ministère de la Défense Nationale</h3>
+                            <h2>Ecole Militaire Polytechnique</h2>
+                            <p>Chahid ABDERRAHMANE TALEB</p>
+                        </div>
+                        <img src="presentation_assets/media/image2.png" class="tp-logo">
+                    </div>
+
+                    <div class="tp-mid-section">
+                        <h3>Filière : Génie informatique</h3>
+                        <h3>Spécialité : Cyber sécurité</h3>
+                    </div>
+
+                    <div class="tp-separator"></div>
+
+                    <div class="tp-main-title">
+                        Défense adaptative contre les attaques antagonistes pour l’identification des dispositifs IoT
+                    </div>
+
+                    <div class="tp-separator"></div>
+
+                    <div class="tp-bottom-grid">
+                        <div class="tp-bottom-col">
+                            <div class="tp-bottom-label">Réalisées par :</div>
+                            <div class="tp-bottom-content">
+                                EOC BOUGADI Zakaria<br>
+                                EOC MEKKI Mohamed Alaa Eddine
+                            </div>
+                        </div>
+                        <div class="tp-bottom-col" style="text-align: left;">
+                            <div class="tp-bottom-label">Encadré par :</div>
+                            <div class="tp-bottom-content">
+                                Cne SEHAKI Mehdi<br>
+                                Lt-Col DEMIGHA Oualid
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="tp-date">
+                        Année universitaire: 2025-2026
+                    </div>
+                </div>
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 2</div>
+                <h2>Contexte & Problématique</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul>
+                            <li>Plan</li>
+                            <li>Travail Actuel</li>
+                            <li>Travaux futurs</li>
+                            <li>Conclusion</li>
+                            <li>1/26</li>
+                        </ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image7.png"></div>
+                </div>
+
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 3</div>
+                <h2>Contexte & Problématique</h2>
+                <div class="full-width">
+                    <div class="image-gallery "><img src="presentation_assets/media/image11.png"></div>
+                </div>
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 4</div>
+                <h2>Contexte</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul>
+                            <li>l'Internet des Objets devient omniprésent dans des secteurs critiques comme la santé ou
+                                l'industrie</li>
+                            <li>2/26</li>
+                        </ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image4.jpg"><img
+                            src="presentation_assets/media/image6.png"></div>
+                </div>
+
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 5</div>
+                <h2>Contexte</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul>
+                            <li>Pour gérer cette complexité, les réseaux définis par logiciel, ou SDN, offrent une
+                                flexibilité idéale.</li>
+                            <li>3/26</li>
+                        </ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image5.png"></div>
+                </div>
+
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 6</div>
+                <h2>Problématique</h2>
+                <div class="full-width" style="max-width: 800px; margin: 0 auto;">
+                    <div class="text-content">
+                        <ul>
+                            <li>Les défenses actuelles sont statiques. Elles analysent les paquets de manière isolée pas
+                                de </li>
+                            <li>dépendances temporelles des flux</li>
+                            <li>5/26</li>
+                            <li>Comment exploiter l'historique et les dépendances temporelles des flux IoT pour
+                                concevoir une défense adaptative, capable de résister aux attaques adversariales là où
+                                les approches statiques échouent ?</li>
+                            <li>l'utilisation du Machine Learning est devenue incontournable pour gérer l'identification
+                                massive des dispositifs IoT dans les réseaux SDN.</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 7</div>
+                <h2>Démarche Choisie</h2>
+                <div class="full-width" style="max-width: 800px; margin: 0 auto;">
+                    <div class="text-content">
+                        <ul>
+                            <li>5/26</li>
+                            <li>Développer une approche robuste basée sur des modèles séquentiels pour identifier les
+                                dispositifs IoT dans un environnement SDN face aux attaques adversariales.</li>
+                            <li>Avant de développer une solution adaptative, la première étape de notre méthodologie
+                                consiste à établir une baseline, </li>
+                            <li>Sur un le dataset IoT IPFIX Home et IPFIX Records</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 8</div>
+                <h2>Démarche Choisie</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul>
+                            <li>5/26</li>
+                        </ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image3.png"></div>
+                </div>
+
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 9</div>
+                <h2>Démarche Choisie</h2>
+                <div class="full-width" style="max-width: 800px; margin: 0 auto;">
+                    <div class="text-content">
+                        <ul>
+                            <li>5/26</li>
+                            <li>1. Dataset : IoT IPFIX Home (2023) : Données réelles issues de 12 foyers (Japon).</li>
+                            <li>Durée de collecte : 47 jours.</li>
+                            <li>Diversité : 24 types de dispositifs IoT variés (caméras, capteurs, domotique,
+                                multimédia).</li>
+                            <li>2. Dataset : IPFIX Records (2022):Banc d'essai résidentiel avec 26 objets IoT sur 3
+                                mois.</li>
+                            <li>Volume massifs : Plus de 9 millions d'enregistrements basés sur 28 attributs de flux.
+                            </li>
+                            <li>Pipeline d'extraction : Trafic brut (PCAP) ➔ Fichiers Binaires (via l'outil YAF) </li>
+                            <li>➔ Format JSON (via Super Mediator).</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 10</div>
+                <h2>Démarche Choisie</h2>
+                <div class="full-width" style="max-width: 800px; margin: 0 auto;">
+                    <div class="text-content">
+                        <ul>
+                            <li>5/26</li>
+                            <li>Les algorithmes utilisé : sur le dataset IPFIX home</li>
+                            <li>1. RF (Random Forest)</li>
+                            <li> 2. XGBoost</li>
+                            <li> 3. KNN (k-Nearest Neighbors)</li>
+                            <li>. DNN (Deep Neural Networks)</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 11</div>
+                <h2>Démarche Choisie</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul>
+                            <li>5/26</li>
+                        </ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image18.png"></div>
+                </div>
+
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 12</div>
+                <h2>Démarche Choisie</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul>
+                            <li>5/26</li>
+                        </ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image13.png"></div>
+                </div>
+
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 13</div>
+                <h2>Démarche Choisie</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul>
+                            <li>5/26</li>
+                        </ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image12.png"></div>
+                </div>
+
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 14</div>
+                <h2>Démarche Choisie</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul>
+                            <li>5/26</li>
+                        </ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image13.png"></div>
+                </div>
+
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 15</div>
+                <h2>Démarche Choisie</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul>
+                            <li>5/26</li>
+                            <li>Dans notre approche basée sur les dépendances temporelles, nous avons exploité le
+                                dataset IPFIX Records pour évaluer trois modèles distincts, en y intégrant une démarche
+                                d'entraînement adversarial (Adversarial Training). </li>
+                        </ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image8.png"></div>
+                </div>
+
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 16</div>
+                <h2>Démarche Choisie</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul>
+                            <li>5/26</li>
+                            <li>Dans notre approche basée sur les dépendances temporelles, nous avons exploité le
+                                dataset IPFIX Records pour évaluer trois modèles distincts, en y intégrant une démarche
+                                d'entraînement adversarial (Adversarial Training). </li>
+                        </ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image10.png"></div>
+                </div>
+
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 17</div>
+                <h2>Démarche Choisie</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul>
+                            <li>Pipeline de Préparation des Données</li>
+                            <li>3/26</li>
+                            <li>Le Socle Commun (Pipeline JSON-Native)Tous les modèles partagent cette première phase de
+                                transformation des données brutes en tenseurs.</li>
+                        </ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image9.png"></div>
+                </div>
+
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 18</div>
+                <h2>Démarche Choisie</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul>
+                            <li>Prétraitements Spécifiques aux Modèles</li>
+                            <li>3/26</li>
+                        </ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image14.png"></div>
+                </div>
+
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 19</div>
+                <h2>Démarche Choisie</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul>
+                            <li>Prétraitements Spécifiques aux Modèles</li>
+                            <li>3/26</li>
+                        </ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image15.png"></div>
+                </div>
+
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 20</div>
+                <h2>Démarche Choisie</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul>
+                            <li>Prétraitements Spécifiques aux Modèles</li>
+                            <li>3/26</li>
+                        </ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image17.png"></div>
+                </div>
+
+            </section>
+
+
+            <section>
+                <section data-background-gradient="linear-gradient(#0a0c14, #1a2236)">
+                    <h1 style="font-size: 2em; font-weight: 800;">Détails Techniques</h1>
+                    <h2 style="color: var(--secondary) !important; border:none;">Architectures du Modèle Deep Learning
+                    </h2>
+                    <p style="font-size: 0.7em; opacity: 0.6;">Utilisez la flèche du bas pour explorer les modèles</p>
+                </section>
+                <section data-background="#000">
+                    <iframe class="arch-frame" src="bilstm_architecture.html"></iframe>
+                </section>
+                <section data-background="#000">
+                    <iframe class="arch-frame" src="transformer_architecture.html"></iframe>
+                </section>
+                <section data-background="#000">
+                    <iframe class="arch-frame" src="cnn_lstm_architecture.html"></iframe>
+                </section>
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 22</div>
+                <h2>Démarche Choisie</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul>
+                            <li>Les attaques utilisé pour tester la robustesse des models :</li>
+                            <li>3/26</li>
+                        </ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image19.png"></div>
+                </div>
+
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 23</div>
+                <h2>Démarche Choisie</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul>
+                            <li>Les attaques utilisé pour tester la robustesse des models :</li>
+                            <li>3/26</li>
+                        </ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image21.png"></div>
+                </div>
+
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 24</div>
+                <h2>Démarche Choisie</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul>
+                            <li>Les attaques utilisé pour tester la robustesse des models :</li>
+                            <li>3/26</li>
+                        </ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image23.png"></div>
+                </div>
+
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 25</div>
+                <h2>Démarche Choisie</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul>
+                            <li>3/26</li>
+                        </ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image24.png"></div>
+                </div>
+
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 26</div>
+                <h2>Démarche Choisie</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul>
+                            <li>3/26</li>
+                        </ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image27.jpg"></div>
+                </div>
+
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 27</div>
+                <h2>Démarche Choisie</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul>
+                            <li>3/26</li>
+                        </ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image29.jpg"></div>
+                </div>
+
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 28</div>
+                <h2>Démarche Choisie</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul>
+                            <li>3/26</li>
+                        </ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image28.jpg"></div>
+                </div>
+
+            </section>
+
+
+            <section>
+                <div class="slide-header">Mémoire PFE · Identification IoT</div>
+                <div class="slide-footer">Diapositive 29</div>
+                <h2>Merci Pour votre attention</h2>
+
+                <div class="layout-grid">
+                    <div class="text-content">
+                        <ul></ul>
+                    </div>
+                    <div class="image-gallery "><img src="presentation_assets/media/image11.png"></div>
+                </div>
+
+            </section>
+
+        </div>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/reveal.min.js"></script>
+    <script>
+        Reveal.initialize({
+            hash: true,
+            slideNumber: 'c/t',
+            transition: 'slide',
+            width: 1200,
+            height: 800,
+            margin: 0.04,
+            minScale: 0.2,
+            maxScale: 2.0
+        });
+    </script>
+</body>
+
+</html>

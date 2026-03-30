@@ -1,6 +1,19 @@
 """
 CNN-LSTM Hybrid Model for IoT Device Identification
-Combines CNN for local pattern extraction with LSTM for temporal modeling.
+====================================================
+Architecture per docs/architectures §2 (LSTM-1DCNN / LSTM-MLP):
+
+  Input (seq_len, features)
+    └── LSTM layer (64 neurons, return_sequences=True)
+         └── Conv1D (1D convolution on the time axis)
+              └── MaxPool1D
+                   └── Flatten
+                        └── Dense (100 neurons, ReLU)
+                             └── Output (num_classes)
+
+Key difference from a typical CNN-LSTM:
+  The LSTM comes FIRST and returns the full sequence.
+  The CNN then extracts local patterns from the LSTM output (temporal features).
 """
 
 import torch
@@ -14,95 +27,93 @@ from config.config import LSTM_CONFIG
 
 class CNNLSTMClassifier(nn.Module):
     """
-    CNN-LSTM Hybrid Architecture:
-    1. 1D CNN extracts local patterns from each feature sequence
-    2. LSTM captures temporal dependencies across time steps
-    3. Attention mechanism for feature importance
+    LSTM → CNN-LSTM Hybrid Architecture (docs/architectures §2):
+
+    1. LSTM (64 units, return sequences) — captures temporal dependencies
+    2. Conv1D (applies kernels on the LSTM sequence output)
+    3. MaxPool1D — reduces temporal dimension
+    4. Flatten — converts to 1D vector
+    5. Dense (100 neurons, ReLU) — feature integration
+    6. Output (num_classes)
     """
 
     def __init__(
         self,
         input_size: int,
         num_classes: int,
-        cnn_channels: int = 64,
-        cnn_kernel_size: int = 3,
-        lstm_hidden: int = 128,
-        lstm_layers: int = 2,
-        bidirectional: bool = True,
+        lstm_hidden: int = 64,           # 64 neurons per doc
+        lstm_layers: int = 1,            # single LSTM layer (return_sequences)
+        cnn_channels: int = 64,          # Conv1D output channels
+        cnn_kernel_size: int = 3,        # Conv1D kernel
+        pool_size: int = 2,              # MaxPool1D
+        dense_units: int = 100,          # Dense(100) per doc
         dropout: float = 0.3,
-        use_attention: bool = True,
+        bidirectional: bool = False,     # doc describes unidirectional for this variant
     ):
         super().__init__()
 
-        self.use_attention = use_attention
+        self.bidirectional = bidirectional
 
-        self.cnn = nn.Sequential(
-            nn.Conv1d(input_size, cnn_channels, kernel_size=cnn_kernel_size, padding=1),
-            nn.BatchNorm1d(cnn_channels),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Conv1d(
-                cnn_channels, cnn_channels * 2, kernel_size=cnn_kernel_size, padding=1
-            ),
-            nn.BatchNorm1d(cnn_channels * 2),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-        )
-
-        cnn_output_size = cnn_channels * 2
-
+        # ── Step 1: LSTM (return sequences) ────────────────────────────────
+        # Outputs: (batch, seq_len, lstm_hidden [*2 if BiDir])
         self.lstm = nn.LSTM(
-            input_size=cnn_output_size,
+            input_size=input_size,
             hidden_size=lstm_hidden,
             num_layers=lstm_layers,
             batch_first=True,
             bidirectional=bidirectional,
-            dropout=dropout if lstm_layers > 1 else 0,
+            dropout=0.0,          # single-layer → no inter-layer dropout
         )
+        lstm_out_size = lstm_hidden * 2 if bidirectional else lstm_hidden
 
-        lstm_output_size = lstm_hidden * 2 if bidirectional else lstm_hidden
+        # ── Step 2: Conv1D on LSTM sequence output ──────────────────────────
+        # Input to Conv1d: (batch, lstm_out_size, seq_len) [after permute]
+        self.conv1d = nn.Conv1d(
+            in_channels=lstm_out_size,
+            out_channels=cnn_channels,
+            kernel_size=cnn_kernel_size,
+            padding=cnn_kernel_size // 2,
+        )
+        self.relu_conv = nn.ReLU()
 
-        if use_attention:
-            self.attention = nn.Sequential(
-                nn.Linear(lstm_output_size, lstm_output_size // 2),
-                nn.Tanh(),
-                nn.Linear(lstm_output_size // 2, 1),
-            )
+        # ── Step 3: MaxPool1D ───────────────────────────────────────────────
+        self.pool = nn.MaxPool1d(kernel_size=pool_size, stride=pool_size)
 
-        self.classifier = nn.Sequential(
+        # ── Step 4+5: Flatten → Dense(100, ReLU) ───────────────────────────
+        # We use AdaptiveAvgPool1d(1) to make Flatten size input-independent,
+        # then Linear → 100 → ReLU
+        self.global_pool = nn.AdaptiveAvgPool1d(1)   # → (batch, cnn_channels, 1)
+
+        self.head = nn.Sequential(
+            nn.Flatten(),                             # → (batch, cnn_channels)
             nn.Dropout(dropout),
-            nn.Linear(lstm_output_size, lstm_hidden),
+            nn.Linear(cnn_channels, dense_units),     # Dense(100) per doc
             nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(lstm_hidden, num_classes),
+            nn.Dropout(dropout / 2),
+            nn.Linear(dense_units, num_classes),      # Output
         )
 
     def forward(self, x):
-        x = x.permute(0, 2, 1)
+        # x: (batch, seq_len, features)
 
-        x = self.cnn(x)
+        # 1. LSTM → return full sequence
+        lstm_out, _ = self.lstm(x)                    # (B, T, lstm_hidden)
 
-        x = x.permute(0, 2, 1)
+        # 2. Conv1D operates on (B, C, T) — permute
+        x2 = lstm_out.permute(0, 2, 1)               # (B, lstm_out_size, T)
+        x2 = self.relu_conv(self.conv1d(x2))          # (B, cnn_channels, T)
 
-        lstm_out, (hidden, cell) = self.lstm(x)
+        # 3. MaxPool1D
+        x3 = self.pool(x2)                            # (B, cnn_channels, T//2)
 
-        if self.use_attention:
-            attn_weights = self.attention(lstm_out)
-            attn_weights = torch.softmax(attn_weights, dim=1)
-            context = torch.sum(attn_weights * lstm_out, dim=1)
-        else:
-            if self.lstm.bidirectional:
-                context = torch.cat((hidden[-2], hidden[-1]), dim=1)
-            else:
-                context = hidden[-1]
-
-        output = self.classifier(context)
-        return output
+        # 4. Global pool → Flatten → Dense(100) → output
+        x4 = self.global_pool(x3)                     # (B, cnn_channels, 1)
+        return self.head(x4)                          # (B, num_classes)
 
 
 class CNNClassifier(nn.Module):
     """
-    1D CNN-only classifier for comparison.
+    1D CNN-only classifier (auxiliary / baseline comparison model).
     """
 
     def __init__(
@@ -119,21 +130,17 @@ class CNNClassifier(nn.Module):
         in_channels = input_size
 
         for i in range(num_layers):
-            out_channels = channels * (2**i)
-            layers.extend(
-                [
-                    nn.Conv1d(in_channels, out_channels, kernel_size=3, padding=1),
-                    nn.BatchNorm1d(out_channels),
-                    nn.ReLU(),
-                    nn.Dropout(dropout),
-                ]
-            )
+            out_channels = channels * (2 ** i)
+            layers.extend([
+                nn.Conv1d(in_channels, out_channels, kernel_size=3, padding=1),
+                nn.BatchNorm1d(out_channels),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+            ])
             in_channels = out_channels
 
         self.features = nn.Sequential(*layers)
-
         self.global_pool = nn.AdaptiveAvgPool1d(1)
-
         self.classifier = nn.Sequential(
             nn.Flatten(),
             nn.Linear(in_channels, in_channels // 2),
@@ -146,26 +153,21 @@ class CNNClassifier(nn.Module):
         x = x.permute(0, 2, 1)
         x = self.features(x)
         x = self.global_pool(x)
-        x = self.classifier(x)
-        return x
+        return self.classifier(x)
 
 
 if __name__ == "__main__":
     batch_size = 32
     seq_len = 10
-    input_size = 37
-    num_classes = 18
+    input_size = 36
+    num_classes = 17
 
     x = torch.randn(batch_size, seq_len, input_size)
 
-    print("Testing CNN-LSTM...")
+    print("Testing CNN-LSTM (LSTM-first, per docs/architectures §2)...")
     model = CNNLSTMClassifier(input_size, num_classes)
     out = model(x)
     print(f"Input: {x.shape} -> Output: {out.shape}")
+    assert out.shape == (batch_size, num_classes)
     print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
-
-    print("\nTesting CNN...")
-    model_cnn = CNNClassifier(input_size, num_classes)
-    out_cnn = model_cnn(x)
-    print(f"Input: {x.shape} -> Output: {out_cnn.shape}")
-    print(f"Parameters: {sum(p.numel() for p in model_cnn.parameters()):,}")
+    print("PASS ✅")
