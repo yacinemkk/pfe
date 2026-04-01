@@ -20,9 +20,11 @@ class LSTMClassifier(nn.Module):
     """
     Classificateur LSTM pour l'identification d'appareils IoT.
 
-    Architecture per docs/important.md §4.1:
+    Architecture per docs/architectures §1:
     - 2 couches LSTM empilées
     - 64 unités par couche
+    - Activation ReLU
+    - Embedding de sortie: 128 dimensions
     - Dropout pour régularisation
     - Classificateur dense en sortie
     """
@@ -33,6 +35,7 @@ class LSTMClassifier(nn.Module):
         num_classes: int,
         hidden_size: int = 64,
         num_layers: int = 2,
+        embedding_dim: int = 128,
         dropout: float = 0.3,
         config_path: str = "config/config.yaml",
     ):
@@ -44,10 +47,12 @@ class LSTMClassifier(nn.Module):
             model_config = config["models"]["lstm"]
             hidden_size = model_config.get("hidden_size", hidden_size)
             num_layers = model_config.get("num_layers", num_layers)
+            embedding_dim = model_config.get("embedding_dim", embedding_dim)
             dropout = model_config.get("dropout", dropout)
 
         self.hidden_size = hidden_size
         self.num_layers = num_layers
+        self.embedding_dim = embedding_dim
 
         self.lstm = nn.LSTM(
             input_size=input_size,
@@ -58,12 +63,15 @@ class LSTMClassifier(nn.Module):
             bidirectional=False,
         )
 
+        self.embedding_proj = nn.Linear(hidden_size, embedding_dim)
+        self.relu = nn.ReLU()
+
         self.classifier = nn.Sequential(
             nn.Dropout(dropout),
-            nn.Linear(hidden_size, hidden_size),
+            nn.Linear(embedding_dim, embedding_dim),
             nn.ReLU(),
             nn.Dropout(dropout / 2),
-            nn.Linear(hidden_size, num_classes),
+            nn.Linear(embedding_dim, num_classes),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -75,14 +83,16 @@ class LSTMClassifier(nn.Module):
         """
         lstm_out, (hidden, cell) = self.lstm(x)
 
-        embedding = hidden[-1]
+        hidden_out = hidden[-1]
+        embedding = self.relu(self.embedding_proj(hidden_out))
 
         return self.classifier(embedding)
 
     def get_embedding(self, x: torch.Tensor) -> torch.Tensor:
-        """Extrait l'embedding de la séquence."""
+        """Extrait l'embedding de la séquence (128 dimensions)."""
         lstm_out, (hidden, cell) = self.lstm(x)
-        return hidden[-1]
+        hidden_out = hidden[-1]
+        return self.relu(self.embedding_proj(hidden_out))
 
 
 class LSTMConfig:

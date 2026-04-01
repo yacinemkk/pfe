@@ -7,10 +7,14 @@ Etapes:
 3.2: Création du Vocabulaire
 3.3: Encodage BPE
 3.4: Padding et Tenseurs
+
+Règles d'encodage des variables catégorielles:
+- Transformer/Hybride: PAS de one-hot. Features catégorielles → strings lisibles → BPE → Embedding
+- Le mécanisme d'attention évalue dynamiquement l'importance des catégories
 """
 
 import numpy as np
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 from pathlib import Path
 import yaml
 
@@ -27,6 +31,19 @@ except ImportError:
     print(
         "Warning: tokenizers library not available. Install with: pip install tokenizers"
     )
+
+PROTO_MAP = {
+    1: "icmp",
+    6: "tcp",
+    17: "udp",
+    47: "gre",
+    50: "esp",
+    51: "ah",
+    89: "ospf",
+    132: "sctp",
+}
+
+CATEGORICAL_FEATURES = {"ipProto", "protocolIdentifier"}
 
 
 class IoTTokenizer:
@@ -59,6 +76,18 @@ class IoTTokenizer:
         else:
             self.tokenizer = None
 
+    @staticmethod
+    def _format_value(val: float, feature_name: str) -> str:
+        """
+        Formate la valeur selon le type de feature.
+        Les features catégorielles sont converties en labels lisibles.
+        Les features continues gardent leur format numérique.
+        """
+        if feature_name in CATEGORICAL_FEATURES:
+            int_val = int(round(val))
+            return PROTO_MAP.get(int_val, f"proto_{int_val}")
+        return f"{float(val):.4f}"
+
     def transform_to_text(
         self,
         X_seq: np.ndarray,
@@ -71,7 +100,12 @@ class IoTTokenizer:
         Convertit chaque flux en format:
         nom_feature1 valeur1; nom_feature2 valeur2; ...
 
-        Exemple: ptcl 6; ipv 4; bi_dur 12.5; bi_pkt 150;
+        Exemple: ptcl tcp; ipv 4; bi_dur 12.5000; bi_pkt 150.0000;
+
+        Les features catégorielles (ipProto, protocolIdentifier) sont
+        converties en labels lisibles (tcp, udp, icmp) au lieu de valeurs
+        numériques. Cela permet au BPE de les traiter comme des tokens
+        sémantiques préservés.
         """
         texts = []
 
@@ -80,7 +114,8 @@ class IoTTokenizer:
                 parts = []
                 for flow in seq:
                     for val, name in zip(flow, feature_names):
-                        parts.append(f"{name} {float(val):.4f};")
+                        val_str = self._format_value(val, name)
+                        parts.append(f"{name} {val_str};")
                 texts.append(" ".join(parts))
 
         elif format_type == "compact":
@@ -99,16 +134,22 @@ class IoTTokenizer:
         """
         Etape 3.2: Création du Vocabulaire.
 
-        Tokens prédéfinis: noms des features
+        Tokens prédéfinis: noms des features + valeurs catégorielles
         Tokens réservés: <s>, </s>, <pad>, <unk>, <mask>
         """
         vocab = list(self.special_tokens)
         vocab.extend(feature_names)
 
+        cat_values = [PROTO_MAP.get(k, f"proto_{k}") for k in PROTO_MAP]
+        for cv in cat_values:
+            if cv not in vocab:
+                vocab.append(cv)
+
         if verbose:
             print(f"  Vocabulaire de base: {len(vocab)} tokens")
             print(f"    Tokens réservés: {self.special_tokens}")
             print(f"    Features: {len(feature_names)}")
+            print(f"    Valeurs catégorielles: {cat_values}")
 
         return vocab
 
@@ -135,7 +176,8 @@ class IoTTokenizer:
             print("\n[TOKENIZER] Entraînement BPE")
 
         texts = self.transform_to_text(X_train, feature_names)
-        special_tokens = self.special_tokens + list(feature_names)
+        cat_values = [PROTO_MAP.get(k, f"proto_{k}") for k in PROTO_MAP]
+        special_tokens = self.special_tokens + list(feature_names) + cat_values
 
         trainer = BpeTrainer(special_tokens=special_tokens, vocab_size=self.vocab_size)
 
@@ -228,16 +270,27 @@ class SimpleTokenizer:
                 self.vocab[name] = idx
                 idx += 1
 
+        for k, v in PROTO_MAP.items():
+            if v not in self.vocab:
+                self.vocab[v] = idx
+                idx += 1
+
         for seq in X_train[:100]:
-            for flow in seq:
-                for val in flow:
+            for val, name in zip(
+                seq.flatten(), feature_names * (seq.shape[0] if seq.ndim == 2 else 1)
+            ):
+                if name in CATEGORICAL_FEATURES:
+                    token = PROTO_MAP.get(
+                        int(round(float(val))), f"proto_{int(round(float(val)))}"
+                    )
+                else:
                     token = f"{float(val):.4f}"
-                    if (
-                        token not in self.vocab
-                        and idx < self.config["tokenizer"]["vocab_size"]
-                    ):
-                        self.vocab[token] = idx
-                        idx += 1
+                if (
+                    token not in self.vocab
+                    and idx < self.config["tokenizer"]["vocab_size"]
+                ):
+                    self.vocab[token] = idx
+                    idx += 1
 
         self.reverse_vocab = {v: k for k, v in self.vocab.items()}
 
@@ -256,7 +309,12 @@ class SimpleTokenizer:
             for flow in seq:
                 for val, name in zip(flow, feature_names):
                     tokens.append(self.vocab.get(name, unk_id))
-                    token = f"{float(val):.4f}"
+                    if name in CATEGORICAL_FEATURES:
+                        token = PROTO_MAP.get(
+                            int(round(float(val))), f"proto_{int(round(float(val)))}"
+                        )
+                    else:
+                        token = f"{float(val):.4f}"
                     tokens.append(self.vocab.get(token, unk_id))
 
             tokens = tokens[: self.max_length]

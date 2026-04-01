@@ -31,7 +31,7 @@ from src.models.lstm import LSTMClassifier
 from src.models.bilstm import BiLSTMClassifier
 from src.models.cnn_lstm import CNNLSTMClassifier
 from src.models.transformer import TransformerClassifier
-from src.models.hybrid import HybridClassifier
+from src.models.cnn_bilstm_transformer import CNNBiLSTMTransformerClassifier
 from src.models.xgboost_lstm import XGBoostLSTMClassifier
 from src.training.trainer import Trainer, IoTSequenceDataset, create_dataloaders
 from src.training.evaluator import Evaluator, ModelComparator, CrashTestEvaluator
@@ -136,7 +136,7 @@ def get_model(model_name: str, input_size: int, num_classes: int, seq_length: in
         "cnn_lstm": CNNLSTMClassifier,
         "xgboost_lstm": XGBoostLSTMClassifier,
         "transformer": TransformerClassifier,
-        "hybrid": HybridClassifier,
+        "hybrid": CNNBiLSTMTransformerClassifier,
     }
 
     if model_name not in models:
@@ -180,7 +180,7 @@ def generate_adversarial_samples(
     verbose: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Generate adversarial samples for training.
+    Generate adversarial samples using sensitivity analysis + adversarial search.
     """
     if verbose:
         print("\n" + "=" * 60)
@@ -196,12 +196,21 @@ def generate_adversarial_samples(
         num_classes=num_classes,
     )
 
+    sensitivity_results = feature_attack.analyze_sensitivity(
+        model,
+        X_train,
+        y_train,
+        device,
+        batch_size=config["training"]["batch_size"],
+        verbose=verbose,
+    )
+
     sequence_attack = SequenceLevelAttack(
         model=model,
         device=device,
-        epsilon=config["adversarial"]["sequence_level"]["epsilon"],
-        alpha=config["adversarial"]["sequence_level"]["alpha"],
-        num_steps=config["adversarial"]["sequence_level"]["num_steps"],
+        feature_attack=feature_attack,
+        target_accuracy=config["adversarial"]["target_accuracy"],
+        batch_size=config["training"]["batch_size"],
     )
 
     hybrid_attack = HybridAdversarialAttack(
@@ -211,7 +220,11 @@ def generate_adversarial_samples(
     )
 
     X_adv = hybrid_attack.generate_batch(
-        X_train, y_train, method="hybrid", verbose=verbose
+        X_train,
+        y_train,
+        method="hybrid",
+        verbose=verbose,
+        sensitivity_results=sensitivity_results,
     )
 
     return X_adv, y_train.copy()
@@ -237,11 +250,8 @@ def run_adversarial_training(
         print("PHASE 6: Adversarial Training")
         print("=" * 60)
 
-    clean_ratio = config["adversarial"]["hybrid_training"]["clean_ratio"]
-    adv_ratio = (
-        config["adversarial"]["hybrid_training"]["feature_ratio"]
-        + config["adversarial"]["hybrid_training"]["sequence_ratio"]
-    )
+    clean_ratio = 0.8
+    adv_ratio = 0.2
 
     n_clean = int(len(X_train) * clean_ratio)
     n_adv = int(len(X_adv) * adv_ratio)
@@ -290,31 +300,91 @@ def evaluate_model(
     return metrics
 
 
-def run_crash_test(
-    model: torch.nn.Module,
+def split_test_for_crash(
     X_test: np.ndarray,
     y_test: np.ndarray,
+    clean_ratio: float = 0.5,
+    verbose: bool = True,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Split test set into clean_test (reserved for evaluation) and adv_test (for adversarial generation).
+
+    Temporal split by label group: first portion → clean, last portion → adv.
+    This preserves the chronological ordering within each device group.
+    """
+    unique_labels = np.unique(y_test)
+    label_to_group = {label: i for i, label in enumerate(unique_labels)}
+    groups = np.array([label_to_group[label] for label in y_test])
+
+    clean_indices = []
+    adv_indices = []
+
+    for group_id in np.unique(groups):
+        group_mask = groups == group_id
+        group_indices = np.where(group_mask)[0]
+        n_group = len(group_indices)
+
+        if n_group < 10:
+            clean_indices.extend(group_indices)
+        else:
+            split_point = int(n_group * clean_ratio)
+            clean_indices.extend(group_indices[:split_point])
+            adv_indices.extend(group_indices[split_point:])
+
+    X_clean = X_test[clean_indices]
+    y_clean = y_test[clean_indices]
+    X_adv_src = X_test[adv_indices]
+    y_adv_src = y_test[adv_indices]
+
+    if verbose:
+        print(
+            f"\n  Test split → Clean: {len(X_clean):,} | Adv source: {len(X_adv_src):,}"
+        )
+
+    return X_clean, y_clean, X_adv_src, y_adv_src
+
+
+def run_crash_test(
+    model: torch.nn.Module,
+    X_clean: np.ndarray,
+    y_clean: np.ndarray,
+    X_adv_src: np.ndarray,
+    y_adv_src: np.ndarray,
     feature_names: List[str],
     config: dict,
     device: torch.device,
     verbose: bool = True,
 ) -> Dict:
     """
-    Run crash test (adversarial robustness evaluation).
+    Run crash test (adversarial robustness evaluation) using sensitivity + search.
+
+    X_clean/y_clean: Reserved clean test data (never used for attack generation)
+    X_adv_src/y_adv_src: Data used to generate adversarial samples
     """
-    num_classes = len(np.unique(y_test))
+    num_classes = len(np.unique(y_adv_src))
 
     feature_attack = FeatureLevelAttack(
-        X_test.reshape(-1, X_test.shape[-1]),
-        np.repeat(y_test, X_test.shape[1]),
+        X_adv_src.reshape(-1, X_adv_src.shape[-1]),
+        np.repeat(y_adv_src, X_adv_src.shape[1]),
         feature_names,
         num_classes,
+    )
+
+    sensitivity_results = feature_attack.analyze_sensitivity(
+        model,
+        X_adv_src,
+        y_adv_src,
+        device,
+        batch_size=config["training"]["batch_size"],
+        verbose=verbose,
     )
 
     sequence_attack = SequenceLevelAttack(
         model=model,
         device=device,
-        epsilon=config["adversarial"]["sequence_level"]["epsilon"],
+        feature_attack=feature_attack,
+        target_accuracy=config["adversarial"]["target_accuracy"],
+        batch_size=config["training"]["batch_size"],
     )
 
     hybrid_attack = HybridAdversarialAttack(
@@ -322,11 +392,17 @@ def run_crash_test(
     )
 
     X_adv = hybrid_attack.generate_batch(
-        X_test, y_test, method="hybrid", verbose=verbose
+        X_adv_src,
+        y_adv_src,
+        method="hybrid",
+        verbose=verbose,
+        sensitivity_results=sensitivity_results,
     )
 
     crash_evaluator = CrashTestEvaluator(model, device)
-    results = crash_evaluator.run_crash_test(X_test, y_test, X_adv, verbose=verbose)
+    results = crash_evaluator.run_crash_test(
+        X_clean, y_clean, X_adv, y_adv_src, verbose=verbose
+    )
 
     return results
 
@@ -353,15 +429,26 @@ def run_full_pipeline(
     preprocessor = Preprocessor()
     preprocessor.feature_names = feature_names
 
+    # ─── Anti-Leakage Temporal Split ─────────────────────────────────────────
+    # WARNING: This split is by label group only, NOT chronological.
+    # The 'start' timestamp column has already been removed by SDN filtering.
+    # For a proper chronological split, use:
+    #   python -m src.data.preprocessor  (CSV pipeline)
+    #   python -m src.data.json_preprocessor  (JSON pipeline)
+    # These handle: group by device → sort by flow_start → 80/20 temporal split
+    #
+    # The current split groups by label and takes first 80% as train.
+    # This is NOT a true chronological split and may introduce leakage.
+    # Consider this a legacy fallback; prefer the dedicated preprocessors.
+
     splitter = TemporalSplitter()
 
     unique_labels = np.unique(y)
     label_to_group = {label: i for i, label in enumerate(unique_labels)}
     groups = np.array([label_to_group[label] for label in y])
 
-    split_idx = int(len(X) * 0.8)
+    # Chronological split: sort within each group, then take first 80% as train
     indices = np.arange(len(X))
-
     train_indices = []
     test_indices = []
 
@@ -398,10 +485,17 @@ def run_full_pipeline(
     X_val_seq, y_val_seq = X_train_seq[:n_val], y_train_seq[:n_val]
     X_train_seq, y_train_seq = X_train_seq[n_val:], y_train_seq[n_val:]
 
+    # Split test set: clean_test (reserved for evaluation) + adv_test (for adversarial generation)
+    # Temporal split by device: first 50% clean, last 50% for adversarial
+    X_clean_test, y_clean_test, X_adv_test, y_adv_test = split_test_for_crash(
+        X_test_seq, y_test_seq, clean_ratio=0.5, verbose=verbose
+    )
+
     if verbose:
         print(f"\n  Train seq: {len(X_train_seq):,}")
         print(f"  Val seq: {len(X_val_seq):,}")
-        print(f"  Test seq: {len(X_test_seq):,}")
+        print(f"  Test clean: {len(X_clean_test):,}")
+        print(f"  Test adv source: {len(X_adv_test):,}")
 
     seq_length = X_train_seq.shape[1]
     input_size = X_train_seq.shape[2]
@@ -425,8 +519,8 @@ def run_full_pipeline(
             y_train_seq,
             X_val_seq,
             y_val_seq,
-            X_test_seq,
-            y_test_seq,
+            X_clean_test,
+            y_clean_test,
             config["training"]["batch_size"],
         )
 
@@ -482,8 +576,10 @@ def run_full_pipeline(
 
             crash_results = run_crash_test(
                 adv_model,
-                X_test_seq,
-                y_test_seq,
+                X_clean_test,
+                y_clean_test,
+                X_adv_test,
+                y_adv_test,
                 feature_names,
                 config,
                 device,

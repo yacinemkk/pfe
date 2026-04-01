@@ -1,0 +1,33 @@
+Phase 1 : Ingénierie des données, Préparation SDN et Zéro "Data Leakage" L'objectif de cette phase est de préparer les données pour qu'elles reflètent exactement ce qu'un contrôleur SDN peut voir, tout en garantissant qu'aucune fuite d'information temporelle ne vienne fausser les résultats.
+
+    Sélection des jeux de données : Utilisation des jeux de données de flux IoT IPFIX Home (24 types d'appareils) et IPFIX Records (26 appareils, plus de 9 millions d'enregistrements).
+    Filtrage orienté SDN : Suppression stricte des adresses IP (source et destination), des adresses MAC et des ports, pour ne conserver que les caractéristiques accessibles via les API SDN : le temps moyen entre les arrivées, la taille des paquets et le protocole.
+    Pipeline "Zéro Data Leakage" :
+        Groupement exclusif des flux par identifiant d'appareil.
+        Tri chronologique strict de chaque groupe via le marqueur de début de flux (flow_start).
+        Séparation temporelle (80% pour l'entraînement/le passé, 20% pour le test/le futur) sans aucun mélange (shuffling).
+    Sélection de caractéristiques hybride : Utilisation de l'algorithme d'isolation des forêts (Isolation Forest) et du facteur de valeur aberrante locale (LOF) pour le nettoyage, suivie d'une sélection combinant XGBoost, le test du Chi-carré (Chi2) et l'Information Mutuelle pour extraire les caractéristiques les plus discriminantes. Équilibrage via Borderline-SMOTE.
+    Tokenisation (IoT-Tokenize) : Conversion des statistiques de flux en séquences formatées (ex: paires nom_caractéristique valeur) en utilisant un encodage par paires d'octets (BPE) de niveau octet, tout en préservant les noms des caractéristiques via des tokens prédéfinis pour maintenir la sémantique de la structure du réseau.
+
+Phase 2 : Développement des Modèles d'Identification (Vérification Post-Authentification) Vous allez développer de manière incrémentale 6 modèles dont le but exclusif est de classifier le type d'appareil IoT.
+
+    Modèles de base : Implémentation individuelle d'un LSTM (pour les dépendances temporelles), d'un BiLSTM (pour les séquences bidirectionnelles), d'un CNN-LSTM (pour l'extraction spatio-temporelle), d'un XGBoost-LSTM (où le LSTM sert d'extracteur de caractéristiques pour XGBoost), et d'un Transformer (pour les dépendances globales).
+    L'Architecture Ultime (CNN-BiLSTM-Transformer) : Construction de l'architecture hybride finale. Le CNN extraira d'abord les caractéristiques spatiales locales via deux branches parallèles, le BiLSTM modélisera les dépendances temporelles bidirectionnelles de ces caractéristiques, et le Transformer capturera les relations globales à long terme via son mécanisme d'attention multi-têtes (Multi-Head Attention).
+
+Phase 3 : Évaluation Standard et "Crash Test" (Vulnérabilité) Cette phase prouvera que les modèles, même les plus avancés, sont vulnérables s'ils ne sont pas protégés.
+
+    Entraînement initial : Entraînement des 6 modèles uniquement sur l'ensemble d'entraînement contenant du trafic normal (bénin).
+    Évaluation de référence : Test sur le jeu de test normal pour établir les scores de base (Précision, Rappel, Macro F1-Score).
+    Génération de l'attaque (Usurpation) : Génération d'instances antagonistes (adversarial examples) en perturbant itérativement les caractéristiques du trafic d'un appareil pour qu'il soit classé comme un autre (en minimisant les distances L0 et L2 pour respecter les contraintes sémantiques du réseau).
+    Le Crash Test : Soumission de ces flux antagonistes aux modèles. Vous devrez documenter l'effondrement des performances (par exemple, la chute drastique du F1-Score et du taux de vrais positifs) face à ces perturbations.
+
+Phase 4 : Déploiement de la Défense et Vérification de la Résilience Mise en place de la stratégie d'auto-adaptation pour immuniser le système.
+
+    Création du Corpus Conjoint : Fusion des flux d'entraînement normaux avec les échantillons antagonistes générés (correctement étiquetés avec leur vraie classe) pour former un nouveau jeu de données.
+    Entraînement Antagoniste (Adversarial Training) : Ré-entraînement de l'ensemble des modèles (particulièrement le CNN-BiLSTM-Transformer) sur ce corpus conjoint. Cela forcera le modèle à élargir ses frontières de décision et à tolérer les petites perturbations imposées par l'attaquant.
+    Crash Test 2 (Vérification) : Évaluation des modèles "défendus" sur un nouveau jeu de test contenant des attaques inédites. Vous démontrerez la récupération spectaculaire des performances (remontée du F1-Score) et la supériorité de l'architecture hybride défendue.
+
+Phase 5 : Intégration Conceptuelle SDN-NAC et Atténuation (Mitigation) Intégration de l'intelligence artificielle dans l'architecture réseau globale.
+
+    Le "NAC Enhancer" : Le modèle agit comme une vérification continue post-authentification. Le contrôleur SDN collecte les statistiques de flux en temps réel et les envoie au modèle CNN-BiLSTM-Transformer.
+    Boucle de Mitigation Chirurgicale : Si le système détecte qu'un appareil se comporte différemment de l'identité qu'il a déclarée (usurpation ou trafic antagoniste), le contrôleur SDN génère dynamiquement des règles (via OpenFlow) pour rejeter, isoler ou bloquer le port de l'attaquant, tout en maintenant la disponibilité pour les appareils légitimes

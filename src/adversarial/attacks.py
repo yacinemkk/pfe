@@ -1,10 +1,11 @@
 """
-Adversarial Attacks for IoT Device Identification
+Adversarial Attacks for IoT Device Identification (Sequential Models)
 
-Implements:
-1. Feature-level attack (IoT-SDN style)
-2. Sequence-level gradient-based attack (PGD/BPTT)
+Mimicry-based attacks adapted from sensitivity analysis and adversarial search:
+1. Feature-level attack (mimicry-based: Zero, Mimic_Mean, Mimic_95th, Padding)
+2. Sequence-level attack (greedy adversarial search combining best strategies)
 3. Combined hybrid attack
+4. Adversarial evaluator
 """
 
 import torch
@@ -17,10 +18,14 @@ import gc
 
 class FeatureLevelAttack:
     """
-    Feature-level adversarial attack (IoT-SDN style).
-    Targets statistical features while respecting semantic constraints.
+    Feature-level adversarial attack using semantic mimicry strategies.
 
-    x_adv = Projection[x0 + c·t·mask·sign(μ_target - x0)·|Δ|]
+    Perturbs only attack samples to make them resemble benign traffic.
+    Strategies per feature:
+      - Zero: set feature to 0
+      - Mimic_Mean: set to mean of benign samples
+      - Mimic_95th: set to 95th percentile of benign samples
+      - Padding_x10: multiply feature by 10
     """
 
     def __init__(
@@ -37,44 +42,28 @@ class FeatureLevelAttack:
         self.num_classes = num_classes
         self.n_continuous_features = n_continuous_features
 
-        # Auto-detect non-modifiable features based on feature names
         if non_modifiable is not None:
             self.non_modifiable = non_modifiable
         else:
-            # Check if we're using JSON pipeline (has pkt_dir features)
             has_pkt_dir = any(f.startswith("pkt_dir_") for f in feature_names)
             if has_pkt_dir:
-                # JSON pipeline: packet direction bits are non-modifiable
                 self.non_modifiable = [
                     "protocolIdentifier",
                 ] + [f"pkt_dir_{i}" for i in range(8)]
             else:
-                # CSV pipeline: original defaults
-                self.non_modifiable = [
-                    "ipProto",
-                    "http",
-                    "https",
-                    "dns",
-                    "ntp",
-                    "tcp",
-                    "udp",
-                    "ssdp",
-                ]
+                self.non_modifiable = ["ipProto"]
 
-        # Auto-detect dependent pairs based on feature names
         if dependent_pairs is not None:
             self.dependent_pairs = dependent_pairs
         else:
             has_pkt_dir = any(f.startswith("pkt_dir_") for f in feature_names)
             if has_pkt_dir:
-                # JSON pipeline: use JSON field names
                 self.dependent_pairs = {
                     "reversePacketTotalCount": "packetTotalCount",
                     "reverseOctetTotalCount": "octetTotalCount",
                     "reverseAverageInterarrivalTime": "averageInterarrivalTime",
                 }
             else:
-                # CSV pipeline: original defaults
                 self.dependent_pairs = {
                     "inPacketCount": "outPacketCount",
                     "inByteCount": "outByteCount",
@@ -84,9 +73,7 @@ class FeatureLevelAttack:
 
         self.modifiable_indices = self._get_modifiable_indices()
         self.dependent_indices = self._get_dependent_indices()
-        self.class_centroids = self._compute_centroids(X_train, y_train)
-        self.nearest_classes = self._find_nearest_classes(k=3)
-        self.masks = self._generate_masks(X_train, n_masks=15)
+        self.benign_stats = self._compute_benign_stats(X_train, y_train)
 
     def _get_modifiable_indices(self) -> np.ndarray:
         modifiable = []
@@ -104,428 +91,391 @@ class FeatureLevelAttack:
                 )
         return pairs
 
-    def _compute_centroids(
+    def _compute_benign_stats(
         self, X_train: np.ndarray, y_train: np.ndarray
-    ) -> Dict[int, np.ndarray]:
-        centroids = {}
+    ) -> Dict[int, Dict[str, np.ndarray]]:
+        """Compute mean and 95th percentile for each class (used as benign reference)."""
+        stats = {}
         for cls in range(self.num_classes):
             mask = y_train == cls
             if np.sum(mask) > 0:
-                centroids[cls] = np.mean(X_train[mask], axis=0)
-        return centroids
+                data = X_train[mask]
+                stats[cls] = {
+                    "mean": np.mean(data, axis=0),
+                    "p95": np.percentile(data, 95, axis=0),
+                }
+        return stats
 
-    def _find_nearest_classes(self, k: int = 3) -> Dict[int, List[int]]:
-        nearest = {}
-        class_ids = list(self.class_centroids.keys())
+    def _apply_strategy(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        feature_idx: int,
+        strategy: str,
+    ) -> np.ndarray:
+        """Apply a perturbation strategy to a specific feature on attack samples."""
+        X_perturbed = X.copy().astype(float)
+        n_features = X.shape[-1]
 
-        if len(class_ids) < 2:
-            return {c: [] for c in class_ids}
+        if X.ndim == 3:
+            for cls in range(self.num_classes):
+                cls_mask = y == cls
+                if not np.any(cls_mask):
+                    continue
+                if cls not in self.benign_stats:
+                    continue
+                benign = self.benign_stats[cls]
 
-        centroids_matrix = np.array([self.class_centroids[c] for c in class_ids])
+                if strategy == "Zero":
+                    X_perturbed[cls_mask, :, feature_idx] = 0.0
+                elif strategy == "Mimic_Mean":
+                    X_perturbed[cls_mask, :, feature_idx] = benign["mean"][feature_idx]
+                elif strategy == "Mimic_95th":
+                    X_perturbed[cls_mask, :, feature_idx] = benign["p95"][feature_idx]
+                elif strategy == "Padding_x10":
+                    X_perturbed[cls_mask, :, feature_idx] *= 10.0
+        else:
+            for cls in range(self.num_classes):
+                cls_mask = y == cls
+                if not np.any(cls_mask):
+                    continue
+                if cls not in self.benign_stats:
+                    continue
+                benign = self.benign_stats[cls]
 
-        for i, cls in enumerate(class_ids):
-            centroid = self.class_centroids[cls]
-            distances = np.sqrt(np.sum((centroids_matrix - centroid) ** 2, axis=1))
-            distances[i] = np.inf
-            nearest_indices = np.argsort(distances)[:k]
-            nearest[cls] = [class_ids[j] for j in nearest_indices]
+                if strategy == "Zero":
+                    X_perturbed[cls_mask, feature_idx] = 0.0
+                elif strategy == "Mimic_Mean":
+                    X_perturbed[cls_mask, feature_idx] = benign["mean"][feature_idx]
+                elif strategy == "Mimic_95th":
+                    X_perturbed[cls_mask, feature_idx] = benign["p95"][feature_idx]
+                elif strategy == "Padding_x10":
+                    X_perturbed[cls_mask, feature_idx] *= 10.0
 
-        return nearest
-
-    def _generate_masks(self, X_train: np.ndarray, n_masks: int = 15) -> np.ndarray:
-        n_features = len(self.feature_names)
-        masks = []
-
-        masks.append(np.ones(n_features))
-
-        n_modifiable = len(self.modifiable_indices)
-        for pct in [0.25, 0.5, 0.75]:
-            n_active = max(1, int(n_modifiable * pct))
-            for _ in range(2):
-                mask = np.zeros(n_features)
-                active = np.random.choice(
-                    self.modifiable_indices, n_active, replace=False
-                )
-                mask[active] = 1
-                masks.append(mask)
-
-        if len(X_train) > 0:
-            variances = np.var(X_train, axis=0)
-            for top_k in [5, 10, 15]:
-                mask = np.zeros(n_features)
-                top_indices = np.argsort(variances)[-top_k:]
-                mask[top_indices] = 1
-                masks.append(mask)
-
-        return np.array(masks[:n_masks])
+        return X_perturbed
 
     def projection(self, X: np.ndarray) -> np.ndarray:
+        """Clip perturbed values to valid ranges and enforce dependent constraints."""
         X_proj = X.copy()
-        
         n_cont = self.n_continuous_features
-        
+
         if n_cont is not None:
-            # Clip continuous features only
-            if X_proj.ndim == 1:
-                X_proj[:n_cont] = np.clip(X_proj[:n_cont], -3.0, 3.0)
-                # Ensure binary features stay as {0, 1}
-                X_proj[n_cont:] = np.clip(np.round(X_proj[n_cont:]), 0, 1)
-            else:
+            if X_proj.ndim == 3:
+                X_proj[:, :, :n_cont] = np.clip(X_proj[:, :, :n_cont], -3.0, 3.0)
+                X_proj[:, :, n_cont:] = np.clip(np.round(X_proj[:, :, n_cont:]), 0, 1)
+            elif X_proj.ndim == 2:
                 X_proj[:, :n_cont] = np.clip(X_proj[:, :n_cont], -3.0, 3.0)
                 X_proj[:, n_cont:] = np.clip(np.round(X_proj[:, n_cont:]), 0, 1)
+            elif X_proj.ndim == 1:
+                X_proj[:n_cont] = np.clip(X_proj[:n_cont], -3.0, 3.0)
+                X_proj[n_cont:] = np.clip(np.round(X_proj[n_cont:]), 0, 1)
         else:
             X_proj = np.clip(X_proj, -3.0, 3.0)
 
         for indep_idx, dep_idx in self.dependent_indices:
-            # Only apply ratio constraints to continuous features
             if n_cont is not None and (dep_idx >= n_cont or indep_idx >= n_cont):
                 continue
-            if X_proj.ndim == 1:
-                ratio = np.abs(X_proj[dep_idx]) / (np.abs(X_proj[indep_idx]) + 1e-8)
-                X_proj[dep_idx] = X_proj[indep_idx] * np.clip(ratio, 0.5, 2.0)
-            else:
+            if X_proj.ndim == 3:
+                ratio = np.abs(X_proj[:, :, dep_idx]) / (
+                    np.abs(X_proj[:, :, indep_idx]) + 1e-8
+                )
+                X_proj[:, :, dep_idx] = X_proj[:, :, indep_idx] * np.clip(
+                    ratio, 0.5, 2.0
+                )
+            elif X_proj.ndim == 2:
                 ratio = np.abs(X_proj[:, dep_idx]) / (
                     np.abs(X_proj[:, indep_idx]) + 1e-8
                 )
                 X_proj[:, dep_idx] = X_proj[:, indep_idx] * np.clip(ratio, 0.5, 2.0)
+            elif X_proj.ndim == 1:
+                ratio = np.abs(X_proj[dep_idx]) / (np.abs(X_proj[indep_idx]) + 1e-8)
+                X_proj[dep_idx] = X_proj[indep_idx] * np.clip(ratio, 0.5, 2.0)
 
         return X_proj
+
+    def analyze_sensitivity(
+        self,
+        model: nn.Module,
+        X: np.ndarray,
+        y: np.ndarray,
+        device: torch.device,
+        batch_size: int = 64,
+        verbose: bool = False,
+    ) -> List[Dict]:
+        """
+        Analyze sensitivity: for each feature, test all 4 strategies
+        and measure accuracy drop.
+
+        Returns list of dicts: {feature, strategy, accuracy, drop}
+        """
+        model.eval()
+        results = []
+
+        base_acc = self._evaluate_model(model, X, y, device, batch_size)
+
+        for i, feat in enumerate(self.feature_names):
+            if i not in self.modifiable_indices:
+                continue
+            if verbose:
+                print(f"  Analyzing feature {i + 1}/{len(self.feature_names)}: {feat}")
+
+            for strategy in ["Zero", "Mimic_Mean", "Mimic_95th", "Padding_x10"]:
+                X_pert = self._apply_strategy(X, y, i, strategy)
+                X_pert = self.projection(X_pert)
+                pert_acc = self._evaluate_model(model, X_pert, y, device, batch_size)
+                drop = base_acc - pert_acc
+
+                results.append(
+                    {
+                        "feature": feat,
+                        "feature_idx": i,
+                        "strategy": strategy,
+                        "accuracy": pert_acc,
+                        "drop": drop,
+                    }
+                )
+
+                if drop > 0.05 and verbose:
+                    print(
+                        f"    -> {strategy}: Acc dropped to {pert_acc:.4f} (Drop: {drop:.4f})"
+                    )
+
+        return results
 
     def generate_single(
         self,
         x0: np.ndarray,
         true_class: int,
-        target_class: Optional[int] = None,
-        max_iter: int = 20,
-        c: float = 0.1,
+        strategies: Optional[List[Dict]] = None,
     ) -> np.ndarray:
-        if target_class is None:
-            if (
-                true_class in self.nearest_classes
-                and len(self.nearest_classes[true_class]) > 0
-            ):
-                target_class = np.random.choice(self.nearest_classes[true_class])
-            else:
-                other = [c for c in range(self.num_classes) if c != true_class]
-                if not other:
-                    return x0
-                target_class = np.random.choice(other)
+        """
+        Generate adversarial sample using best strategies from sensitivity analysis.
 
-        if target_class not in self.class_centroids:
-            return x0
+        Args:
+            x0: single sample (1D or 2D for sequence)
+            true_class: true class label
+            strategies: list of {feature_idx, strategy} to apply.
+                       If None, uses Mimic_Mean on all modifiable features.
+        """
+        x_adv = x0.copy().astype(float)
 
-        mu_target = self.class_centroids[target_class]
-        mask = self.masks[np.random.randint(len(self.masks))]
+        if strategies is None:
+            for idx in self.modifiable_indices:
+                if true_class in self.benign_stats:
+                    x_adv[..., idx] = self.benign_stats[true_class]["mean"][idx]
+        else:
+            for s in strategies:
+                fidx = s["feature_idx"]
+                strat = s["strategy"]
+                if fidx >= x_adv.shape[-1]:
+                    continue
 
-        x_adv = x0.copy()
-        for t in range(1, max_iter + 1):
-            diff = np.abs(mu_target - x0)
-            direction = np.sign(mu_target - x0)
-            perturbation = c * t * mask * direction * diff
-            x_adv = self.projection(x0 + perturbation)
+                if strat == "Zero":
+                    x_adv[..., fidx] = 0.0
+                elif strat == "Mimic_Mean":
+                    if true_class in self.benign_stats:
+                        x_adv[..., fidx] = self.benign_stats[true_class]["mean"][fidx]
+                elif strat == "Mimic_95th":
+                    if true_class in self.benign_stats:
+                        x_adv[..., fidx] = self.benign_stats[true_class]["p95"][fidx]
+                elif strat == "Padding_x10":
+                    x_adv[..., fidx] *= 10.0
 
+        x_adv = self.projection(x_adv)
         return x_adv
 
     def generate_batch(
         self,
         X: np.ndarray,
         y: np.ndarray,
-        max_iter: int = 20,
-        c: float = 0.1,
+        strategies: Optional[List[Dict]] = None,
         verbose: bool = False,
     ) -> np.ndarray:
-        X_adv = np.zeros_like(X)
+        """
+        Generate adversarial batch.
+
+        Args:
+            X: input data (N, seq_len, n_features) or (N, n_features)
+            y: labels (N,)
+            strategies: optional list from sensitivity analysis to apply.
+                       If None, applies Mimic_Mean on all modifiable features.
+        """
+        X_adv = np.zeros_like(X, dtype=float)
 
         iterator = range(len(X))
         if verbose:
             iterator = tqdm(iterator, desc="Feature-level attack")
 
         for i in iterator:
-            X_adv[i] = self.generate_single(X[i], y[i], max_iter=max_iter, c=c)
+            X_adv[i] = self.generate_single(X[i], int(y[i]), strategies)
 
         return X_adv
+
+    def _evaluate_model(
+        self,
+        model: nn.Module,
+        X: np.ndarray,
+        y: np.ndarray,
+        device: torch.device,
+        batch_size: int,
+    ) -> float:
+        """Evaluate model accuracy on data."""
+        model.eval()
+        correct, total = 0, 0
+        with torch.no_grad():
+            for i in range(0, len(X), batch_size):
+                X_batch = torch.FloatTensor(X[i : i + batch_size]).to(device)
+                y_batch = torch.LongTensor(y[i : i + batch_size]).to(device)
+                outputs = model(X_batch)
+                _, predicted = outputs.max(1)
+                total += y_batch.size(0)
+                correct += predicted.eq(y_batch).sum().item()
+        return correct / total if total > 0 else 0.0
 
 
 class SequenceLevelAttack:
     """
-    Sequence-level adversarial attack using gradient-based methods.
-    Uses Backpropagation Through Time (BPTT) to compute gradients w.r.t. input sequences.
+    Sequence-level adversarial attack using greedy adversarial search.
 
-    Implements PGD (Projected Gradient Descent) adapted for sequences.
-    
-    Issue 6 Fix: Splits attacks into continuous (PGD) and discrete (bit-flip)
-    components so perturbations remain semantically valid.
+    Takes sensitivity analysis results and greedily combines the most
+    effective feature-strategy pairs to minimize model accuracy.
     """
 
     def __init__(
         self,
         model: nn.Module,
         device: torch.device,
-        epsilon: float = 0.1,
-        alpha: float = 0.01,
-        num_steps: int = 10,
-        clip_min: float = -3.0,
-        clip_max: float = 3.0,
-        feature_mask: Optional[np.ndarray] = None,
-        preserve_positions: bool = True,
-        n_continuous_features: Optional[int] = None,
-        k_bits_to_flip: int = 2,
+        feature_attack: FeatureLevelAttack,
+        target_accuracy: float = 0.5,
+        batch_size: int = 64,
     ):
-        """
-        Args:
-            n_continuous_features: Number of continuous features (first N dimensions).
-                If None, all features are treated as continuous (backward compatible).
-                If set, features [0:n_continuous] get PGD, features [n_continuous:] get bit-flip.
-            k_bits_to_flip: Number of binary bits to flip per attack step (Issue 6).
-        """
         self.model = model
         self.device = device
-        self.epsilon = epsilon
-        self.alpha = alpha
-        self.num_steps = num_steps
-        self.clip_min = clip_min
-        self.clip_max = clip_max
-        self.feature_mask = feature_mask
-        self.preserve_positions = preserve_positions
-        self._original_training_state = None
-        self.n_continuous_features = n_continuous_features
-        self.k_bits_to_flip = k_bits_to_flip
+        self.feature_attack = feature_attack
+        self.target_accuracy = target_accuracy
+        self.batch_size = batch_size
 
-    def _enable_grad_mode(self):
-        self._original_training_state = self.model.training
-        self.model.train()
-        for module in self.model.modules():
-            if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
-                module.eval()
-
-    def _restore_mode(self):
-        if self._original_training_state is not None:
-            if self._original_training_state:
-                self.model.train()
-            else:
-                self.model.eval()
-
-    def _apply_feature_mask(self, grad: torch.Tensor) -> torch.Tensor:
-        if self.feature_mask is not None:
-            mask = torch.FloatTensor(self.feature_mask).to(self.device)
-            mask = mask.view(1, 1, -1)
-            grad = grad * mask
-        return grad
-
-    def _preserve_temporal_structure(
-        self, x_adv: torch.Tensor, x_orig: torch.Tensor
-    ) -> torch.Tensor:
-        if not self.preserve_positions:
-            return x_adv
-
-        n_cont = self.n_continuous_features
-
-        if n_cont is not None and n_cont < x_orig.shape[-1]:
-            # Apply temporal preservation only to continuous features
-            cont_adv = x_adv[:, :, :n_cont]
-            cont_orig = x_orig[:, :, :n_cont]
-
-            temporal_std = torch.std(cont_orig, dim=2, keepdim=True)
-            perturbation = cont_adv - cont_orig
-            max_perturbation = 0.5 * temporal_std
-            perturbation = torch.clamp(perturbation, -max_perturbation, max_perturbation)
-
-            # Binary features: ensure they stay as {0, 1}
-            bin_adv = x_adv[:, :, n_cont:]
-            bin_adv = torch.clamp(torch.round(bin_adv), 0, 1)
-
-            return torch.cat([cont_orig + perturbation, bin_adv], dim=-1)
-        else:
-            # Backward compatible: all continuous
-            temporal_std = torch.std(x_orig, dim=2, keepdim=True)
-            perturbation = x_adv - x_orig
-            max_perturbation = 0.5 * temporal_std
-            perturbation = torch.clamp(perturbation, -max_perturbation, max_perturbation)
-            return x_orig + perturbation
-
-    def _attack_discrete_bits(
-        self, direction_bits: torch.Tensor, grad: torch.Tensor, k: int = None
-    ) -> torch.Tensor:
-        """
-        Issue 6: Gradient-guided bit-flipping for binary packet direction features.
-        
-        Flips the k bits with the highest gradient magnitude.
-        Ensures output is strictly {0, 1}.
-        """
-        if k is None:
-            k = self.k_bits_to_flip
-
-        # Clamp k to the number of binary features
-        n_bits = direction_bits.shape[-1]
-        k = min(k, n_bits)
-
-        # Find top-k positions by gradient magnitude
-        _, topk_idx = torch.topk(grad.abs(), k=k, dim=-1)
-
-        # Flip: 0 -> 1, 1 -> 0
-        x_flipped = direction_bits.clone()
-        x_flipped.scatter_(-1, topk_idx, 1 - direction_bits.gather(-1, topk_idx))
-
-        return x_flipped
-
-    def pgd_attack(
+    def _evaluate_model(
         self,
-        X: torch.Tensor,
-        y: torch.Tensor,
-        targeted: bool = False,
-        target_class: Optional[int] = None,
-    ) -> torch.Tensor:
-        self._enable_grad_mode()
+        X: np.ndarray,
+        y: np.ndarray,
+    ) -> float:
+        """Evaluate model accuracy."""
+        self.model.eval()
+        correct, total = 0, 0
+        with torch.no_grad():
+            for i in range(0, len(X), self.batch_size):
+                X_batch = torch.FloatTensor(X[i : i + self.batch_size]).to(self.device)
+                y_batch = torch.LongTensor(y[i : i + self.batch_size]).to(self.device)
+                outputs = self.model(X_batch)
+                _, predicted = outputs.max(1)
+                total += y_batch.size(0)
+                correct += predicted.eq(y_batch).sum().item()
+        return correct / total if total > 0 else 0.0
 
-        try:
-            X = X.to(self.device)
-            y = y.to(self.device)
-
-            X_orig = X.clone().detach()
-            n_cont = self.n_continuous_features
-
-            target = None
-            if targeted and target_class is not None:
-                target = torch.full_like(y, target_class)
-
-            X_adv = X.clone().detach()
-            X_adv.requires_grad = True
-
-            for step in range(self.num_steps):
-                outputs = self.model(X_adv)
-
-                if targeted and target_class is not None and target is not None:
-                    loss = nn.CrossEntropyLoss()(outputs, target)
-                    loss = -loss
-                else:
-                    loss = nn.CrossEntropyLoss()(outputs, y)
-
-                loss.backward()
-
-                grad = X_adv.grad.data
-                grad = self._apply_feature_mask(grad)
-
-                if n_cont is not None and n_cont < X.shape[-1]:
-                    # Issue 6: Split perturbation by feature type
-                    # Continuous features: standard PGD
-                    cont_adv = X_adv[:, :, :n_cont] + self.alpha * grad[:, :, :n_cont].sign()
-                    eta = torch.clamp(cont_adv - X_orig[:, :, :n_cont], -self.epsilon, self.epsilon)
-                    cont_adv = X_orig[:, :, :n_cont] + eta
-                    cont_adv = torch.clamp(cont_adv, self.clip_min, self.clip_max)
-
-                    # Binary features: gradient-guided bit-flip
-                    bin_adv = self._attack_discrete_bits(
-                        X_adv[:, :, n_cont:].detach(),
-                        grad[:, :, n_cont:],
-                        k=self.k_bits_to_flip,
-                    )
-
-                    X_adv = torch.cat([cont_adv, bin_adv], dim=-1)
-                else:
-                    # Backward compatible: all continuous
-                    X_adv = X_adv + self.alpha * grad.sign()
-                    eta = torch.clamp(X_adv - X_orig, -self.epsilon, self.epsilon)
-                    X_adv = X_orig + eta
-                    X_adv = torch.clamp(X_adv, self.clip_min, self.clip_max)
-
-                X_adv = self._preserve_temporal_structure(X_adv, X_orig)
-
-                X_adv = X_adv.detach()
-                X_adv.requires_grad = True
-
-            return X_adv.detach()
-        finally:
-            self._restore_mode()
-
-    def fgsm_attack(
+    def adversarial_search(
         self,
-        X: torch.Tensor,
-        y: torch.Tensor,
-        targeted: bool = False,
-        target_class: Optional[int] = None,
-    ) -> torch.Tensor:
-        self._enable_grad_mode()
+        sensitivity_results: List[Dict],
+        X: np.ndarray,
+        y: np.ndarray,
+        verbose: bool = False,
+    ) -> Tuple[np.ndarray, List[Dict]]:
+        """
+        Greedy adversarial search: combine best strategies to minimize accuracy.
 
-        try:
-            X = X.to(self.device)
-            y = y.to(self.device)
+        Args:
+            sensitivity_results: output from FeatureLevelAttack.analyze_sensitivity()
+            X: input data
+            y: labels
 
-            X_orig = X.clone().detach()
-            n_cont = self.n_continuous_features
+        Returns:
+            (X_adversarial, applied_strategies)
+        """
+        sorted_results = sorted(
+            sensitivity_results, key=lambda r: r["drop"], reverse=True
+        )
 
-            X_adv = X.clone().detach()
-            X_adv.requires_grad = True
+        current_X = X.copy()
+        base_acc = self._evaluate_model(current_X, y)
+        if verbose:
+            print(f"  Baseline Accuracy: {base_acc:.4f}")
 
-            outputs = self.model(X_adv)
+        applied_strategies = []
+        applied_features = set()
 
-            if targeted and target_class is not None:
-                target = torch.full_like(y, target_class)
-                loss = -nn.CrossEntropyLoss()(outputs, target)
-            else:
-                loss = nn.CrossEntropyLoss()(outputs, y)
+        for entry in sorted_results:
+            feat_idx = entry["feature_idx"]
+            strat = entry["strategy"]
 
-            loss.backward()
+            if feat_idx in applied_features:
+                continue
 
-            grad = X_adv.grad.data
-            grad = self._apply_feature_mask(grad)
-
-            if n_cont is not None and n_cont < X.shape[-1]:
-                # Issue 6: Split perturbation
-                cont_adv = X_adv[:, :, :n_cont] + self.epsilon * grad[:, :, :n_cont].sign()
-                cont_adv = torch.clamp(cont_adv, self.clip_min, self.clip_max)
-
-                bin_adv = self._attack_discrete_bits(
-                    X_adv[:, :, n_cont:].detach(),
-                    grad[:, :, n_cont:],
-                    k=self.k_bits_to_flip,
+            if verbose:
+                print(
+                    f"  Testing {entry['feature']} with {strat} (Current Acc: {base_acc:.4f})"
                 )
 
-                X_adv = torch.cat([cont_adv, bin_adv], dim=-1)
-            else:
-                X_adv = X_adv + self.epsilon * grad.sign()
-                X_adv = torch.clamp(X_adv, self.clip_min, self.clip_max)
+            temp_X = current_X.copy()
+            for i in range(len(X)):
+                temp_X[i] = self.feature_attack.generate_single(
+                    X[i],
+                    int(y[i]),
+                    strategies=[{"feature_idx": feat_idx, "strategy": strat}],
+                )
 
-            return X_adv.detach()
-        finally:
-            self._restore_mode()
+            new_acc = self._evaluate_model(temp_X, y)
+
+            if new_acc < base_acc:
+                base_acc = new_acc
+                current_X = temp_X
+                applied_strategies.append(
+                    {
+                        "feature": entry["feature"],
+                        "feature_idx": feat_idx,
+                        "strategy": strat,
+                        "accuracy": new_acc,
+                    }
+                )
+                applied_features.add(feat_idx)
+                if verbose:
+                    print(f"    -> ADDED: Acc dropped to {new_acc:.4f}")
+            else:
+                if verbose:
+                    print(f"    -> SKIPPED: No improvement (Acc: {new_acc:.4f})")
+
+            if base_acc <= self.target_accuracy:
+                if verbose:
+                    print(
+                        f"  Target reached! Accuracy ({base_acc:.4f}) <= Target ({self.target_accuracy:.4f})"
+                    )
+                break
+
+        return current_X, applied_strategies
 
     def generate_batch(
         self,
         X: np.ndarray,
         y: np.ndarray,
-        batch_size: int = 64,
-        method: str = "pgd",
+        sensitivity_results: List[Dict],
         verbose: bool = False,
     ) -> np.ndarray:
-        X_adv = []
+        """
+        Generate adversarial batch using greedy search.
 
-        n_batches = (len(X) + batch_size - 1) // batch_size
-        iterator = range(n_batches)
-        if verbose:
-            iterator = tqdm(iterator, desc="Sequence-level attack")
-
-        attack_fn = self.pgd_attack if method == "pgd" else self.fgsm_attack
-
-        for i in iterator:
-            start = i * batch_size
-            end = min(start + batch_size, len(X))
-
-            X_batch = torch.FloatTensor(X[start:end])
-            y_batch = torch.LongTensor(y[start:end])
-
-            X_batch_adv = attack_fn(X_batch, y_batch)
-            X_adv.append(X_batch_adv.cpu().numpy())
-
-        return np.vstack(X_adv)
-
+        Args:
+            X: input data
+            y: labels
+            sensitivity_results: output from sensitivity analysis
+        """
+        X_adv, applied = self.adversarial_search(
+            sensitivity_results, X, y, verbose=verbose
+        )
+        return X_adv
 
 
 class HybridAdversarialAttack:
     """
     Combines feature-level and sequence-level attacks.
-
-    Phase 1: Feature-level attack (targets statistical features)
-    Phase 2: Sequence-level attack (targets temporal ordering)
     """
 
     def __init__(
@@ -545,18 +495,28 @@ class HybridAdversarialAttack:
         X: np.ndarray,
         y: np.ndarray,
         method: str = "hybrid",
-        batch_size: int = 64,
         verbose: bool = False,
+        sensitivity_results: Optional[List[Dict]] = None,
     ) -> np.ndarray:
         if method == "feature":
             return self.feature_attack.generate_batch(X, y, verbose=verbose)
 
         elif method == "sequence":
+            if sensitivity_results is None:
+                raise ValueError(
+                    "sensitivity_results required. "
+                    "Run FeatureLevelAttack.analyze_sensitivity() first."
+                )
             return self.sequence_attack.generate_batch(
-                X, y, batch_size=batch_size, verbose=verbose
+                X, y, sensitivity_results=sensitivity_results, verbose=verbose
             )
 
         elif method == "hybrid":
+            if sensitivity_results is None:
+                raise ValueError(
+                    "sensitivity_results required for hybrid method. "
+                    "Run FeatureLevelAttack.analyze_sensitivity() first."
+                )
             n = len(X)
             n_feature = int(n * self.combine_ratio)
 
@@ -575,7 +535,7 @@ class HybridAdversarialAttack:
                 X_adv[idx_sequence] = self.sequence_attack.generate_batch(
                     X[idx_sequence],
                     y[idx_sequence],
-                    batch_size=batch_size,
+                    sensitivity_results=sensitivity_results,
                     verbose=verbose,
                 )
 
@@ -600,7 +560,6 @@ class AdversarialEvaluator:
         batch_size: int = 64,
     ) -> Tuple[Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]:
         results = {}
-
         results["clean"] = self._evaluate_clean(X, y, batch_size)
 
         for attack_name, X_adv in attacks.items():
@@ -620,18 +579,14 @@ class AdversarialEvaluator:
     ) -> Dict[str, float]:
         self.model.eval()
         correct, total = 0, 0
-
         with torch.no_grad():
             for i in range(0, len(X), batch_size):
                 X_batch = torch.FloatTensor(X[i : i + batch_size]).to(self.device)
                 y_batch = torch.LongTensor(y[i : i + batch_size]).to(self.device)
-
                 outputs = self.model(X_batch)
                 _, predicted = outputs.max(1)
-
                 total += y_batch.size(0)
                 correct += predicted.eq(y_batch).sum().item()
-
         return {"accuracy": correct / total if total > 0 else 0}
 
     def _evaluate_adversarial(

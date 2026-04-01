@@ -63,9 +63,31 @@ from config.config import (
     MIN_SAMPLES_PER_CLASS,
 )
 
-# ─── MAC-to-Device Mapping pour IPFIX Records ────────────────────────────────
+CATEGORICAL_FEATURES_JSON = ["protocolIdentifier"]
 
-MAC_TO_DEVICE = {
+# ─── MAC-to-Device Mapping pour IPFIX Records ────────────────────────────────
+# Primary source: config/config.yaml (mac_mapping section)
+# Fallback: hardcoded dict below (kept for backwards compatibility)
+
+
+def _load_mac_mapping_from_config() -> dict:
+    """Load MAC-to-device mapping from config/config.yaml."""
+    import yaml
+
+    config_path = Path(__file__).parent.parent.parent / "config" / "config.yaml"
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                cfg = yaml.safe_load(f)
+            mapping = cfg.get("mac_mapping", {}).get("devices", {})
+            if mapping:
+                return mapping
+        except Exception:
+            pass
+    return MAC_TO_DEVICE_FALLBACK
+
+
+MAC_TO_DEVICE_FALLBACK = {
     "38:d5:47:0c:25:d4": "DEFAULT GATEWAY",
     "80:c5:f2:0b:aa:a9": "Qrio Hub",
     "00:17:88:47:20:f2": "Philips Hue Light Bulb",
@@ -86,7 +108,8 @@ MAC_TO_DEVICE = {
     "14:0a:c5:f1:e5:52": "Amazon Echo Show",
 }
 
-GATEWAY_MAC = "38:d5:47:0c:25:d4"
+MAC_TO_DEVICE = _load_mac_mapping_from_config()
+GATEWAY_MAC = MAC_TO_DEVICE.get("gateway", "38:d5:47:0c:25:d4")
 
 # 17 classes cibles pour IPFIX Records (docs/pretraitement)
 TARGET_CLASSES = [
@@ -134,23 +157,25 @@ COLUMNS_TO_DROP = [
     "ipClassOfService",
     "active_timeout",
     "idle_timeout",
-    # TCP flag strings — not numeric, drop them
-    "initialTCPFlags",
-    "unionTCPFlags",
-    "reverseInitialTCPFlags",
-    "reverseUnionTCPFlags",
 ]
 
 # ─── Issue 4: Behavioral features to keep ────────────────────────────────────
 
 FEATURES_TO_KEEP_JSON = [
+    # --- Temps et Protocoles ---
     "flowDurationMilliseconds",
-    "reverseFlowDeltaMilliseconds",
     "protocolIdentifier",
+    # --- Métriques Globales ---
     "packetTotalCount",
     "octetTotalCount",
     "reversePacketTotalCount",
     "reverseOctetTotalCount",
+    # --- Drapeaux TCP (visibles par OpenFlow) ---
+    "initialTCPFlags",
+    "unionTCPFlags",
+    "reverseInitialTCPFlags",
+    "reverseUnionTCPFlags",
+    # --- Métriques Détaillées Forward ---
     "tcpUrgTotalCount",
     "smallPacketCount",
     "nonEmptyPacketCount",
@@ -162,6 +187,7 @@ FEATURES_TO_KEEP_JSON = [
     "standardDeviationPayloadLength",
     "standardDeviationInterarrivalTime",
     "bytesPerPacket",
+    # --- Métriques Détaillées Reverse ---
     "reverseTcpUrgTotalCount",
     "reverseSmallPacketCount",
     "reverseNonEmptyPacketCount",
@@ -172,7 +198,6 @@ FEATURES_TO_KEEP_JSON = [
     "reverseMaxPacketSize",
     "reverseStandardDeviationPayloadLength",
     "reverseStandardDeviationInterarrivalTime",
-    "bytesPerPacket",
 ]
 
 # Remove duplicates while preserving order
@@ -274,19 +299,19 @@ class JsonIoTDataProcessor:
     Etape 1: Filtrage SDN - supprimer IP/ports, garder caracteristiques statistiques
     Etape 2: Equilibrage (Borderline-SMOTE) + Filtrage bruit (Isolation Forest, LOF)
     Etape 3: Selection hybride des caracteristiques (XGBoost, Chi2, MI)
-    Etape 4: Normalisation (MinMax) puis Standardisation
+    Etape 4: Normalisation (MinMax ONLY per docs/pretraitement)
 
     17 classes cibles pour IPFIX Records.
     """
 
     def __init__(self):
         self.minmax_scaler = MinMaxScaler(feature_range=(0, 1))
-        self.scaler = StandardScaler()
         self.label_encoder = LabelEncoder()
         self.feature_names = None
         self.selected_feature_indices = None
         self.num_classes = 0
         self.continuous_feature_names = list(FEATURES_TO_KEEP_JSON)
+        self.categorical_feature_names = list(CATEGORICAL_FEATURES_JSON)
         self.binary_feature_names = list(PKT_DIR_COLS)
 
     def load_json_files(
@@ -490,13 +515,46 @@ class JsonIoTDataProcessor:
 
     # ─── Etape 3: Selection hybride des caracteristiques ─────────────────────
 
-    def hybrid_feature_selection(self, X, y, feature_names, top_k=25):
+    @staticmethod
+    def find_elbow_k(scores: np.ndarray) -> int:
+        """Trouve le k optimal via la methode du coude (elbow).
+
+        Calcule la distance perpendiculaire maximale entre chaque point
+        de la courbe triee (descendant) et la ligne reliant le premier
+        et le dernier point. Le point le plus eloigne est le coude.
+        """
+        n = len(scores)
+        if n <= 2:
+            return n
+
+        sorted_scores = np.sort(scores)[::-1]
+        x = np.arange(n, dtype=float)
+
+        p1 = np.array([x[0], sorted_scores[0]])
+        p2 = np.array([x[-1], sorted_scores[-1]])
+
+        line_vec = p2 - p1
+        line_len_sq = np.dot(line_vec, line_vec)
+        if line_len_sq < 1e-12:
+            return n // 2
+
+        distances = np.zeros(n)
+        for i in range(n):
+            pt = np.array([x[i], sorted_scores[i]])
+            distances[i] = abs(np.cross(line_vec, pt - p1)) / np.sqrt(line_len_sq)
+
+        elbow_idx = int(np.argmax(distances))
+        return max(1, elbow_idx + 1)
+
+    def hybrid_feature_selection(self, X, y, feature_names, top_k=None):
         """
         Etape 3: Selection hybride des caracteristiques.
 
         1. XGBoost: importance des caracteristiques
         2. Chi2: pertinence statistique
         3. Information Mutuelle: dependances non lineaires
+
+        Si top_k est None, utilise la methode du coude automatiquement.
         """
         n_features = X.shape[1]
         print(f"  Selection parmi {n_features} caracteristiques...")
@@ -530,8 +588,14 @@ class JsonIoTDataProcessor:
         xgb_norm = xgb_importance / (xgb_importance.max() + 1e-10)
         combined_scores = 0.4 * xgb_norm + 0.3 * chi2_scores + 0.3 * mi_scores
 
-        # Selectionner les top_k caracteristiques
-        top_k = min(top_k, n_features)
+        # Determiner k : elbow method ou valeur fixee
+        if top_k is None:
+            top_k = self.find_elbow_k(combined_scores)
+            print(f"  Elbow method → k={top_k} (sur {n_features} features)")
+        else:
+            top_k = min(top_k, n_features)
+            print(f"  k fixe → {top_k}")
+
         selected_indices = np.argsort(combined_scores)[-top_k:]
         selected_indices = np.sort(selected_indices)
 
@@ -545,30 +609,40 @@ class JsonIoTDataProcessor:
 
     def prepare_features(self, df: pd.DataFrame):
         """
-        Extract and scale features.
+        Extract features, separating continuous, categorical, and binary.
+
+        CRITICAL: Categorical features (protocolIdentifier) are NOT scaled.
+        They are kept as raw integers for the BPE tokenizer to convert
+        to human-readable labels (tcp, udp, icmp, etc.).
 
         CRITICAL: StandardScaler is applied ONLY to the 28 continuous features.
         The 8 binary packet direction bits are NOT scaled.
         """
-        # Continuous features
-        continuous_cols = [c for c in FEATURES_TO_KEEP_JSON if c in df.columns]
-        X_continuous = df[continuous_cols].values.astype(np.float32)
+        all_cols = [c for c in FEATURES_TO_KEEP_JSON if c in df.columns]
 
-        # Binary direction features
+        categorical_cols = [c for c in CATEGORICAL_FEATURES_JSON if c in df.columns]
+        continuous_cols = [c for c in all_cols if c not in categorical_cols]
+
+        X_continuous = df[continuous_cols].values.astype(np.float32)
+        X_categorical = (
+            df[categorical_cols].values.astype(np.float32)
+            if categorical_cols
+            else np.empty((len(df), 0), dtype=np.float32)
+        )
+
         binary_cols = [c for c in PKT_DIR_COLS if c in df.columns]
         X_binary = df[binary_cols].values.astype(np.float32)
 
-        # Labels
         y = df["label"].values
 
-        # Temporal ordering
         flow_start = df["flow_start"].values if "flow_start" in df.columns else None
 
         self.continuous_feature_names = continuous_cols
+        self.categorical_feature_names = categorical_cols
         self.binary_feature_names = binary_cols
-        self.feature_names = continuous_cols + binary_cols
+        self.feature_names = continuous_cols + categorical_cols + binary_cols
 
-        return X_continuous, X_binary, y, flow_start
+        return X_continuous, X_categorical, X_binary, y, flow_start
 
     def create_sequences(
         self,
@@ -630,7 +704,7 @@ class JsonIoTDataProcessor:
         min_samples: int = None,
         apply_balancing: bool = True,
         apply_feature_selection: bool = True,
-        top_k_features: int = 25,
+        top_k_features: int = None,
     ):
         """
         Full pipeline en 4 etapes avec anti-leakage pour IPFIX Records.
@@ -669,7 +743,9 @@ class JsonIoTDataProcessor:
 
         # ─── Extraction des caracteristiques ─────────────────────────────────
         print("\n  Extraction des caracteristiques...")
-        X_continuous, X_binary, y_str, flow_start = self.prepare_features(df)
+        X_continuous, X_categorical, X_binary, y_str, flow_start = (
+            self.prepare_features(df)
+        )
         del df
         gc.collect()
 
@@ -699,21 +775,33 @@ class JsonIoTDataProcessor:
         test_mask = ~train_mask
 
         X_cont_train = X_continuous[train_mask].copy()
+        X_cat_train = X_categorical[train_mask].copy()
         X_bin_train = X_binary[train_mask].copy()
         y_enc_train = y_encoded[train_mask].copy()
         y_str_train = y_str[train_mask].copy()
 
         X_cont_test = X_continuous[test_mask].copy()
+        X_cat_test = X_categorical[test_mask].copy()
         X_bin_test = X_binary[test_mask].copy()
         y_enc_test = y_encoded[test_mask].copy()
         y_str_test = y_str[test_mask].copy()
 
         print(f"  Train rows: {len(y_enc_train):,} | Test rows: {len(y_enc_test):,}")
 
-        del X_continuous, X_binary, y_encoded, y_str, flow_start, train_mask, test_mask
+        del (
+            X_continuous,
+            X_categorical,
+            X_binary,
+            y_encoded,
+            y_str,
+            flow_start,
+            train_mask,
+            test_mask,
+        )
         gc.collect()
 
         # Combiner features pour les etapes 2 et 3
+        # Continuous + binary for SMOTE/outlier/feature selection
         X_train_combined = np.concatenate([X_cont_train, X_bin_train], axis=1)
         X_test_combined = np.concatenate([X_cont_test, X_bin_test], axis=1)
         all_feature_names = self.continuous_feature_names + self.binary_feature_names
@@ -757,33 +845,44 @@ class JsonIoTDataProcessor:
         del X_train_combined, X_test_combined, X_train_balanced
         gc.collect()
 
-        # ─── Etape 4: Normalisation et Standardisation ───────────────────────
-        print("\n[ETAPE 4] Normalisation et standardisation (fit sur train only)...")
-        print("  4.1 Min-Max Scaling (0-1)...")
-        X_train_minmax = self.minmax_scaler.fit_transform(X_train_selected)
-        X_test_minmax = self.minmax_scaler.transform(X_test_selected)
+        # ─── Etape 4: Normalisation (Min-Max ONLY per docs/pretraitement) ─────
+        # IMPORTANT: Categorical features (protocolIdentifier) are NOT scaled.
+        # They remain as raw integers for the BPE tokenizer to convert to
+        # human-readable labels (tcp, udp, icmp, etc.).
+        # Per docs/pretraitement: Min-Max ONLY. NO StandardScaler after Min-Max.
+        print(
+            "\n[ETAPE 4] Min-Max Scaling (0-1) — continuous features only (fit sur train only)..."
+        )
+        X_train_cont_scaled = self.minmax_scaler.fit_transform(X_train_selected).astype(
+            np.float32
+        )
+        X_test_cont_scaled = self.minmax_scaler.transform(X_test_selected).astype(
+            np.float32
+        )
 
-        print("  4.2 Standardisation (mean=0, std=1)...")
-        X_train_scaled = self.scaler.fit_transform(X_train_minmax).astype(np.float32)
-        X_test_scaled = self.scaler.transform(X_test_minmax).astype(np.float32)
-
-        del X_train_selected, X_test_selected, X_train_minmax, X_test_minmax
+        del X_train_selected, X_test_selected
         gc.collect()
 
         # ─── Creation des sequences ──────────────────────────────────────────
         print(f"\n[SEQUENCES] Creation (length={seq_length}, stride={stride})...")
 
-        # Pour les sequences, on a besoin de regrouper par appareil
-        # On reutilise y_str_train/test pour le groupement
-        X_train_seq, y_train_seq = self.create_sequences_simple(
-            X_train_scaled,
+        X_train_seq, y_train_seq = self.create_sequences_with_categorical(
+            X_train_cont_scaled,
+            X_cat_train,
+            X_bin_train,
             y_train_balanced,
             y_str_train if not apply_balancing else None,
             seq_length,
             stride,
         )
-        X_test_seq, y_test_seq = self.create_sequences_simple(
-            X_test_scaled, y_enc_test, y_str_test, seq_length, stride
+        X_test_seq, y_test_seq = self.create_sequences_with_categorical(
+            X_test_cont_scaled,
+            X_cat_test,
+            X_bin_test,
+            y_enc_test,
+            y_str_test,
+            seq_length,
+            stride,
         )
 
         print(f"  Train sequences: {len(X_train_seq):,}")
@@ -791,7 +890,14 @@ class JsonIoTDataProcessor:
         if len(X_train_seq) > 0:
             print(f"  Sequence shape:  {X_train_seq.shape}")
 
-        del X_train_scaled, X_test_scaled
+        del (
+            X_train_cont_scaled,
+            X_test_cont_scaled,
+            X_cat_train,
+            X_cat_test,
+            X_bin_train,
+            X_bin_test,
+        )
         gc.collect()
 
         # ─── Validation split ────────────────────────────────────────────────
@@ -824,7 +930,6 @@ class JsonIoTDataProcessor:
                 pickle.dump(
                     {
                         "minmax_scaler": self.minmax_scaler,
-                        "scaler": self.scaler,
                         "label_encoder": self.label_encoder,
                         "feature_names": self.feature_names,
                         "selected_feature_indices": self.selected_feature_indices,
@@ -842,9 +947,59 @@ class JsonIoTDataProcessor:
             y_val_seq,
             y_test_seq,
             self.feature_names,
-            self.scaler,
+            self.minmax_scaler,
             self.label_encoder,
         )
+
+    def create_sequences_with_categorical(
+        self,
+        X_continuous: np.ndarray,
+        X_categorical: np.ndarray,
+        X_binary: np.ndarray,
+        y: np.ndarray,
+        labels_str: np.ndarray = None,
+        seq_length: int = None,
+        stride: int = None,
+    ):
+        """
+        Create sequences combining continuous, categorical, and binary features.
+
+        Continuous features are scaled (already done before this call).
+        Categorical features are kept as raw integers for BPE tokenization.
+        Binary features are kept as-is.
+
+        Final feature order: [continuous | categorical | binary]
+        """
+        if seq_length is None:
+            seq_length = SEQUENCE_LENGTH
+        if stride is None:
+            stride = STRIDE
+
+        X_combined = np.concatenate([X_continuous, X_categorical, X_binary], axis=1)
+
+        X_seq, y_seq = [], []
+
+        if labels_str is not None:
+            unique_labels = np.unique(labels_str)
+            for label in unique_labels:
+                mask = labels_str == label
+                X_group = X_combined[mask]
+                y_group = y[mask]
+                n_samples = len(X_group) - seq_length + 1
+                if n_samples <= 0:
+                    continue
+                for i in range(0, n_samples, stride):
+                    if i + seq_length <= len(X_group):
+                        X_seq.append(X_group[i : i + seq_length])
+                        y_seq.append(y_group[i + seq_length - 1])
+        else:
+            n_samples = len(X_combined) - seq_length + 1
+            for i in range(0, n_samples, stride):
+                if i + seq_length <= len(X_combined):
+                    X_seq.append(X_combined[i : i + seq_length])
+                    y_seq.append(y[i + seq_length - 1])
+
+        return np.array(X_seq), np.array(y_seq)
 
     def create_sequences_simple(
         self,

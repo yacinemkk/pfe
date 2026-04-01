@@ -1,4 +1,12 @@
 Voici le plan détaillé d'entraînement et de test en deux phases, à appliquer systématiquement à chaque modèle (LSTM, CNN-LSTM, XGBoost-LSTM, Transformer, CNN-BiLSTM, puis l'architecture hybride finale CNN-BiLSTM-Transformer) :
+
+NOTE SUR L'ENSEMBLE DE VALIDATION :
+Un ensemble de validation (val_size: 0.1 dans config.yaml) est extrait de l'ensemble d'entraînement (et non du test). Il est utilisé pour :
+- Le suivi des métriques pendant l'entraînement (val_loss, val_acc)
+- L'early stopping (arrêt anticipé si la performance sur validation ne s'améliore plus)
+- La sélection des meilleurs poids du modèle (checkpointing)
+Le split de validation est effectué APRÈS le split train/test et APRÈS la génération des séquences, en prenant 10% des séquences d'entraînement. La proportion réelle par rapport au dataset initial est : val_size / (1 - test_size) = 0.1 / 0.8 = 12.5% du train.
+
 PHASE 1 : Entraînement Standard et Constat de Vulnérabilité
 L'objectif de cette phase est d'établir les performances de base dans un environnement sain, puis de démontrer la "chute" (le crash) de ces performances face à des attaquants furtifs (évasion).
 1. Entraînement initial (Données Bénignes Uniquement)

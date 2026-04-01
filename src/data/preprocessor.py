@@ -20,9 +20,9 @@ Etape 3: Selection hybride des caracteristiques
   - Test du Chi-carre (Chi2) pour pertinence statistique
   - Information Mutuelle pour dependances non lineaires
 
-Etape 4: Normalisation et standardisation
+Etape 4: Normalisation (Min-Max uniquement)
   - Min-Max Scaling (0-1)
-  - Standardisation (moyenne=0, ecart-type=1)
+  - NOTE: Pas de standardisation après Min-Max (redondant)
 
 Anti-Leakage Temporal Split (docs/general):
   1. Group flows by device label
@@ -48,6 +48,8 @@ import sys
 warnings.filterwarnings("ignore")
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+CATEGORICAL_FEATURES_CSV = ["ipProto"]
+
 from config.config import (
     RAW_DATA_DIR,
     PROCESSED_DATA_DIR,
@@ -139,8 +141,9 @@ class IoTDataProcessor:
         df = df.dropna(subset=[LABEL_COLUMN])
 
         # Colonnes a supprimer (IP, MAC, ports - non accessibles SDN)
+        # NOTE: "start" is PRESERVED here for temporal splitting.
+        # It is dropped AFTER the temporal split in process_all().
         sdn_excluded = [
-            "start",
             "srcMac",
             "destMac",
             "srcIP",
@@ -229,7 +232,40 @@ class IoTDataProcessor:
 
     # ─── Etape 3: Selection hybride des caracteristiques ─────────────────────
 
-    def hybrid_feature_selection(self, X, y, feature_names, top_k=30):
+    @staticmethod
+    def find_elbow_k(scores: np.ndarray) -> int:
+        """Trouve le k optimal via la methode du coude (elbow).
+
+        Calcule la distance perpendiculaire maximale entre chaque point
+        de la courbe triee (descendant) et la ligne reliant le premier
+        et le dernier point. Le point le plus eloigne est le coude.
+        """
+        n = len(scores)
+        if n <= 2:
+            return n
+
+        sorted_scores = np.sort(scores)[::-1]
+        x = np.arange(n, dtype=float)
+
+        # Ligne du premier au dernier point
+        p1 = np.array([x[0], sorted_scores[0]])
+        p2 = np.array([x[-1], sorted_scores[-1]])
+
+        # Distance perpendiculaire de chaque point a la ligne p1-p2
+        line_vec = p2 - p1
+        line_len_sq = np.dot(line_vec, line_vec)
+        if line_len_sq < 1e-12:
+            return n // 2
+
+        distances = np.zeros(n)
+        for i in range(n):
+            pt = np.array([x[i], sorted_scores[i]])
+            distances[i] = abs(np.cross(line_vec, pt - p1)) / np.sqrt(line_len_sq)
+
+        elbow_idx = int(np.argmax(distances))
+        return max(1, elbow_idx + 1)
+
+    def hybrid_feature_selection(self, X, y, feature_names, top_k=None):
         """
         Etape 3: Selection hybride des caracteristiques.
 
@@ -238,6 +274,7 @@ class IoTDataProcessor:
         3. Information Mutuelle: dependances non lineaires
 
         Combine les trois scores pour selectionner les meilleures caracteristiques.
+        Si top_k est None, utilise la methode du coude automatiquement.
         """
         n_features = X.shape[1]
         print(f"  Selection parmi {n_features} caracteristiques...")
@@ -271,8 +308,20 @@ class IoTDataProcessor:
         xgb_norm = xgb_importance / (xgb_importance.max() + 1e-10)
         combined_scores = 0.4 * xgb_norm + 0.3 * chi2_scores + 0.3 * mi_scores
 
-        # Selectionner les top_k caracteristiques
-        top_k = min(top_k, n_features)
+        # Determiner k : elbow method ou valeur fixee
+        if top_k is None:
+            top_k = self.find_elbow_k(combined_scores)
+            print(f"  Elbow method → k={top_k} (sur {n_features} features)")
+        else:
+            top_k = min(top_k, n_features)
+            print(f"  k fixe → {top_k}")
+
+        # Enforce 15-20 feature cap per docs/featureselection
+        top_k = max(15, min(20, top_k))
+        print(
+            f"  Cap enforced: k={top_k} (within 15-20 range per docs/featureselection)"
+        )
+
         selected_indices = np.argsort(combined_scores)[-top_k:]
         selected_indices = np.sort(selected_indices)
 
@@ -317,12 +366,25 @@ class IoTDataProcessor:
     # ─── Step 4: Feature extraction ─────────────────────────────────────────
 
     def select_features(self, df):
-        """Return feature matrix X and label array y."""
-        features = [c for c in FEATURES_TO_KEEP if c in df.columns]
-        X = df[features].fillna(0).values.astype(np.float32)
+        """Return feature matrices and label array, separating categorical features."""
+        all_features = [c for c in FEATURES_TO_KEEP if c in df.columns]
+        categorical_features = [
+            f for f in CATEGORICAL_FEATURES_CSV if f in all_features
+        ]
+        continuous_features = [f for f in all_features if f not in categorical_features]
+
+        X_continuous = df[continuous_features].fillna(0).values.astype(np.float32)
+        X_categorical = (
+            df[categorical_features].fillna(0).values.astype(np.float32)
+            if categorical_features
+            else np.empty((len(df), 0), dtype=np.float32)
+        )
         y = df[LABEL_COLUMN].values
-        self.feature_names = features
-        return X, y
+
+        self.feature_names = all_features
+        self.continuous_feature_names = continuous_features
+        self.categorical_feature_names = categorical_features
+        return X_continuous, X_categorical, y
 
     # ─── Step 5: Sequence creation ───────────────────────────────────────────
 
@@ -356,6 +418,39 @@ class IoTDataProcessor:
 
         return np.array(X_seq), np.array(y_seq)
 
+    def create_sequences_with_categorical(
+        self, X_continuous, X_categorical, y, seq_length=None, stride=None
+    ):
+        """
+        Create sequences combining continuous and categorical features.
+        Categorical features are kept as raw integers for BPE tokenization.
+        Final feature order: [continuous | categorical]
+        """
+        if seq_length is None:
+            seq_length = SEQUENCE_LENGTH
+        if stride is None:
+            stride = STRIDE
+
+        X_combined = np.concatenate([X_continuous, X_categorical], axis=1)
+
+        X_seq, y_seq = [], []
+        unique_labels = np.unique(y)
+
+        for label in unique_labels:
+            mask = y == label
+            X_group = X_combined[mask]
+            y_group = y[mask]
+
+            n = len(X_group) - seq_length + 1
+            if n <= 0:
+                continue
+            for i in range(0, n, stride):
+                if i + seq_length <= len(X_group):
+                    X_seq.append(X_group[i : i + seq_length])
+                    y_seq.append(y_group[i + seq_length - 1])
+
+        return np.array(X_seq), np.array(y_seq)
+
     # ─── Main pipeline ───────────────────────────────────────────────────────
 
     def process_all(
@@ -367,23 +462,23 @@ class IoTDataProcessor:
         stride=None,
         apply_balancing=True,
         apply_feature_selection=True,
-        top_k_features=30,
+        top_k_features=None,
     ):
         """
-        Full pipeline en 4 etapes avec anti-leakage:
+            Full pipeline en 4 etapes avec anti-leakage:
 
-        Etape 1: Filtrage SDN (supprimer IP/ports, garder caracteristiques statistiques)
-        Etape 2: Equilibrage (Borderline-SMOTE) + Filtrage bruit (Isolation Forest, LOF)
-        Etape 3: Selection hybride des caracteristiques (XGBoost, Chi2, MI)
-        Etape 4: Normalisation (MinMax) puis Standardisation
+            Etape 1: Filtrage SDN (supprimer IP/ports, garder caracteristiques statistiques)
+            Etape 2: Equilibrage (Borderline-SMOTE) + Filtrage bruit (Isolation Forest, LOF)
+            Etape 3: Selection hybride des caracteristiques (XGBoost, Chi2, MI)
+        Etape 4: Normalisation (MinMax uniquement)
 
-        Anti-leakage:
-        - Per-device temporal 80/20 split (docs/general)
-        - Sequences generees separement sur train et test
-        - Scalers ajustes uniquement sur train
+            Anti-leakage:
+            - Per-device temporal 80/20 split (docs/general)
+            - Sequences generees separement sur train et test
+            - Scalers ajustes uniquement sur train
 
-        Returns:
-            (X_train, X_val, X_test, y_train, y_val, y_test)
+            Returns:
+                (X_train, X_val, X_test, y_train, y_val, y_test)
         """
         if seq_length is None:
             seq_length = SEQUENCE_LENGTH
@@ -407,10 +502,18 @@ class IoTDataProcessor:
         df_train_raw, df_test_raw = self.temporal_split_per_device(df)
         del df
 
+        # Drop 'start' now that temporal split is done (not needed as a feature)
+        if "start" in df_train_raw.columns:
+            df_train_raw = df_train_raw.drop(columns=["start"])
+        if "start" in df_test_raw.columns:
+            df_test_raw = df_test_raw.drop(columns=["start"])
+
         # ─── Extraction des caracteristiques ─────────────────────────────────
         print("\n  Extraction des caracteristiques...")
-        X_train_raw, y_train_str = self.select_features(df_train_raw)
-        X_test_raw, y_test_str = self.select_features(df_test_raw)
+        X_train_cont_raw, X_train_cat_raw, y_train_str = self.select_features(
+            df_train_raw
+        )
+        X_test_cont_raw, X_test_cat_raw, y_test_str = self.select_features(df_test_raw)
         del df_train_raw, df_test_raw
 
         # ─── Encodage des labels ─────────────────────────────────────────────
@@ -431,54 +534,64 @@ class IoTDataProcessor:
         # ─── Etape 2: Equilibrage et Filtrage du Bruit (TRAIN UNIQUEMENT) ───
         if apply_balancing:
             print("\n[ETAPE 2] Equilibrage et filtrage du bruit (train only)...")
-            X_train_balanced, y_train_balanced = self.balance_and_filter_noise(
-                X_train_raw, y_train_enc, contamination=0.05
+            X_train_cont_balanced, y_train_balanced = self.balance_and_filter_noise(
+                X_train_cont_raw, y_train_enc, contamination=0.05
             )
         else:
             print("\n[ETAPE 2] Equilibrage desactive.")
-            X_train_balanced = X_train_raw
+            X_train_cont_balanced = X_train_cont_raw
             y_train_balanced = y_train_enc
 
         # ─── Etape 3: Selection Hybride des Caracteristiques ─────────────────
-        if apply_feature_selection and self.feature_names:
+        if apply_feature_selection and self.continuous_feature_names:
             print("\n[ETAPE 3] Selection hybride des caracteristiques...")
             selected_indices, selected_features = self.hybrid_feature_selection(
-                X_train_balanced,
+                X_train_cont_balanced,
                 y_train_balanced,
-                self.feature_names,
+                self.continuous_feature_names,
                 top_k=top_k_features,
             )
-            X_train_selected = X_train_balanced[:, selected_indices]
-            X_test_selected = X_test_raw[:, selected_indices]
-            self.feature_names = selected_features
+            X_train_cont_selected = X_train_cont_balanced[:, selected_indices]
+            X_test_cont_selected = X_test_cont_raw[:, selected_indices]
+            self.continuous_feature_names = selected_features
+            self.feature_names = selected_features + self.categorical_feature_names
         else:
             print("\n[ETAPE 3] Selection desactivee.")
-            X_train_selected = X_train_balanced
-            X_test_selected = X_test_raw
+            X_train_cont_selected = X_train_cont_balanced
+            X_test_cont_selected = X_test_cont_raw
 
-        # ─── Etape 4: Normalisation et Standardisation ───────────────────────
-        print("\n[ETAPE 4] Normalisation et standardisation (fit sur train only)...")
-        # Min-Max Scaling (0-1)
-        print("  4.1 Min-Max Scaling (0-1)...")
-        X_train_minmax = self.minmax_scaler.fit_transform(X_train_selected)
-        X_test_minmax = self.minmax_scaler.transform(X_test_selected)
+        # ─── Etape 4: Normalisation (Min-Max uniquement) ───────────────────────
+        # IMPORTANT: Categorical features (ipProto) are NOT scaled.
+        # They remain as raw integers for the BPE tokenizer to convert to
+        # human-readable labels (tcp, udp, icmp, etc.).
+        print(
+            "\n[ETAPE 4] Normalisation Min-Max (fit sur train only, continuous only)..."
+        )
+        print("  4.1 Min-Max Scaling (0-1) — continuous features only...")
+        X_train_cont_scaled = self.minmax_scaler.fit_transform(
+            X_train_cont_selected
+        ).astype(np.float32)
+        X_test_cont_scaled = self.minmax_scaler.transform(X_test_cont_selected).astype(
+            np.float32
+        )
 
-        # Standardisation (mean=0, std=1)
-        print("  4.2 Standardisation (mean=0, std=1)...")
-        X_train_scaled = self.scaler.fit_transform(X_train_minmax).astype(np.float32)
-        X_test_scaled = self.scaler.transform(X_test_minmax).astype(np.float32)
-
-        del X_train_raw, X_test_raw, X_train_balanced, X_train_selected, X_test_selected
+        del (
+            X_train_cont_raw,
+            X_test_cont_raw,
+            X_train_cont_balanced,
+            X_train_cont_selected,
+            X_test_cont_selected,
+        )
 
         # ─── Creation des sequences ──────────────────────────────────────────
         print(f"\n[SEQUENCES] Creation (length={seq_length}, stride={stride})...")
-        X_train_seq, y_train_seq = self.create_sequences(
-            X_train_scaled, y_train_balanced, seq_length, stride
+        X_train_seq, y_train_seq = self.create_sequences_with_categorical(
+            X_train_cont_scaled, X_train_cat_raw, y_train_balanced, seq_length, stride
         )
-        X_test_seq, y_test_seq = self.create_sequences(
-            X_test_scaled, y_test_enc, seq_length, stride
+        X_test_seq, y_test_seq = self.create_sequences_with_categorical(
+            X_test_cont_scaled, X_test_cat_raw, y_test_enc, seq_length, stride
         )
-        del X_train_scaled, X_test_scaled
+        del X_train_cont_scaled, X_test_cont_scaled, X_train_cat_raw, X_test_cat_raw
         print(
             f"  Train sequences: {len(X_train_seq):,} | Test sequences: {len(X_test_seq):,}"
         )

@@ -13,12 +13,12 @@ RAW_DATA_DIR = DATA_DIR / "pcap" / "IPFIX ML Instances"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
 
 FEATURES_TO_KEEP = [
+    # --- SDN Native Features (FlowStats) ---
     "duration",
     "ipProto",
+    # --- Trafic Sortant (12) ---
     "outPacketCount",
     "outByteCount",
-    "inPacketCount",
-    "inByteCount",
     "outSmallPktCount",
     "outLargePktCount",
     "outNonEmptyPktCount",
@@ -29,6 +29,9 @@ FEATURES_TO_KEEP = [
     "outStdevPayloadSize",
     "outStdevIAT",
     "outAvgPacketSize",
+    # --- Trafic Entrant (12) ---
+    "inPacketCount",
+    "inByteCount",
     "inSmallPktCount",
     "inLargePktCount",
     "inNonEmptyPktCount",
@@ -39,17 +42,6 @@ FEATURES_TO_KEEP = [
     "inStdevPayloadSize",
     "inStdevIAT",
     "inAvgPacketSize",
-    "http",
-    "https",
-    "smb",
-    "dns",
-    "ntp",
-    "tcp",
-    "udp",
-    "ssdp",
-    "lan",
-    "wan",
-    "deviceInitiated",
 ]
 
 FEATURES_TO_DROP = [
@@ -61,7 +53,6 @@ FEATURES_TO_DROP = [
     "srcPort",
     "destPort",
     "device",
-    "name",
 ]
 
 LABEL_COLUMN = "name"
@@ -105,13 +96,20 @@ JSON_PROCESSED_DATA_DIR = DATA_DIR / "processed" / "json_native"
 
 # JSON-specific behavioral features (Issue 4: identifying columns excluded)
 JSON_FEATURES_TO_KEEP = [
+    # --- Temps et Protocoles ---
     "flowDurationMilliseconds",
-    "reverseFlowDeltaMilliseconds",
     "protocolIdentifier",
+    # --- Métriques Globales ---
     "packetTotalCount",
     "octetTotalCount",
     "reversePacketTotalCount",
     "reverseOctetTotalCount",
+    # --- Drapeaux TCP (visibles par OpenFlow) ---
+    "initialTCPFlags",
+    "unionTCPFlags",
+    "reverseInitialTCPFlags",
+    "reverseUnionTCPFlags",
+    # --- Métriques Détaillées Forward ---
     "tcpUrgTotalCount",
     "smallPacketCount",
     "nonEmptyPacketCount",
@@ -123,6 +121,7 @@ JSON_FEATURES_TO_KEEP = [
     "standardDeviationPayloadLength",
     "standardDeviationInterarrivalTime",
     "bytesPerPacket",
+    # --- Métriques Détaillées Reverse ---
     "reverseTcpUrgTotalCount",
     "reverseSmallPacketCount",
     "reverseNonEmptyPacketCount",
@@ -135,12 +134,12 @@ JSON_FEATURES_TO_KEEP = [
     "reverseStandardDeviationInterarrivalTime",
 ]
 
-# 8 binary packet direction features (Issue 5: decoded from hex)
+# Optional binary packet direction features (firstEightNonEmptyPacketDirections)
 JSON_PKT_DIR_FEATURES = [f"pkt_dir_{i}" for i in range(8)]
 
-# Total features: 28 continuous + 8 binary = 36
+# Update dimensions based on filtered features
 JSON_N_CONTINUOUS = len(JSON_FEATURES_TO_KEEP)
-JSON_N_BINARY = 8
+JSON_N_BINARY = len(JSON_PKT_DIR_FEATURES)
 JSON_INPUT_SIZE = JSON_N_CONTINUOUS + JSON_N_BINARY
 
 # 26 device classes from IPFIX Records testbed (Issue 2: MAC-mapped)

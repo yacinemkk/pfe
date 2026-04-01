@@ -255,28 +255,21 @@ class Preprocessor:
         verbose: bool = True,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Etape 1.5: Normalisation et Standardisation.
+        Etape 1.5: Normalisation Min-Max uniquement.
 
         IMPORTANT: Calculer les paramètres UNIQUEMENT sur train,
         appliquer sur train ET test.
+
+        NOTE: Pas de standardisation après Min-Max (redondant).
         """
         if verbose:
             print("  Min-Max Scaling (0-1)...")
 
         if fit:
-            X_train_minmax = self.minmax_scaler.fit_transform(X_train)
+            X_train_scaled = self.minmax_scaler.fit_transform(X_train)
         else:
-            X_train_minmax = self.minmax_scaler.transform(X_train)
-        X_test_minmax = self.minmax_scaler.transform(X_test)
-
-        if verbose:
-            print("  Standardisation (mean=0, std=1)...")
-
-        if fit:
-            X_train_scaled = self.scaler.fit_transform(X_train_minmax)
-        else:
-            X_train_scaled = self.scaler.transform(X_train_minmax)
-        X_test_scaled = self.scaler.transform(X_test_minmax)
+            X_train_scaled = self.minmax_scaler.transform(X_train)
+        X_test_scaled = self.minmax_scaler.transform(X_test)
 
         return X_train_scaled.astype(np.float32), X_test_scaled.astype(np.float32)
 

@@ -95,12 +95,20 @@ class DataLoader:
         for f in json_files:
             if verbose:
                 print(f"  Chargement: {f.name}")
+            records = []
             with open(f, "r") as file:
-                data = json.load(file)
-            if isinstance(data, list):
-                dfs.append(pd.DataFrame(data))
-            elif isinstance(data, dict):
-                dfs.append(pd.DataFrame([data]))
+                for line in file:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                        flow = record.get("flows", record)
+                        records.append(flow)
+                    except json.JSONDecodeError:
+                        continue
+            if records:
+                dfs.append(pd.DataFrame(records))
 
         combined = pd.concat(dfs, ignore_index=True)
 

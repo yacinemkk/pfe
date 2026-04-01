@@ -414,9 +414,9 @@ class CrashTestEvaluator:
     Évalue la robustesse face aux attaques adverses.
 
     Per docs/important.md §5.4 (Crash Test 1) et §6.3 (Crash Test 2):
-    - Test 1: Données bénignes
-    - Test 2: Données adverses uniquement
-    - Test 3: Mélange bénignes + adverses
+    - Test 1: Données bénignes (réservées, jamais utilisées pour générer des attaques)
+    - Test 2: Données adverses (générées à partir d'un sous-ensemble séparé du test)
+    - Test 3: Mélange bénignes + adverses (reflète un trafic réel)
     """
 
     def __init__(self, model: nn.Module, device: torch.device):
@@ -429,6 +429,7 @@ class CrashTestEvaluator:
         X_clean: np.ndarray,
         y_clean: np.ndarray,
         X_adv: np.ndarray,
+        y_adv: np.ndarray,
         batch_size: int = 64,
         verbose: bool = True,
     ) -> Dict[str, Dict[str, float]]:
@@ -436,38 +437,49 @@ class CrashTestEvaluator:
         Exécute les 3 tests de crash.
 
         Args:
-            X_clean: Données bénignes
-            y_clean: Labels
-            X_adv: Données adverses
+            X_clean: Données bénignes réservées (jamais utilisées pour l'attaque)
+            y_clean: Labels des données bénignes
+            X_adv: Données adverses (générées à partir d'un sous-ensemble séparé)
+            y_adv: Labels des données adverses (correspondent aux sources d'attaque)
         """
         results = {}
 
         if verbose:
             print("\n[CRASH TEST] Exécution des 3 tests...")
+            print(f"  Test 1 - Clean réservé: {len(X_clean):,} échantillons")
+            print(f"  Test 2 - Adversarial: {len(X_adv):,} échantillons")
+            print(
+                f"  Test 3 - Mixte (trafic réel): {len(X_clean) // 2 + len(X_adv) // 2:,} échantillons"
+            )
 
         results["test1_clean"] = self._evaluate_dataset(
-            X_clean, y_clean, batch_size, "Test 1: Bénignes", verbose
+            X_clean, y_clean, batch_size, "Test 1: Bénignes (réservées)", verbose
         )
 
         results["test2_adversarial"] = self._evaluate_dataset(
-            X_adv, y_clean, batch_size, "Test 2: Adverses", verbose
+            X_adv, y_adv, batch_size, "Test 2: Adverses", verbose
         )
 
-        n_mix = len(X_clean) // 2
-        X_mix = np.vstack([X_clean[:n_mix], X_adv[:n_mix]])
-        y_mix = np.concatenate([y_clean[:n_mix], y_clean[:n_mix]])
+        n_clean_mix = min(len(X_clean) // 2, len(X_adv) // 2)
+        n_adv_mix = min(len(X_adv) // 2, len(X_clean) // 2)
+        X_mix = np.vstack([X_clean[:n_clean_mix], X_adv[:n_adv_mix]])
+        y_mix = np.concatenate([y_clean[:n_clean_mix], y_adv[:n_adv_mix]])
 
         results["test3_mixed"] = self._evaluate_dataset(
-            X_mix, y_mix, batch_size, "Test 3: Mixte", verbose
+            X_mix, y_mix, batch_size, "Test 3: Mixte (trafic réel)", verbose
         )
 
         if verbose:
             print("\n[CRASH TEST] Résultats:")
-            print(f"  Test 1 (Bénignes): F1={results['test1_clean']['macro_f1']:.4f}")
             print(
-                f"  Test 2 (Adverses): F1={results['test2_adversarial']['macro_f1']:.4f}"
+                f"  Test 1 (Bénignes réservées):    F1={results['test1_clean']['macro_f1']:.4f}"
             )
-            print(f"  Test 3 (Mixte): F1={results['test3_mixed']['macro_f1']:.4f}")
+            print(
+                f"  Test 2 (Adverses):              F1={results['test2_adversarial']['macro_f1']:.4f}"
+            )
+            print(
+                f"  Test 3 (Mixte - trafic réel):   F1={results['test3_mixed']['macro_f1']:.4f}"
+            )
 
             f1_drop = (
                 results["test1_clean"]["macro_f1"]

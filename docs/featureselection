@@ -1,0 +1,46 @@
+Basé sur les recherches issues des documents fournis, et plus particulièrement sur les contraintes d'une architecture SDN (Software-Defined Networking) avec le protocole OpenFlow, voici la stratégie exacte pour sélectionner les caractéristiques (features) de vos deux jeux de données.
+Dans un environnement SDN réel, le contrôleur s'appuie sur des statistiques de flux (flow-level statistics) extraites du plan de données (data plane) sans avoir recours à l'inspection profonde des paquets (DPI - Deep Packet Inspection) qui serait trop coûteuse en ressources. De plus, pour que votre modèle d'Apprentissage Profond se généralise bien et résiste à l'usurpation (spoofing), vous devez impérativement éliminer les adresses IP, les adresses MAC et les ports.
+Voici le plan de sélection détaillé, colonne par colonne, pour vos deux datasets :
+1. Dataset 1 : IPFIX ML Instances (home1.csv)
+❌ Caractéristiques à SUPPRIMER (Fuite de données et non-généralisables) :
+
+    srcMac, destMac, srcIP, destIP : À exclure absolument pour éviter que le modèle n'apprenne la topologie de votre laboratoire au lieu du comportement de l'appareil.
+    srcPort, destPort : À exclure car ils sont facilement modifiables par un attaquant et spécifiques à une session.
+    start : Ne doit pas être utilisé comme caractéristique d'entrée du modèle, mais doit être conservé uniquement pour l'étape de tri chronologique (pour séparer Train/Test à 80/20 et éviter le data leakage).
+
+✅ Caractéristiques à CONSERVER (Statistiques de flux SDN OpenFlow) : Ces caractéristiques correspondent parfaitement aux métriques comportementales dynamiques collectées par un contrôleur SDN :
+
+    Base : duration, ipProto
+    Trafic Sortant (12) : outPacketCount, outByteCount, outSmallPktCount, outLargePktCount, outNonEmptyPktCount, outDataByteCount, outAvgIAT, outFirstNonEmptyPktSize, outMaxPktSize, outStdevPayloadSize, outStdevIAT, outAvgPacketSize
+    Trafic Entrant (12) : inPacketCount, inByteCount, inSmallPktCount, inLargePktCount, inNonEmptyPktCount, inDataByteCount, inAvgIAT, inFirstNonEmptyPktSize, inMaxPktSize, inStdevPayloadSize, inStdevIAT, inAvgPacketSize
+    Indicateurs : (supprimés - deviceInitiated, lan, wan, tcp, udp ne sont pas observables via OpenFlow flow stats)
+    Note sur la couche 7 (http, https, smb, dns, ntp, ssdp) : OpenFlow natif ne lit pas la couche 7 (applicative). **RÈGLE** : Si ces colonnes ont été déduites via les ports bien connus (ex: port 80 = http, port 443 = https) par votre extracteur, vous pouvez les garder comme variables binaires (0/1). Si elles nécessitent une inspection profonde des paquets (DPI - Deep Packet Inspection), il est impératif de les exclure pour un PFE orienté purement SDN. Dans le doute, privilégiez l'exclusion.
+
+
+--------------------------------------------------------------------------------
+2. Dataset 2 : IPFIX Records (ipfix_202001_fixed.json)
+Ce dataset est extrêmement riche, mais contient de nombreux identifiants réseau qui doivent être élagués pour votre architecture SDN.
+❌ Caractéristiques à SUPPRIMER :
+
+    Identifiants stricts : sourceIPv4Address, sourceMacAddress, destinationIPv4Address, destinationMacAddress, sourceTransportPort, destinationTransportPort.
+    Spécificités réseau/matériel : tcpSequenceNumber, reverseTcpSequenceNumber, ingressInterface, egressInterface, vlanId, collectorName, observationDomainId, silkAppLabel, ipClassOfService, flowEndReason.
+    flowStartMilliseconds et flowEndMilliseconds : À utiliser uniquement pour le tri temporel de votre pipeline de données.
+
+✅ Caractéristiques à CONSERVER (Statistiques de flux SDN OpenFlow) : Ces éléments reflètent la taille des paquets, les intervalles de communication et la durée, qui sont les piliers de l'identification SDN :
+
+    Temps et Protocoles : flowDurationMilliseconds, protocolIdentifier
+    Métriques Globales : packetTotalCount, octetTotalCount, reversePacketTotalCount, reverseOctetTotalCount
+    Drapeaux TCP (visibles par OpenFlow) : initialTCPFlags, unionTCPFlags, reverseInitialTCPFlags, reverseUnionTCPFlags
+    Métriques Détaillées Forward : tcpUrgTotalCount, smallPacketCount, nonEmptyPacketCount, dataByteCount, averageInterarrivalTime, firstNonEmptyPacketSize, largePacketCount, maxPacketSize, standardDeviationPayloadLength, standardDeviationInterarrivalTime, bytesPerPacket
+    Métriques Détaillées Reverse : reverseTcpUrgTotalCount, reverseSmallPacketCount, reverseNonEmptyPacketCount, reverseDataByteCount, reverseAverageInterarrivalTime, reverseFirstNonEmptyPacketSize, reverseLargePacketCount, reverseMaxPacketSize, reverseStandardDeviationPayloadLength, reverseStandardDeviationInterarrivalTime
+    Comportement Séquentiel IoT : firstEightNonEmptyPacketDirections (Très utile, traduisez cette séquence en colonnes pkt_dir_0 à pkt_dir_7. La direction des paquets est une métrique que le SDN peut facilement suivre et qui est redoutable pour identifier les états d'un appareil).
+
+
+--------------------------------------------------------------------------------
+Étape suivante : Réduction de la redondance
+Une fois que vous avez appliqué ce filtrage strict (qui vous laisse avec environ 30 caractéristiques pour le dataset 1 et environ 35 pour le dataset 2), vous ne devez pas toutes les injecter aveuglément dans votre modèle hybride CNN-BiLSTM-Transformer.
+Comme défini précédemment dans notre plan, vous allez maintenant appliquer votre méthode de sélection hybride (XGBoost + Chi2 + Information Mutuelle) sur ces caractéristiques restantes.
+
+    XGBoost vous dira lesquelles de ces statistiques de taille/temps sont les plus importantes pour les arbres de décision.
+    L'Information Mutuelle mesurera la dépendance non linéaire entre ces statistiques (ex: outAvgIAT) et l'étiquette de votre appareil (name(dans csv)).
+    Vous conserverez ainsi un sous-ensemble final optimal (par exemple, les 15 ou 20 statistiques les plus discriminantes), ce qui accélérera considérablement l'entraînement de vos architectures Deep Learning tout en évitant le surapprentissage (overfitting).

@@ -3,10 +3,10 @@
     Architecture de base : Les réseaux LSTM (Long Short-Term Memory) utilisent des mécanismes de portes (portes d'entrée, d'oubli et de sortie) pour propager les informations critiques sur de longues séquences et atténuer les problèmes d'évanouissement du gradient. La variante bidirectionnelle (BiLSTM) traite les séquences d'entrée indépendamment dans les deux directions (avant et arrière) pour capturer de manière exhaustive les dépendances temporelles.
     Configuration type (ex. FL-HDECOC) : Le modèle utilise un réseau LSTM à deux couches, avec 64 unités cachées par couche et une fonction d'activation ReLU. Le LSTM compresse la séquence temporelle en un vecteur d'intégration (embedding) de taille fixe (généralement 128).
 
-2. Modèle CNN-LSTM (ou LSTM-1DCNN / LSTM-MLP)
+2. Modèle CNN-LSTM (ou 1DCNN-LSTM)
 
-    Architecture : Ce modèle combine la capacité de mémoire du LSTM pour extraire les motifs récurrents avec l'extraction de motifs spatiaux du CNN (ou d'un perceptron multicouche - MLP).
-    Configuration : L'architecture classique comprend une couche d'entrée de séries temporelles, suivie d'une couche LSTM configurée pour retourner des séquences (ex. avec 64 neurones). Ensuite, une couche de convolution 1D (1D-CNN) applique des noyaux aux caractéristiques proches. La séquence passe ensuite par une couche de Max-Pooling 1D, un aplatissement (Flatten), puis une couche dense (entièrement connectée) de 100 neurones, pour aboutir à la couche de sortie.
+    Architecture : Ce modèle combine l'extraction de motifs spatiaux du CNN avec la capacité de mémoire du LSTM pour extraire les motifs récurrents. L'ordre de traitement est CNN → LSTM : les données passent d'abord par une couche de convolution 1D pour extraire les caractéristiques spatiales locales, puis par une couche LSTM pour modéliser les dépendances temporelles.
+    Configuration : L'architecture classique comprend une couche d'entrée de séries temporelles, suivie d'une couche de convolution 1D (1D-CNN) avec Max-Pooling pour extraire les caractéristiques locales. La sortie du CNN est ensuite introduite dans une couche LSTM configurée pour retourner des séquences (ex. avec 64 neurones). La séquence passe ensuite par un aplatissement (Flatten), puis une couche dense (entièrement connectée) de 100 neurones, pour aboutir à la couche de sortie.
 
 3. Modèle XGBoost-LSTM
 

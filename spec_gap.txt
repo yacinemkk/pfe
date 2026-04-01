@@ -1,0 +1,342 @@
+# Specifications & Implementation Gap Analysis Report
+
+**Generated:** 2026-03-31
+
+---
+
+## Part 1: Spec/Doc Internal Analysis
+
+### 1.1 Documents Analyzed
+
+| File | Location | Purpose |
+|------|----------|---------|
+| `specs_implementation_gap_analysis.md` | `/home/pc/Desktop/pfe/` | Pre-existing gap analysis |
+| `roadmap.md` | `/home/pc/Desktop/pfe/` | Pipeline fix roadmap |
+| `docs/featureselection` | `/home/pc/Desktop/pfe/docs/` | Feature selection strategy |
+| `docs/structure` | `/home/pc/Desktop/pfe/docs/` | Implementation plan (5 phases) |
+| `docs/general` | `/home/pc/Desktop/pfe/docs/` | Anti-data leakage pipeline |
+| `docs/pretraitement` | `/home/pc/Desktop/pfe/docs/` | Preprocessing pipeline |
+| `docs/architectures` | `/home/pc/Desktop/pfe/docs/` | Model architecture specs |
+| `docs/train` | `/home/pc/Desktop/pfe/docs/` | Training protocol |
+| `config/config.yaml` | `/home/pc/Desktop/pfe/config/` | Configuration parameters |
+| `manuscript.txt` | `/home/pc/Desktop/pfe/` | Research paper |
+
+---
+
+### 1.2 Internal Contradictions in Specs
+
+#### CRITICAL Severity
+
+| Issue | Files/Sections | Details |
+|-------|----------------|---------|
+| Training Phases: 2 vs 3 | `docs/train` (2 phases) vs referenced docs (3 phases) | Inconsistent training protocol documentation |
+| Feature Count: 28 vs 36 | `docs/pretraitement` (28 attributes) vs `roadmap.md` (36 features) | Roadmap adds 8 binary packet direction bits |
+| Dataset Class Count | `manuscript.txt` (18/17 classes) vs `roadmap.md` (26 devices) | Inconsistent device vs class documentation |
+
+#### HIGH Severity
+
+| Issue | Files/Sections | Details |
+|-------|----------------|---------|
+| Max Sequence Length | `docs/pretraitement` (512/1024) vs `docs/architectures` (576) vs `config.yaml` (512) | Three different values |
+| Output Activation | `docs/architectures:28` - "Sigmoid" | Incorrect for multi-class classification |
+| Train/Test Split | `manuscript.txt` (75/25) vs `docs/general` (80/20) | Different split ratios |
+
+#### MEDIUM Severity
+
+| Issue | Files/Sections | Details |
+|-------|----------------|---------|
+| Terminology | French vs English | Mixed "antagoniste" vs "adversarial" |
+| Model Naming | `docs/architectures` | "LSTM-1DCNN" vs "CNN-LSTM" inconsistency |
+| Transformer Dimensions | `config.yaml` (768) vs gap analysis (128) | Spec vs implementation mismatch noted |
+
+---
+
+### 1.3 Gaps in Specifications
+
+#### CRITICAL Gaps
+
+| Gap | Description | Impact |
+|-----|-------------|--------|
+| Missing Referenced Files | 6 files in `docs/preprocessing-mismatch/09-audit-findings/` don't exist | Documentation incomplete |
+| Attack Parameters Underspecified | No epsilon values, PGD iterations in docs | Reproducibility at risk |
+| Complete Feature List Missing | Only examples given, not full 28/36 feature list | Implementation ambiguity |
+
+#### HIGH Severity Gaps
+
+| Gap | Description | Impact |
+|-----|-------------|--------|
+| Gradient-Guided Bit-Flipping Algorithm | Mentioned in `roadmap.md:121-132` but not specified | Implementation ambiguous |
+| Tokenizer Integration | BPE described but connection to models unclear | Disconnected specification |
+| Validation Split Strategy | Size and strategy not documented | Data leakage risk |
+| XGBoost-LSTM Integration | "Surrogate PyTorch" not explained | Implementation unclear |
+
+#### MEDIUM Severity Gaps
+
+| Gap | Description |
+|-----|-------------|
+| Early Stopping Parameters | Patience value not specified |
+| Class Imbalance Resolution | Two options (remove vs SMOTE), no decision criteria |
+| Crash Test Data Composition | Exact composition not specified |
+
+---
+
+### 1.4 Ambiguities
+
+| Ambiguity | Location | Issue |
+|-----------|----------|-------|
+| Output Activation | `docs/architectures:28` | Sigmoid vs Softmax unclear |
+| Protocol Filtering | `docs/pretraitement:5` | Pre or post feature extraction? |
+| Scaling Strategy | `roadmap.md:225` | How to handle mixed feature scaling |
+| Sequence Boundaries | `docs/general` | Can sequences span temporal split? |
+| MAC Mapping Table | Referenced in roadmap | File missing |
+| Tokenizer Vocabulary | `docs/pretraitement` | What data is BPE trained on? |
+
+---
+
+## Part 2: Code vs Specs Gap Analysis
+
+### 2.1 Implementation Status Overview
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Anti-data leakage pipeline | FULLY IMPLEMENTED | Full compliance |
+| SDN Filtering | PARTIAL | Feature count mismatch |
+| BPE Tokenization | FULLY IMPLEMENTED | Full compliance |
+| LSTM Architecture | PARTIAL | Embedding dimension mismatch |
+| BiLSTM Architecture | IMPLEMENTED | Correct |
+| CNN-LSTM Architecture | IMPLEMENTED | Correct |
+| XGBoost-LSTM Architecture | IMPLEMENTED | Correct |
+| Transformer Architecture | IMPLEMENTED | Correct |
+| Hybrid Architecture | IMPLEMENTED | Correct |
+| Training Protocol | PARTIAL | 3 phases vs 2 phases spec |
+| FGSM Attack | IMPLEMENTED | |
+| BIM Attack | MISSING | Not implemented |
+| PGD Attack | IMPLEMENTED | |
+| NAC/SDN Integration | MISSING | Future work |
+
+---
+
+### 2.2 Detailed Analysis by Component
+
+#### Data Pipeline
+
+| Spec Requirement | Code Implementation | Status |
+|------------------|---------------------|--------|
+| Group flows by device | `split.py:group_by_device()` | MATCH |
+| Sort chronologically | `split.py:sort_chronologically()` | MATCH |
+| Temporal 80/20 split | `split.py:split_per_device()` | MATCH |
+| Separate train/test sequences | `sequence.py:create_train_test_sequences()` | MATCH |
+| No device mixing in sequences | `sequence.py:create_sequences()` | MATCH |
+| Normalization fit on train only | `preprocessing.py:normalize()` | MATCH |
+
+**Issue:** Feature count - Config shows 37 features, specs mention 28, JSON uses 36 (28+8).
+
+#### Model Architectures
+
+**LSTM Model:**
+| Spec | Config | Code | Status |
+|------|--------|------|--------|
+| 2 layers | `num_layers: 2` | Default 2 | MATCH |
+| 64 hidden | `hidden_size: 64` | Default 64 | MATCH |
+| Embedding 128 | `embedding_dim: 128` | Uses 64 (hidden_size) | MISMATCH |
+
+**Transformer Model:**
+| Spec | Config | Code | Status |
+|------|--------|------|--------|
+| 6 encoder layers | `num_encoder_layers: 6` | Default 6 | MATCH |
+| 768 dimensions | `d_model: 768` | Default 768 | MATCH |
+| 12 attention heads | `nhead: 12` | Default 12 | MATCH |
+| FFN 3072 | `dim_feedforward: 3072` | Default 3072 | MATCH |
+
+#### Training Protocol
+
+| Spec | Code | Issue |
+|------|------|-------|
+| 2 phases | 3 phases implemented | Code extends beyond spec |
+| Phase 1: Clean training | Implemented | MATCH |
+| Phase 2: Adversarial training | Split into feature-level + sequence-level | EXTENDED |
+| Crash Test (3 tests) | 4 tests (extra FGSM) | EXTENDED |
+| 80/20 split | 60/20/20 hybrid for adversarial | DIFFERENT |
+
+#### Adversarial Attacks
+
+| Attack | Spec | Code | Status |
+|--------|------|------|--------|
+| FGSM | Required | `attacks.py:fgsm_attack()` | IMPLEMENTED |
+| BIM | Required | NOT FOUND | MISSING |
+| PGD | Required | `attacks.py:pgd_attack()` | IMPLEMENTED |
+| Binary masking | Required | `n_continuous_features` separation | IMPLEMENTED |
+| L0/L2 constraints | Required | `projection()` function | IMPLEMENTED |
+
+---
+
+### 2.3 Features Implemented But Not in Specs
+
+| Feature | Location | Description |
+|---------|----------|-------------|
+| JSON-native pipeline | `json_preprocessor.py` | Separate pipeline for JSON data |
+| MAC-to-device mapping | `json_preprocessor.py` | Hardcoded mapping |
+| Packet direction decoding | `json_preprocessor.py` | Hex to binary conversion |
+| CNN-BiLSTM model | `cnn_bilstm.py` | Intermediate model not in specs |
+| Isolation Forest | `preprocessing.py` | Outlier detection |
+| Local Outlier Factor | `preprocessing.py` | Outlier detection |
+| SimpleTokenizer fallback | `tokenizer.py` | Alternative tokenizer |
+
+---
+
+### 2.4 Features in Specs But Not Implemented
+
+| Spec Feature | Location | Status |
+|--------------|----------|--------|
+| BIM attack | `docs/train` | NOT IMPLEMENTED |
+| Model distillation | `docs/structure` Phase 4 | NOT IMPLEMENTED (optional) |
+| NAC Enhancer module | `docs/structure` Phase 5 | NOT IMPLEMENTED |
+| SDN-NAC integration | `docs/structure` Phase 5 | NOT IMPLEMENTED |
+| OpenFlow rule generation | `docs/structure` Phase 5 | NOT IMPLEMENTED |
+| Mitigation delay metric | `docs/structure` Phase 5 | NOT IMPLEMENTED |
+
+---
+
+### 2.5 Implementation Contradictions with Specs
+
+| Spec | Code | Issue |
+|------|------|-------|
+| 28 features | 37 features (config), 36 (JSON) | Count mismatch |
+| 2 training phases | 3 phases | Code extends spec |
+| LSTM embedding 128 | Uses 64 | Config key unused |
+| Sigmoid output | Code likely uses Softmax | Spec error |
+
+---
+
+### 2.6 Code Quality Issues
+
+| Issue | Location | Description |
+|-------|----------|-------------|
+| Duplicate files | `hybrid.py` vs `cnn_bilstm_transformer.py` | Same architecture |
+| Duplicate files | `tokenizer.py` vs `iot_tokenizer.py` | Overlapping functionality |
+| Hardcoded values | `json_preprocessor.py` | MAC mapping should be in config |
+| Unused config | `config.yaml` | `embedding_dim: 128` not used by LSTM |
+
+---
+
+## Part 3: Consolidated Findings
+
+### Top Priority Issues
+
+1. **Training Protocol Inconsistency**
+   - Specs: 2 phases
+   - Code: 3 phases (curriculum learning)
+   - Action: Update specs to match code (code version is better)
+
+2. **BIM Attack Missing**
+   - Spec: Required in `docs/train`
+   - Code: Not implemented
+   - Action: Implement OR remove from specs
+
+3. **Feature Count Chaos**
+   - Three different counts: 28 (specs), 36 (roadmap), 37 (config)
+   - Action: Define authoritative source and update all docs
+
+4. **LSTM Embedding Dimension**
+   - Config has `embedding_dim: 128`
+   - Code ignores it and uses `hidden_size: 64`
+   - Action: Either fix code or remove config key
+
+5. **Output Activation Error**
+   - `docs/architectures:28` says "Sigmoid"
+   - Incorrect for multi-class classification
+   - Action: Change to "Softmax"
+
+---
+
+### Documentation Debt
+
+| Item | Action Required |
+|------|-----------------|
+| Missing audit files | Create or remove references (6 files) |
+| BPE tokenizer integration | Document connection to models |
+| Adversarial parameters | Add epsilon, iterations to specs |
+| Complete feature schema | Create authoritative list |
+| JSON pipeline | Document (currently only CSV documented) |
+
+---
+
+### Architecture Decisions Needed
+
+| Decision | Options | Recommendation |
+|----------|---------|----------------|
+| Training phases | 2 or 3 | Adopt 3 (curriculum is better) |
+| Feature count | 28, 36, or 37 | Adopt 36 (28 continuous + 8 binary) |
+| Max sequence length | 512 vs 576 | Adopt 512 (matches config) |
+| Train/test split | 75/25 vs 80/20 | Adopt 80/20 (anti-leakage standard) |
+
+---
+
+## Part 4: Recommendations
+
+### Immediate Actions (Priority 1)
+
+1. [ ] Fix `docs/architectures:28` - Change "Sigmoid" to "Softmax"
+2. [ ] Standardize feature count across all docs (recommend 36)
+3. [ ] Standardize train/test split ratio (recommend 80/20)
+4. [ ] Update training protocol docs to reflect 3-phase implementation
+5. [ ] Either implement BIM attack or remove from specs
+
+### Short-term Actions (Priority 2)
+
+6. [ ] Fix LSTM embedding dimension (use config or remove unused key)
+7. [ ] Create missing audit files or remove references
+8. [ ] Add adversarial attack parameters to specs (not just config)
+9. [ ] Document JSON pipeline in specs
+10. [ ] Remove duplicate files (`hybrid.py` vs `cnn_bilstm_transformer.py`)
+
+### Long-term Actions (Priority 3)
+
+11. [ ] Document complete feature schema
+12. [ ] Explain BPE tokenizer integration with models
+13. [ ] Move hardcoded MAC mapping to config
+14. [ ] Consolidate tokenizer implementations
+15. [ ] Implement NAC/SDN integration (Phase 5)
+
+---
+
+## Summary Score
+
+| Aspect | Score | Notes |
+|--------|-------|-------|
+| Spec Internal Consistency | 3/5 | Multiple contradictions |
+| Spec Completeness | 3/5 | Missing details, files |
+| Code-Spec Alignment | 3.5/5 | Core implemented well |
+| Implementation Quality | 4/5 | Well-structured, minor issues |
+| **Overall** | **3.4/5** | Good foundation, needs reconciliation |
+
+---
+
+## Files Analyzed
+
+### Spec Documents
+- `/home/pc/Desktop/pfe/docs/architectures`
+- `/home/pc/Desktop/pfe/docs/train`
+- `/home/pc/Desktop/pfe/docs/pretraitement`
+- `/home/pc/Desktop/pfe/docs/general`
+- `/home/pc/Desktop/pfe/docs/featureselection`
+- `/home/pc/Desktop/pfe/docs/structure`
+- `/home/pc/Desktop/pfe/config/config.yaml`
+- `/home/pc/Desktop/pfe/roadmap.md`
+- `/home/pc/Desktop/pfe/manuscript.txt`
+- `/home/pc/Desktop/pfe/specs_implementation_gap_analysis.md`
+
+### Code Files
+- `/home/pc/Desktop/pfe/src/data/preprocessing.py`
+- `/home/pc/Desktop/pfe/src/data/json_preprocessor.py`
+- `/home/pc/Desktop/pfe/src/data/split.py`
+- `/home/pc/Desktop/pfe/src/data/sequence.py`
+- `/home/pc/Desktop/pfe/src/data/tokenizer.py`
+- `/home/pc/Desktop/pfe/src/models/lstm.py`
+- `/home/pc/Desktop/pfe/src/models/bilstm.py`
+- `/home/pc/Desktop/pfe/src/models/cnn_lstm.py`
+- `/home/pc/Desktop/pfe/src/models/xgboost_lstm.py`
+- `/home/pc/Desktop/pfe/src/models/transformer.py`
+- `/home/pc/Desktop/pfe/src/models/hybrid.py`
+- `/home/pc/Desktop/pfe/src/adversarial/attacks.py`
+- `/home/pc/Desktop/pfe/train_adversarial.py`

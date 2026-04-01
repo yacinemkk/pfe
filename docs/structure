@@ -1,0 +1,52 @@
+plan d'implémentation structuré et détaillé pour votre Projet de Fin d'Études (PFE). Ce plan intègre vos contraintes rigoureuses de prévention des fuites de données (Data Leakage), le développement de vos modèles (de l'individuel vers l'hybride CNN-BiLSTM-Transformer), ainsi que l'évaluation en deux phases (vulnérabilité puis défense) dans un environnement SDN-NAC.
+Phase 1 : Ingénierie des données et Prévention du "Data Leakage" (Semaines 1-2)
+La préparation des données est critique pour simuler un déploiement réel sans tricherie algorithmique.
+
+    Filtrage orienté SDN :
+        Chargez vos datasets (ex. IoT IPFIX Home, IPFIX Records).
+        Supprimez les adresses IP, adresses MAC et les ports.
+        Ne conservez que les caractéristiques comportementales extraites par le SDN (durée du flux, taille moyenne des paquets, temps inter-arrivées, protocole).
+    Sélection des caractéristiques et Nettoyage :
+        Utilisez Isolation Forest et Local Outlier Factor (LOF) pour éliminer le bruit.
+        Appliquez la stratégie hybride de sélection : évaluation par XGBoost, validation statistique par le Chi-carré (Chi2), et capture des dépendances non linéaires via l'Information Mutuelle.
+    Pipeline Anti-Data Leakage (Strict) :
+        Groupez les flux par appareil (Label/MAC avant masquage).
+        Triez chaque groupe chronologiquement par flow_start.
+        Séparez temporellement à 80% (Entraînement - le Passé) et 20% (Test - le Futur).
+        Garantie : Aucun chevauchement temporel ni mélange d'appareils.
+    Séquençage et Tokenisation (IoT-Tokenize) :
+        Appliquez le fenêtrage glissant sur les ensembles séparément.
+        Pour le Transformer, transformez les statistiques en séquences nom_caractéristique valeur. Utilisez un encodage Byte-Level BPE en préservant les noms de caractéristiques comme tokens prédéfinis.
+        Équilibrez l'ensemble d'entraînement avec Borderline-SMOTE. Normalisez (Min-Max) en utilisant uniquement les paramètres calculés sur l'ensemble d'entraînement.
+
+Phase 2 : Développement des Modèles (Semaines 3-4)
+Implémentez et configurez les architectures de vos 6 modèles pour la tâche de classification multiclasse (identification des appareils).
+
+    Modèles Temporels purs : Implémentez un LSTM standard (ex: 2 couches de 64 unités, activation ReLU), puis un BiLSTM pour l'analyse bidirectionnelle.
+    Modèles Spatiaux-Temporels : Développez le CNN-LSTM et le CNN-BiLSTM. Le module CNN utilisera deux branches parallèles (noyaux de taille 3 et 5) avec Max Pooling et Batch Normalization pour extraire les motifs locaux avant le traitement temporel.
+    Modèle Hybride ML/DL : Implémentez XGBoost-LSTM. Utilisez le LSTM pour compresser les fenêtres en vecteurs (embeddings), puis entraînez XGBoost sur ces vecteurs.
+    Modèle Global : Implémentez le Transformer avec ses mécanismes d'attention multi-têtes (Self-Attention) pour capturer les dépendances sur de longues séquences.
+    L'Architecture Ultime (CNN-BiLSTM-Transformer) : Assemblez le modèle complet (Entrée → CNN 1D → BiLSTM → Encodeur Transformer → Couche dense/MLP → Sortie multiclasse).
+
+Phase 3 : Évaluation Phase 1 - "Crash Test" et Vulnérabilité (Semaine 5)
+Prouvez que les modèles classiques et avancés sont vulnérables sans défense proactive.
+
+    Entraînement Standard : Entraînez les 6 modèles uniquement sur l'ensemble d'entraînement bénin (normal).
+    Test de Référence (Données Normales) : Évaluez sur l'ensemble de test bénin. Collectez le Macro F1-Score, l'Accuracy, la Précision et le Rappel par classe.
+    Génération d'Attaques (Usurpation) : Générez des flux antagonistes (Adversarial Examples) pour simuler l'usurpation d'identité d'un appareil. Respectez les contraintes de domaine SDN en utilisant un masquage binaire (minimisation L0) et la distance euclidienne (minimisation L2) pour que l'attaque reste sémantiquement valide.
+    Crash Test : Soumettez ces données antagonistes aux 6 modèles et documentez la chute drastique des F1-Scores.
+
+Phase 4 : Évaluation Phase 2 - La Défense Antagoniste (Semaine 6)
+Rendez vos modèles robustes face aux attaques de la Phase 3.
+
+    Création du Corpus Conjoint : Fusionnez les flux d'entraînement normaux avec les échantillons antagonistes générés (étiquetés avec la véritable identité de l'appareil).
+    Entraînement Antagoniste (Adversarial Training) : Ré-entraînez vos modèles (et particulièrement le CNN-BiLSTM-Transformer) sur ce nouveau corpus pour forcer les réseaux à élargir leurs frontières de décision.
+    (Optionnel) Distillation de modèle : Appliquez une distillation pour lisser les frontières de décision si vous avez le temps.
+    Crash Test 2 (Résilience) : Testez les modèles défendus sur un jeu de test contenant des attaques inédites. Observez et documentez la récupération spectaculaire des performances (remontée du F1-Score).
+
+Phase 5 : Déploiement et Simulation SDN-NAC (Semaines 7-8)
+Intégrez la logique du modèle dans le concept architectural de votre PFE.
+
+    Le NAC Enhancer : Concevez le module de post-authentification. Lorsqu'un appareil se connecte, le NAC classique l'accepte. Le contrôleur SDN collecte ensuite ses statistiques de flux et les envoie au modèle CNN-BiLSTM-Transformer défendu.
+    Boucle de mitigation : Si le modèle identifie une incohérence persistante (usurpation), le contrôleur SDN génère une règle OpenFlow pour isoler ou bloquer le port de l'attaquant.
+    Évaluation système : Mesurez des métriques de déploiement telles que le délai d'atténuation (Mitigation Delay) ou la taille du modèle en mémoire pour prouver la faisabilité sur des ressources IoT/Edge

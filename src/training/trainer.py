@@ -34,6 +34,20 @@ class IoTSequenceDataset(Dataset):
         return self.X[idx], self.y[idx]
 
 
+class NLPTransformerDataset(Dataset):
+    """Dataset pour le Transformer NLP (token IDs au lieu de tenseurs 3D)."""
+
+    def __init__(self, token_ids: np.ndarray, y: np.ndarray):
+        self.token_ids = torch.LongTensor(token_ids)
+        self.y = torch.LongTensor(y)
+
+    def __len__(self):
+        return len(self.token_ids)
+
+    def __getitem__(self, idx):
+        return self.token_ids[idx], self.y[idx]
+
+
 class EarlyStopping:
     """Early stopping pour éviter le surapprentissage."""
 

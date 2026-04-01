@@ -41,10 +41,13 @@ class TransformerClassifier(nn.Module):
     """
     Classificateur Transformer (encodeur uniquement).
 
-    Architecture per docs/important.md §4.5:
+    Architecture per docs/architectures §4:
     - 6 couches encodeur
+    - 768 dimensions, 12 têtes d'attention
+    - FFN 3072 dimensions, activation GELU
+    - Vocabulaire 52 000 tokens
+    - Longueur max séquence: 576
     - Multi-Head Self-Attention (Query × Key → weights × Value)
-    - FFN avec GELU
     - Connexions résiduelles + LayerNorm
     - Mean Pooling → FC → classification
     """
@@ -58,7 +61,7 @@ class TransformerClassifier(nn.Module):
         num_encoder_layers: int = 6,
         dim_feedforward: int = 3072,
         dropout: float = 0.2,
-        max_seq_length: int = 512,
+        max_seq_length: int = 576,
         config_path: str = "config/config.yaml",
     ):
         super().__init__()
@@ -133,7 +136,10 @@ class NLPTransformerClassifier(nn.Module):
     """
     Transformer pour séquences tokenisées (NLP-style).
 
-    Per docs/important.md §3: Vocabulaire de 52 000 tokens.
+    Per docs/architectures §4:
+    - Vocabulaire de 52 000 tokens
+    - Longueur max séquence: 576
+    - 3 embeddings: word + position + token-type
     """
 
     def __init__(
@@ -145,8 +151,9 @@ class NLPTransformerClassifier(nn.Module):
         num_encoder_layers: int = 6,
         dim_feedforward: int = 3072,
         dropout: float = 0.2,
-        max_seq_length: int = 512,
+        max_seq_length: int = 576,
         config_path: str = "config/config.yaml",
+        pad_token_id: int = 2,
     ):
         super().__init__()
 
@@ -163,8 +170,16 @@ class NLPTransformerClassifier(nn.Module):
             dropout = model_config.get("dropout", dropout)
             max_seq_length = model_config.get("max_seq_length", max_seq_length)
 
-        self.embedding = nn.Embedding(vocab_size, d_model, padding_idx=2)
+        self.d_model = d_model
+        self.max_seq_length = max_seq_length
+        self.pad_token_id = pad_token_id
+
+        self.word_embedding = nn.Embedding(
+            vocab_size, d_model, padding_idx=pad_token_id
+        )
+        self.token_type_embedding = nn.Embedding(3, d_model)
         self.pos_encoder = PositionalEncoding(d_model, max_seq_length + 50, dropout)
+        self.dropout = nn.Dropout(dropout)
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
@@ -186,15 +201,40 @@ class NLPTransformerClassifier(nn.Module):
             nn.Linear(d_model * 2, num_classes),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def _build_token_type_ids(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Génère les token-type IDs (vectorisé):
+        0 = feature names (positions paires dans la séquence)
+        1 = valeurs numériques (positions impaires)
+        2 = tokens spéciaux (<s>=0, </s>=1, <pad>)
+        """
+        batch_size, seq_len = x.shape
+        position_parity = torch.arange(seq_len, device=x.device) % 2
+        token_type_ids = position_parity.unsqueeze(0).expand(batch_size, -1)
+
+        special_mask = (x == self.pad_token_id) | (x == 0) | (x == 1)
+        token_type_ids = token_type_ids.masked_fill(special_mask, 2)
+
+        return token_type_ids
+
+    def forward(
+        self, x: torch.Tensor, token_type_ids: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """
         Args:
             x: (batch_size, seq_length) - token IDs
+            token_type_ids: (batch_size, seq_length) - optionnel, auto-généré si None
         Returns:
             logits: (batch_size, num_classes)
         """
-        x = self.embedding(x)
+        if token_type_ids is None:
+            token_type_ids = self._build_token_type_ids(x)
+
+        x = self.word_embedding(x)
+        x = x + self.token_type_embedding(token_type_ids)
+
         x = self.pos_encoder(x)
+        x = self.dropout(x)
         x = self.transformer_encoder(x)
         x = self.norm(x)
         x = x.mean(dim=1)
@@ -214,7 +254,7 @@ class TransformerConfig:
         self.dim_feedforward = self.config.get("dim_feedforward", 3072)
         self.dropout = self.config.get("dropout", 0.2)
         self.activation = self.config.get("activation", "gelu")
-        self.max_seq_length = self.config.get("max_seq_length", 512)
+        self.max_seq_length = self.config.get("max_seq_length", 576)
 
 
 if __name__ == "__main__":
