@@ -127,6 +127,7 @@ def load_and_preprocess_data(
     pipeline_mode: Optional[str] = None,
     max_records: Optional[int] = None,
     dataset: Optional[str] = None,
+    low_memory: bool = True,
 ) -> Tuple[np.ndarray, ...]:
     """Load and preprocess data with specified sequence length.
 
@@ -137,12 +138,17 @@ def load_and_preprocess_data(
     Args:
         dataset: Explicit override for pipeline selection ('csv' or 'json').
                  Takes precedence over pipeline_mode / PIPELINE_MODE config.
+        low_memory: If True, uses aggressive memory cleanup during loading.
 
     Returns:
         Tuple of (X_train, X_val, X_test, y_train, y_val, y_test,
                   features, scaler, label_encoder, n_continuous_features)
     """
-    # Explicit --dataset arg overrides config PIPELINE_MODE
+    if low_memory:
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     if dataset is not None:
         pipeline_mode = dataset
     if pipeline_mode is None:
@@ -151,9 +157,16 @@ def load_and_preprocess_data(
     print(f"Pipeline mode: {pipeline_mode.upper()}")
 
     if pipeline_mode == "json":
-        return _load_json_pipeline(seq_length, stride, data_dir, max_records)
+        result = _load_json_pipeline(seq_length, stride, data_dir, max_records)
     else:
-        return _load_csv_pipeline(seq_length, stride, max_files, data_dir)
+        result = _load_csv_pipeline(seq_length, stride, max_files, data_dir)
+
+    if low_memory:
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    return result
 
 
 def _load_json_pipeline(
@@ -1104,7 +1117,6 @@ class AdversarialTrainer:
 
         crash_results = {"phase": phase_num}
 
-        # Test 1: Données Bénignes
         clean_metrics = self._compute_detailed_metrics(
             test_loader, criterion, num_classes
         )
@@ -1119,7 +1131,6 @@ class AdversarialTrainer:
             f"F1={clean_metrics['f1_score']:.4f}  Macro-F1={clean_per_class['macro_f1']:.4f}"
         )
 
-        # Test 2: Données Adversaires Uniquement
         if (
             sequence_attack is not None
             and feature_attack is not None
@@ -1128,6 +1139,7 @@ class AdversarialTrainer:
         ):
             n_eval = min(1000, len(X_test))
             eval_indices = np.random.choice(len(X_test), n_eval, replace=False)
+
             X_eval = X_test[eval_indices].copy()
             y_eval = y_test[eval_indices].copy()
 
@@ -1142,6 +1154,10 @@ class AdversarialTrainer:
             X_adv = sequence_attack.generate_batch(
                 X_eval, y_eval, sensitivity_results=sensitivity_results, verbose=False
             )
+
+            del sensitivity_results
+            gc.collect()
+
             adv_dataset = IoTSequenceDataset(X_adv, y_eval)
             adv_loader = DataLoader(adv_dataset, batch_size=batch_size)
             adv_metrics = self._compute_detailed_metrics(
@@ -1161,7 +1177,6 @@ class AdversarialTrainer:
                 f"RR={adv_metrics['robustness_ratio']:.4f}"
             )
 
-            # Test 3: Mélange Bénignes + Adversaires (50/50)
             n_half = n_eval // 2
             X_mix = np.concatenate([X_eval[:n_half], X_adv[n_half:]], axis=0)
             y_mix = np.concatenate([y_eval[:n_half], y_eval[n_half:]], axis=0)
@@ -1181,6 +1196,7 @@ class AdversarialTrainer:
             )
 
             del X_adv, X_eval, y_eval, adv_dataset, adv_loader, mix_dataset, mix_loader
+            del X_mix, y_mix, n_eval, eval_indices
             gc.collect()
 
         if torch.cuda.is_available():
@@ -1660,8 +1676,13 @@ def run_experiment_with_phase_checkpoints(
     data_dir: Optional[Path] = None,
     dataset: Optional[str] = None,
     max_records: Optional[int] = None,
+    eval_batch_size: Optional[int] = None,
 ) -> Dict:
-    """Run experiment avec sauvegarde et evaluation des checkpoints de phase."""
+    """Run experiment avec sauvegarde et evaluation des checkpoints de phase.
+
+    Args:
+        eval_batch_size: Batch size for evaluation (defaults to batch_size//2 for RAM savings)
+    """
     device = get_device()
     print(f"\n{'=' * 60}")
     print(
@@ -1669,6 +1690,9 @@ def run_experiment_with_phase_checkpoints(
     )
     print(f"Device: {device}")
     print(f"{'=' * 60}\n")
+
+    if eval_batch_size is None:
+        eval_batch_size = max(16, batch_size // 2)
 
     (
         X_train,
@@ -1713,8 +1737,8 @@ def run_experiment_with_phase_checkpoints(
         test_dataset = IoTSequenceDataset(X_test, y_test)
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size)
+    val_loader = DataLoader(val_dataset, batch_size=eval_batch_size)
+    test_loader = DataLoader(test_dataset, batch_size=eval_batch_size)
 
     print(f"\nInput size: {input_size}, Classes: {num_classes}")
     print(
@@ -1788,23 +1812,20 @@ def run_experiment_with_phase_checkpoints(
         sequence_attack=sequence_attack,
         X_test=X_test,
         y_test=y_test,
-        batch_size=batch_size,
+        batch_size=eval_batch_size,
         is_xgboost=(model_type == "xgboost_lstm"),
         label_encoder=label_encoder,
         X_train_raw=X_train_raw,
     )
 
-    # Generate training history plot
     if save_results and save_path:
         try:
             generate_training_history_plot(history, save_path, model_type)
         except Exception as e:
             print(f"  ⚠️ Training history plot error: {e}")
 
-    # Récupérer les résultats d'évaluation des phases
     phase_results = history.get("phase_checkpoints_evaluation", {})
 
-    # Construire le résultat final
     results = {
         "model_type": model_type,
         "sequence_length": seq_length,
@@ -1817,7 +1838,6 @@ def run_experiment_with_phase_checkpoints(
         "phase_checkpoints_evaluation": phase_results,
     }
 
-    # Ajouter les métriques finales
     if phase_results:
         last_phase = max(phase_results.keys(), key=lambda k: int(k.split("_")[1]))
         final_metrics = phase_results[last_phase]
@@ -1851,6 +1871,8 @@ def run_experiment_with_phase_checkpoints(
     del train_loader, val_loader, test_loader
     del train_dataset, val_dataset, test_dataset
     del model, trainer, feature_attack, sequence_attack, adv_generator
+    if use_nlp:
+        del X_tok_train, X_tok_val, X_tok_test
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
