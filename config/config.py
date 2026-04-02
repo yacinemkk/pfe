@@ -173,7 +173,7 @@ JSON_DEVICE_CLASSES = [
 ]
 
 # Pipeline selection flag: "csv" or "json"
-PIPELINE_MODE = "json"
+PIPELINE_MODE = "csv"
 
 # Hybrid Adversarial Training Configuration
 # Default: 60% clean + 20% feature-level + 20% sequence-level
