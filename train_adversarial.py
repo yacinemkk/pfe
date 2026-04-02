@@ -64,7 +64,11 @@ from config.config import (
     JSON_N_BINARY,
     JSON_INPUT_SIZE,
 )
-from src.models.lstm import LSTMClassifier, IoTSequenceDataset
+from src.models.lstm import LSTMClassifier
+import sys, importlib
+
+_trainer_mod = importlib.import_module("src.training.trainer")
+IoTSequenceDataset = _trainer_mod.IoTSequenceDataset
 from src.models.transformer import TransformerClassifier, NLPTransformerClassifier
 from src.data.tokenizer import IoTTokenizer
 from src.models.cnn_lstm import CNNLSTMClassifier, CNNClassifier
