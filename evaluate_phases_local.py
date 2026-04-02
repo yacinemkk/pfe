@@ -32,7 +32,6 @@ from train_adversarial import load_and_preprocess_data
 
 # Dossiers locaux
 MODELS_DIR = PROJECT_ROOT / "results(2)" / "results" / "models"
-# Le dossier "20-01-31(1)" où sont vos 3 fichiers json
 DATA_DIR = (
     PROJECT_ROOT
     / "data"
@@ -46,6 +45,9 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Device: {device}")
+
+# Taille de séquence fixe pour les modèles transformer et cnn-bilstm-transformer
+SEQ_LENGTH_TRANSFORMER = 25
 
 
 def create_model(model_type, input_size, num_classes, seq_length):
@@ -75,11 +77,14 @@ def create_model(model_type, input_size, num_classes, seq_length):
         from src.models.cnn_bilstm_transformer import CNNBiLSTMTransformerClassifier
 
         model = CNNBiLSTMTransformerClassifier(
-            input_size, num_classes, seq_length, CNN_BILSTM_TRANSFORMER_CONFIG
+            input_size,
+            num_classes,
+            SEQ_LENGTH_TRANSFORMER,
+            CNN_BILSTM_TRANSFORMER_CONFIG,
         )
     elif model_type == "transformer":
         model = TransformerClassifier(
-            input_size, num_classes, seq_length, TRANSFORMER_CONFIG
+            input_size, num_classes, SEQ_LENGTH_TRANSFORMER, TRANSFORMER_CONFIG
         )
     elif model_type == "cnn_lstm":
         model = CNNLSTMClassifier(input_size, num_classes)
@@ -169,7 +174,188 @@ def plot_phase_metrics(metrics_dict, model_name, save_path):
     print(f"Plot enregistré: {save_path / f'metrics_évolution_{model_name}.png'}")
 
 
+def display_dataset_info(data_dir, pipeline_mode="json", max_records=20000):
+    """Affiche les informations détaillées du dataset chargé."""
+    print("\n" + "=" * 70)
+    print("  CHARGEMENT DU DATASET")
+    print("=" * 70)
+
+    print(f"\n  Mode pipeline : {pipeline_mode.upper()}")
+    print(f"  Répertoire des données : {data_dir}")
+    print(f"  Nombre max d'enregistrements : {max_records:,}")
+
+    data = load_and_preprocess_data(
+        seq_length=SEQ_LENGTH_TRANSFORMER,
+        max_records=max_records,
+        pipeline_mode=pipeline_mode,
+        data_dir=data_dir,
+    )
+
+    X_train, X_val, X_test = data[0], data[1], data[2]
+    y_train, y_val, y_test = data[3], data[4], data[5]
+    features = data[6]
+    scaler = data[7]
+    label_encoder = data[8]
+    n_continuous_features = data[9]
+
+    print(f"\n  Récapitulatif des données :")
+    print(f"    Features ({len(features)}) : {features[:5]}...")
+    print(f"    Features continues : {n_continuous_features}")
+    print(
+        f"    Classes ({len(label_encoder.classes_)}) : {list(label_encoder.classes_)}"
+    )
+    print(f"\n  Shapes des séquences (seq_length={SEQ_LENGTH_TRANSFORMER}) :")
+    print(f"    Train : {X_train.shape}  →  {len(X_train):,} séquences")
+    print(f"    Val   : {X_val.shape}  →  {len(X_val):,} séquences")
+    print(f"    Test  : {X_test.shape}  →  {len(X_test):,} séquences")
+    print(f"\n  Distribution des classes (train) :")
+    for cls in label_encoder.classes_:
+        cls_id = label_encoder.transform([cls])[0]
+        count = np.sum(y_train == cls_id)
+        bar = "█" * max(1, count // 50)
+        print(f"    {cls:<30} : {count:>6,}  {bar}")
+
+    print("\n" + "=" * 70)
+
+    return data
+
+
+def verify_tokenization_for_transformers(
+    X_sample, features, num_classes, seq_length=25
+):
+    """Vérifie que la tokenization fonctionne avec les 2 modèles transformer."""
+    from src.data.tokenizer import IoTTokenizer, SimpleTokenizer, create_tokenizer
+    from src.models.transformer import TransformerClassifier, NLPTransformerClassifier
+    from src.models.cnn_bilstm_transformer import CNNBiLSTMTransformerClassifier
+    from config.config import CNN_BILSTM_TRANSFORMER_CONFIG
+
+    print("\n" + "=" * 70)
+    print("  VÉRIFICATION DE LA TOKENIZATION")
+    print("=" * 70)
+
+    print("\n  [1] Création du tokenizer...")
+    tokenizer = create_tokenizer()
+
+    print("  [2] Entraînement du tokenizer sur un échantillon...")
+    n_sample = min(500, len(X_sample))
+    sample_indices = np.random.choice(len(X_sample), n_sample, replace=False)
+    X_tok_sample = X_sample[sample_indices]
+
+    tokenizer.fit(X_tok_sample, features, verbose=True)
+
+    print("\n  [3] Transformation des séquences en tokens...")
+    X_tokenized = tokenizer.transform(X_sample, features)
+    print(f"      Shape des tokens : {X_tokenized.shape}")
+    print(f"      Type : {X_tokenized.dtype}")
+    print(f"      Token IDs uniques : {len(np.unique(X_tokenized))}")
+
+    input_size = X_sample.shape[-1]
+
+    print("\n  [4] Vérification avec TransformerClassifier...")
+    transformer_model = TransformerClassifier(
+        input_size=input_size,
+        num_classes=num_classes,
+        seq_length=seq_length,
+    )
+
+    x_tensor = torch.FloatTensor(X_sample[:2])
+    try:
+        out = transformer_model(x_tensor)
+        print(
+            f"      ✅ TransformerClassifier : input {x_tensor.shape} → output {out.shape}"
+        )
+        transformer_ok = True
+    except Exception as e:
+        print(f"      ❌ TransformerClassifier échec : {e}")
+        transformer_ok = False
+
+    print("\n  [5] Vérification avec NLPTransformerClassifier...")
+    vocab_size = (
+        tokenizer.tokenizer.get_vocab_size()
+        if hasattr(tokenizer, "tokenizer") and tokenizer.tokenizer
+        else 52000
+    )
+    nlp_transformer = NLPTransformerClassifier(
+        vocab_size=vocab_size,
+        num_classes=num_classes,
+        max_seq_length=X_tokenized.shape[1],
+    )
+
+    x_tok_tensor = torch.LongTensor(X_tokenized[:2])
+    try:
+        out = nlp_transformer(x_tok_tensor)
+        print(
+            f"      ✅ NLPTransformerClassifier : input {x_tok_tensor.shape} → output {out.shape}"
+        )
+        nlp_ok = True
+    except Exception as e:
+        print(f"      ❌ NLPTransformerClassifier échec : {e}")
+        nlp_ok = False
+
+    print("\n  [6] Vérification avec CNNBiLSTMTransformerClassifier...")
+    hybrid_model = CNNBiLSTMTransformerClassifier(
+        input_size=input_size,
+        num_classes=num_classes,
+        seq_length=seq_length,
+        config=CNN_BILSTM_TRANSFORMER_CONFIG,
+    )
+
+    try:
+        out = hybrid_model(x_tensor)
+        print(
+            f"      ✅ CNNBiLSTMTransformerClassifier : input {x_tensor.shape} → output {out.shape}"
+        )
+        hybrid_ok = True
+    except Exception as e:
+        print(f"      ❌ CNNBiLSTMTransformerClassifier échec : {e}")
+        hybrid_ok = False
+
+    print("\n" + "=" * 70)
+    print("  RÉSUMÉ DE LA VÉRIFICATION")
+    print("=" * 70)
+    print(
+        f"    Tokenizer BPE           : {'✅ OK' if tokenizer.tokenizer else '❌ Échec'}"
+    )
+    print(f"    Vocabulaire size        : {vocab_size:,} tokens")
+    print(
+        f"    TransformerClassifier   : {'✅ Compatible (features brutes)' if transformer_ok else '❌ Incompatible'}"
+    )
+    print(
+        f"    NLPTransformerClassifier: {'✅ Compatible (tokens)' if nlp_ok else '❌ Incompatible'}"
+    )
+    print(
+        f"    CNNBiLSTMTransformer    : {'✅ Compatible (features brutes)' if hybrid_ok else '❌ Incompatible'}"
+    )
+    print("=" * 70 + "\n")
+
+    return {
+        "tokenizer": tokenizer,
+        "transformer_ok": transformer_ok,
+        "nlp_transformer_ok": nlp_ok,
+        "hybrid_ok": hybrid_ok,
+        "vocab_size": vocab_size,
+    }
+
+
 def run_local_crash_test():
+    # Charger et afficher les infos du dataset
+    print("\n" + "=" * 80)
+    print("  CHARGEMENT DU DATASET AVANT ÉVALUATION")
+    print("=" * 80)
+    dataset_info = display_dataset_info(
+        DATA_DIR, pipeline_mode="json", max_records=20000
+    )
+
+    # Vérifier la tokenization pour les modèles transformer
+    X_test_raw = dataset_info[2]
+    features_raw = dataset_info[6]
+    label_encoder_raw = dataset_info[8]
+    num_classes_raw = len(label_encoder_raw.classes_)
+
+    tokenization_results = verify_tokenization_for_transformers(
+        X_test_raw, features_raw, num_classes_raw, seq_length=SEQ_LENGTH_TRANSFORMER
+    )
+
     if not MODELS_DIR.exists():
         print(f"Modèles introuvables au chemin : {MODELS_DIR}")
         return
@@ -199,6 +385,13 @@ def run_local_crash_test():
             model_type = res_data["model_type"]
             input_size = res_data["input_size"]
             num_classes = res_data["num_classes"]
+
+        # Pour les modèles transformer et cnn-bilstm-transformer, utiliser seq_length=25
+        if model_type in ["transformer", "cnn_bilstm_transformer", "nlp_transformer"]:
+            seq_length = SEQ_LENGTH_TRANSFORMER
+            print(
+                f"  -> Modèle Transformer détecté. seq_length forcé à {SEQ_LENGTH_TRANSFORMER}"
+            )
 
         phase_files = [
             f
