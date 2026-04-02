@@ -949,6 +949,113 @@ class AdversarialTrainer:
         )
         all_crash_results["phase_1"] = crash_p1
 
+        # ─────────────────────────────────────────────────────────
+        # GÉNÉRATION DES ATTAQUES (Post-Phase 1)
+        # ─────────────────────────────────────────────────────────
+        if (
+            adv_generator is not None
+            and adv_ratio > 0
+            and sequence_attack is not None
+            and X_train is not None
+            and y_train is not None
+        ):
+            print(f"\n{'=' * 70}")
+            print("  GÉNÉRATION DES ÉCHANTILLONS ADVERSAIRES (Post-Phase 1)")
+            print(f"{'=' * 70}\n")
+
+            n_adv = int(len(X_train) * adv_ratio)
+            adv_indices = np.random.choice(len(X_train), n_adv, replace=False)
+
+            # 1) Sensitivity analysis
+            print("  [1/3] Analyse de sensibilité du modèle Phase 1...")
+            sensitivity_results = feature_attack.analyze_sensitivity(
+                self.model,
+                X_train[adv_indices],
+                y_train[adv_indices],
+                self.device,
+                batch_size=batch_size,
+                verbose=False,
+            )
+
+            # Display top vulnerable features
+            sorted_sens = sorted(
+                sensitivity_results, key=lambda r: r["drop"], reverse=True
+            )
+            seen_features = set()
+            top_vulnerable = []
+            for entry in sorted_sens:
+                if entry["feature"] not in seen_features:
+                    seen_features.add(entry["feature"])
+                    top_vulnerable.append(entry)
+                if len(top_vulnerable) >= 5:
+                    break
+
+            print(f"  Top 5 features les plus vulnérables :")
+            for rank, entry in enumerate(top_vulnerable, 1):
+                print(
+                    f"    {rank}. {entry['feature']:<25s} → Stratégie: {entry['strategy']:<15s} "
+                    f"→ Drop: {entry['drop'] * 100:.1f}%"
+                )
+
+            # 2) Generate adversarial batch
+            print(
+                f"\n  [2/3] Génération du batch adversaire (n={n_adv:,} échantillons)..."
+            )
+            print(
+                f"  Méthode : {adv_method} (60% clean + 20% feature-level + 20% sequence-level)"
+            )
+
+            X_adv = sequence_attack.generate_batch(
+                X_train[adv_indices],
+                y_train[adv_indices],
+                sensitivity_results=sensitivity_results,
+                verbose=False,
+            )
+
+            # 3) Evaluate adversarial effectiveness
+            print(f"\n  [3/3] Évaluation de l'efficacité des attaques...")
+
+            # Clean accuracy on the same subset
+            clean_acc = self._evaluate_accuracy(
+                X_train[adv_indices], y_train[adv_indices], batch_size=batch_size
+            )
+            adv_acc = self._evaluate_accuracy(
+                X_adv, y_train[adv_indices], batch_size=batch_size
+            )
+            degradation = clean_acc - adv_acc
+
+            print(f"  Résultats d'attaque :")
+            print(
+                f"    Accuracy sur données bénignes (Phase 1) : {clean_acc * 100:.1f}%"
+            )
+            print(
+                f"    Accuracy sur données adversaires         : {adv_acc * 100:.1f}%"
+            )
+            print(
+                f"    ↓ Dégradation                            : {degradation * 100:.1f}%"
+            )
+
+            if degradation > 0.5:
+                print(
+                    f"\n  ⚠️  Le modèle Phase 1 est VULNÉRABLE aux attaques adversaires."
+                )
+            else:
+                print(f"\n  ✓ Le modèle Phase 1 montre une bonne résistance.")
+
+            # Store for Phase 2
+            X_adv_precomputed = X_adv
+            y_adv_precomputed = y_train[adv_indices].copy()
+            if X_train_raw is not None:
+                X_adv_raw_precomputed = X_train_raw[adv_indices]
+            else:
+                X_adv_raw_precomputed = None
+            sensitivity_results_precomputed = sensitivity_results
+        else:
+            X_adv_precomputed = None
+            y_adv_precomputed = None
+            X_adv_raw_precomputed = None
+            sensitivity_results_precomputed = None
+
         # Early exit si pas d'entraînement adversarial
         if adv_generator is None or adv_ratio <= 0:
             self.history["phase_checkpoints_evaluation"] = all_crash_results
@@ -963,34 +1070,24 @@ class AdversarialTrainer:
         print("PHASE 2: ENTRAÎNEMENT ANTAGONISTE (Corpus Conjoint)")
         print(f"{'=' * 60}\n")
 
-        # Générer des échantillons adversaires et créer le corpus conjoint
+        # Créer le corpus conjoint avec les attaques pré-générées
         print("  Création du corpus conjoint (bénignes + adversaires)...")
 
         adv_train_loader = train_loader
         X_joint_raw = X_train_raw
-        if X_train is not None and y_train is not None and sequence_attack is not None:
-            n_adv = int(len(X_train) * adv_ratio)
+        if (
+            X_train is not None
+            and y_train is not None
+            and X_adv_precomputed is not None
+        ):
+            n_adv = len(X_adv_precomputed)
             if n_adv > 0:
-                adv_indices = np.random.choice(len(X_train), n_adv, replace=False)
-                sensitivity_results = feature_attack.analyze_sensitivity(
-                    self.model,
-                    X_train[adv_indices],
-                    y_train[adv_indices],
-                    self.device,
-                    batch_size=batch_size,
-                    verbose=False,
-                )
-                X_adv = sequence_attack.generate_batch(
-                    X_train[adv_indices],
-                    y_train[adv_indices],
-                    sensitivity_results=sensitivity_results,
-                    verbose=False,
-                )
-                X_joint = np.concatenate([X_train, X_adv], axis=0)
-                y_joint = np.concatenate([y_train, y_train[adv_indices]], axis=0)
-                if X_train_raw is not None:
-                    X_adv_raw = X_train_raw[adv_indices]
-                    X_joint_raw = np.concatenate([X_train_raw, X_adv_raw], axis=0)
+                X_joint = np.concatenate([X_train, X_adv_precomputed], axis=0)
+                y_joint = np.concatenate([y_train, y_adv_precomputed], axis=0)
+                if X_train_raw is not None and X_adv_raw_precomputed is not None:
+                    X_joint_raw = np.concatenate(
+                        [X_train_raw, X_adv_raw_precomputed], axis=0
+                    )
                 joint_dataset = IoTSequenceDataset(X_joint, y_joint)
                 adv_train_loader = DataLoader(
                     joint_dataset, batch_size=batch_size, shuffle=True
@@ -1099,6 +1196,26 @@ class AdversarialTrainer:
             self._save_phase_report(all_crash_results, save_path)
 
         return self.history
+
+    def _evaluate_accuracy(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        batch_size: int = 64,
+    ) -> float:
+        """Evaluate accuracy on raw numpy arrays (no DataLoader needed)."""
+        self.model.eval()
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for i in range(0, len(X), batch_size):
+                X_batch = torch.FloatTensor(X[i : i + batch_size]).to(self.device)
+                y_batch = torch.LongTensor(y[i : i + batch_size]).to(self.device)
+                outputs = self.model(X_batch)
+                _, predicted = outputs.max(1)
+                total += y_batch.size(0)
+                correct += predicted.eq(y_batch).sum().item()
+        return correct / total if total > 0 else 0.0
 
     def _crash_test_2phase(
         self,
