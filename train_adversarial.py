@@ -355,19 +355,9 @@ class AdversarialTrainer:
 
         if self.verbose:
             epoch_start = time.time()
-            last_print_time = 0
+            print(f"    Training: ", end="", flush=True)
 
-        for batch_idx, (X_batch, y_batch) in enumerate(
-            tqdm(
-                train_loader,
-                desc="    Training",
-                leave=True,
-                ncols=100,
-                disable=self.verbose,
-                file=sys.stdout,
-                mininterval=1.0,
-            )
-        ):
+        for batch_idx, (X_batch, y_batch) in enumerate(train_loader):
             X_batch = X_batch.to(self.device)
             y_batch = y_batch.to(self.device)
 
@@ -487,32 +477,26 @@ class AdversarialTrainer:
                 correct += predicted.eq(y_batch).sum().item()
                 total_loss += loss.item()
 
-            if self.verbose:
-                current_time = time.time()
-                if (
-                    batch_idx == 0
-                    or current_time - last_print_time >= 5.0
-                    or batch_idx == n_batches - 1
-                ):
-                    elapsed = current_time - epoch_start
-                    batches_per_sec = (batch_idx + 1) / elapsed if elapsed > 0 else 0
-                    eta = (
-                        (n_batches - batch_idx - 1) / batches_per_sec
-                        if batches_per_sec > 0
-                        else 0
-                    )
-                    print(
-                        f"\r    [{batch_idx + 1}/{n_batches}] "
-                        f"{batches_per_sec:.1f} batch/s | ETA: {eta:.0f}s | "
-                        f"loss={total_loss / (batch_idx + 1):.4f} acc={correct / total:.4f}",
-                        end="",
-                        flush=True,
-                    )
-                    last_print_time = current_time
+            if self.verbose and (batch_idx + 1) % max(1, n_batches // 10) == 0:
+                elapsed = time.time() - epoch_start
+                batches_per_sec = (batch_idx + 1) / elapsed if elapsed > 0 else 0
+                eta = (
+                    (n_batches - batch_idx - 1) / batches_per_sec
+                    if batches_per_sec > 0
+                    else 0
+                )
+                pct = (batch_idx + 1) * 100 // n_batches
+                print(
+                    f"\r    Training: {pct}% | {batch_idx + 1}/{n_batches} | {batches_per_sec:.0f} b/s | ETA:{eta:.0f}s",
+                    end="",
+                    flush=True,
+                )
 
         if self.verbose:
             epoch_time = time.time() - epoch_start
-            print(f"\n    ✓ Epoch done in {epoch_time:.1f}s ({n_batches} batches)")
+            print(
+                f"\r    ✓ Done: {n_batches} batches in {epoch_time:.0f}s ({n_batches / epoch_time:.0f} b/s)"
+            )
 
         return total_loss / len(train_loader), correct / total
 
