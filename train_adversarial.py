@@ -1773,9 +1773,9 @@ def create_model(
             input_size, num_classes, seq_length, TRANSFORMER_CONFIG
         )
     elif model_type == "bilstm":
-        from config.config import LSTM_CONFIG
+        from config.config import LSTM_CONFIG as _LSTM_CFG
 
-        _bilstm_cfg = dict(LSTM_CONFIG)
+        _bilstm_cfg = dict(_LSTM_CFG)
         _bilstm_cfg["bidirectional"] = True  # always bidirectional
         model = LSTMClassifier(input_size, num_classes, _bilstm_cfg)
     elif model_type == "cnn_lstm":
@@ -1853,19 +1853,28 @@ def run_experiment_with_phase_checkpoints(
     preprocessed_path = None
     load_from_cache = False
 
-    if preprocessed_dir:
+    # Auto-detect default cache location if no explicit preprocessed_dir
+    if preprocessed_dir is None:
+        preprocessed_path = RESULTS_DIR / "preprocessed" / pipeline
+        preprocessed_path.mkdir(parents=True, exist_ok=True)
+    else:
         preprocessed_path = Path(preprocessed_dir)
         preprocessed_path.mkdir(parents=True, exist_ok=True)
-        cache_marker = preprocessed_path / f"{pipeline}_ready"
-        if cache_marker.exists():
-            load_from_cache = True
-            print(
-                f"\n  📂 Loading preprocessed {pipeline.upper()} data from: {preprocessed_path}"
-            )
-        else:
-            print(
-                f"\n  🔄 Preprocessed data not found — will preprocess and save to: {preprocessed_path}"
-            )
+
+    # Check for cache: marker file OR existing .npy/.pkl files
+    cache_marker = preprocessed_path / f"{pipeline}_ready"
+    npy_marker = preprocessed_path / "X_train.npy"
+    pkl_marker = preprocessed_path / f"{pipeline}_data.pkl"
+
+    if cache_marker.exists() or npy_marker.exists() or pkl_marker.exists():
+        load_from_cache = True
+        print(
+            f"\n  📂 Loading preprocessed {pipeline.upper()} data from: {preprocessed_path}"
+        )
+    else:
+        print(
+            f"\n  🔄 Preprocessed data not found — will preprocess and save to: {preprocessed_path}"
+        )
 
     if load_from_cache:
         import pickle
