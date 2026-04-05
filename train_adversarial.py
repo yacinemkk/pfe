@@ -916,7 +916,7 @@ class AdversarialTrainer:
         patience_counter = 0
 
         for epoch in range(phase1_epochs):
-            print(f"  ▶ Starting P1 Epoch {epoch + 1}/{phase1_epochs}...")
+            print(f"  ▶ Starting P1 Epoch {epoch + 1}/{phase1_epochs}...", flush=True)
             train_loss, train_acc = self.train_epoch(
                 train_loader,
                 optimizer,
@@ -927,7 +927,10 @@ class AdversarialTrainer:
                 None,
                 X_raw_batch=X_train_raw,
             )
-            print(f"  ✓ P1 Epoch {epoch + 1} train done, running validation...")
+            print(
+                f"  ✓ P1 Epoch {epoch + 1} train done, running validation...",
+                flush=True,
+            )
             val_loss, val_acc = self.evaluate(val_loader, criterion)
             scheduler.step(val_loss)
 
@@ -1136,7 +1139,7 @@ class AdversarialTrainer:
         patience_counter = 0
 
         for epoch in range(phase2_epochs):
-            print(f"  ▶ Starting P2 Epoch {epoch + 1}/{phase2_epochs}...")
+            print(f"  ▶ Starting P2 Epoch {epoch + 1}/{phase2_epochs}...", flush=True)
             train_loss, train_acc = self.train_epoch(
                 adv_train_loader,
                 optimizer,
@@ -1147,7 +1150,10 @@ class AdversarialTrainer:
                 None,
                 X_raw_batch=X_joint_raw,
             )
-            print(f"  ✓ P2 Epoch {epoch + 1} train done, running validation...")
+            print(
+                f"  ✓ P2 Epoch {epoch + 1} train done, running validation...",
+                flush=True,
+            )
             val_loss, val_acc = self.evaluate(val_loader, criterion)
             scheduler.step(val_loss)
 
