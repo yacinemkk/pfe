@@ -579,8 +579,14 @@ class AdversarialEvaluator:
     ) -> Dict[str, float]:
         self.model.eval()
         correct, total = 0, 0
+        n_batches = (len(X) + batch_size - 1) // batch_size
         with torch.no_grad():
-            for i in range(0, len(X), batch_size):
+            for i in tqdm(
+                range(0, len(X), batch_size),
+                total=n_batches,
+                desc="Evaluating clean",
+                leave=False,
+            ):
                 X_batch = torch.FloatTensor(X[i : i + batch_size]).to(self.device)
                 y_batch = torch.LongTensor(y[i : i + batch_size]).to(self.device)
                 outputs = self.model(X_batch)

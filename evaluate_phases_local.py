@@ -9,6 +9,7 @@ import pickle
 import json
 import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from tqdm import tqdm
 
 # Ajouter le repo à sys.path
 PROJECT_ROOT = Path("/home/pc/Desktop/pfe")
@@ -110,7 +111,7 @@ def evaluate_model(model, dataloader):
     all_preds = []
     all_labels = []
     with torch.no_grad():
-        for X_batch, y_batch in dataloader:
+        for X_batch, y_batch in tqdm(dataloader, desc="Evaluating", leave=False):
             X_batch, y_batch = X_batch.to(device), y_batch.to(device)
             outputs = model(X_batch)
             _, preds = torch.max(outputs, 1)

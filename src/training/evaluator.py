@@ -25,6 +25,7 @@ from pathlib import Path
 import json
 import matplotlib.pyplot as plt
 import seaborn as sns
+from tqdm import tqdm
 
 
 class Evaluator:
@@ -56,7 +57,7 @@ class Evaluator:
         predictions, labels = [], []
 
         with torch.no_grad():
-            for X_batch, y_batch in dataloader:
+            for X_batch, y_batch in tqdm(dataloader, desc="Predicting", leave=False):
                 X_batch = X_batch.to(self.device)
                 outputs = self.model(X_batch)
                 _, predicted = outputs.max(1)

@@ -485,7 +485,7 @@ class AdversarialTrainer:
         total_loss, correct, total = 0, 0, 0
 
         with torch.no_grad():
-            for X_batch, y_batch in dataloader:
+            for X_batch, y_batch in tqdm(dataloader, desc="Evaluating", leave=False):
                 X_batch = X_batch.to(self.device)
                 y_batch = y_batch.to(self.device)
 
@@ -525,7 +525,9 @@ class AdversarialTrainer:
         all_preds, all_labels = [], []
 
         with torch.no_grad():
-            for X_batch, y_batch in dataloader:
+            for X_batch, y_batch in tqdm(
+                dataloader, desc="Per-class metrics", leave=False
+            ):
                 X_batch = X_batch.to(self.device)
                 outputs = self.model(X_batch)
                 _, predicted = outputs.max(1)
@@ -582,7 +584,9 @@ class AdversarialTrainer:
         all_preds, all_labels = [], []
 
         with torch.no_grad():
-            for X_batch, y_batch in dataloader:
+            for X_batch, y_batch in tqdm(
+                dataloader, desc="Detailed metrics", leave=False
+            ):
                 X_batch = X_batch.to(self.device)
                 y_batch = y_batch.to(self.device)
 
@@ -867,7 +871,9 @@ class AdversarialTrainer:
             from sklearn.utils.class_weight import compute_class_weight
 
             y_all = []
-            for _, yb in train_loader:
+            for _, yb in tqdm(
+                train_loader, desc="Computing class weights", leave=False
+            ):
                 y_all.extend(yb.numpy())
             y_all = np.array(y_all)
             classes = np.array(sorted(set(y_all)))
@@ -1387,7 +1393,7 @@ class AdversarialTrainer:
         predictions, labels = [], []
 
         with torch.no_grad():
-            for X_batch, y_batch in dataloader:
+            for X_batch, y_batch in tqdm(dataloader, desc="Predicting", leave=False):
                 X_batch = X_batch.to(self.device)
                 outputs = self.model(X_batch)
                 _, predicted = outputs.max(1)
