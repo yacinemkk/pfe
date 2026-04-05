@@ -1826,6 +1826,7 @@ def run_experiment_with_phase_checkpoints(
     eval_batch_size: Optional[int] = None,
     no_balancing: bool = False,
     use_class_weights: bool = False,
+    preprocessed_dir: Optional[str] = None,
 ) -> Dict:
     """Run experiment avec sauvegarde et evaluation des checkpoints de phase.
 
@@ -1833,6 +1834,8 @@ def run_experiment_with_phase_checkpoints(
         eval_batch_size: Batch size for evaluation (defaults to batch_size//2 for RAM savings)
         no_balancing: If True, disables Borderline-SMOTE + outlier filtering.
         use_class_weights: If True, uses class_weight='balanced' in CrossEntropyLoss.
+        preprocessed_dir: If set, try to load preprocessed data from here. If data doesn't
+                         exist, run preprocessing and save there for future runs.
     """
     device = get_device()
     print(f"\n{'=' * 60}")
@@ -1845,26 +1848,121 @@ def run_experiment_with_phase_checkpoints(
     if eval_batch_size is None:
         eval_batch_size = max(16, batch_size // 2)
 
-    (
-        X_train,
-        X_val,
-        X_test,
-        y_train,
-        y_val,
-        y_test,
-        features,
-        scaler,
-        label_encoder,
-        n_continuous_features,
-    ) = load_and_preprocess_data(
-        seq_length,
-        stride=max(1, seq_length // 2),
-        max_files=max_files,
-        data_dir=data_dir,
-        dataset=dataset,
-        max_records=max_records,
-        no_balancing=no_balancing,
-    )
+    # ─── Preprocessed data loading/saving ─────────────────────────────────
+    pipeline = dataset if dataset else PIPELINE_MODE
+    preprocessed_path = None
+    load_from_cache = False
+
+    if preprocessed_dir:
+        preprocessed_path = Path(preprocessed_dir)
+        preprocessed_path.mkdir(parents=True, exist_ok=True)
+        cache_marker = preprocessed_path / f"{pipeline}_ready"
+        if cache_marker.exists():
+            load_from_cache = True
+            print(
+                f"\n  📂 Loading preprocessed {pipeline.upper()} data from: {preprocessed_path}"
+            )
+        else:
+            print(
+                f"\n  🔄 Preprocessed data not found — will preprocess and save to: {preprocessed_path}"
+            )
+
+    if load_from_cache:
+        import pickle
+
+        # Try individual .npy files first (Drive notebook format), then fallback to single .pkl
+        npy_marker = preprocessed_path / "X_train.npy"
+        if npy_marker.exists():
+            print(f"  📂 Loading .npy format from Drive...")
+            X_train = np.load(preprocessed_path / "X_train.npy", allow_pickle=True)
+            X_val = np.load(preprocessed_path / "X_val.npy", allow_pickle=True)
+            X_test = np.load(preprocessed_path / "X_test.npy", allow_pickle=True)
+            y_train = np.load(preprocessed_path / "y_train.npy", allow_pickle=True)
+            y_val = np.load(preprocessed_path / "y_val.npy", allow_pickle=True)
+            y_test = np.load(preprocessed_path / "y_test.npy", allow_pickle=True)
+
+            # Determine metadata filename
+            meta_csv = preprocessed_path / "csv_metadata.pkl"
+            meta_json = preprocessed_path / "json_metadata.pkl"
+            if meta_csv.exists():
+                meta_file = meta_csv
+            elif meta_json.exists():
+                meta_file = meta_json
+            else:
+                raise FileNotFoundError(
+                    f"No metadata file found in {preprocessed_path}"
+                )
+            with open(meta_file, "rb") as f:
+                meta = pickle.load(f)
+            features = meta["features"]
+            scaler = meta["scaler"]
+            label_encoder = meta["label_encoder"]
+            n_continuous_features = meta.get("n_continuous", len(features))
+            print(
+                f"  ✅ Loaded from Drive cache: Train={len(X_train):,}, Val={len(X_val):,}, Test={len(X_test):,}"
+            )
+        else:
+            with open(preprocessed_path / f"{pipeline}_data.pkl", "rb") as f:
+                cache = pickle.load(f)
+            X_train = cache["X_train"]
+            X_val = cache["X_val"]
+            X_test = cache["X_test"]
+            y_train = cache["y_train"]
+            y_val = cache["y_val"]
+            y_test = cache["y_test"]
+            features = cache["features"]
+            scaler = cache["scaler"]
+            label_encoder = cache["label_encoder"]
+            n_continuous_features = cache["n_continuous_features"]
+            print(
+                f"  ✅ Loaded from cache: Train={len(X_train):,}, Val={len(X_val):,}, Test={len(X_test):,}"
+            )
+    else:
+        (
+            X_train,
+            X_val,
+            X_test,
+            y_train,
+            y_val,
+            y_test,
+            features,
+            scaler,
+            label_encoder,
+            n_continuous_features,
+        ) = load_and_preprocess_data(
+            seq_length,
+            stride=max(1, seq_length // 2),
+            max_files=max_files,
+            data_dir=data_dir,
+            dataset=dataset,
+            max_records=max_records,
+            no_balancing=no_balancing,
+        )
+
+        # Save preprocessed data to Drive for future runs
+        if preprocessed_path and not load_from_cache:
+            import pickle
+
+            print(
+                f"\n  💾 Saving preprocessed {pipeline.upper()} data to: {preprocessed_path}"
+            )
+            cache = {
+                "X_train": X_train,
+                "X_val": X_val,
+                "X_test": X_test,
+                "y_train": y_train,
+                "y_val": y_val,
+                "y_test": y_test,
+                "features": features,
+                "scaler": scaler,
+                "label_encoder": label_encoder,
+                "n_continuous_features": n_continuous_features,
+            }
+            with open(preprocessed_path / f"{pipeline}_data.pkl", "wb") as f:
+                pickle.dump(cache, f)
+            # Create marker file
+            (preprocessed_path / f"{pipeline}_ready").touch()
+            print(f"  ✅ Preprocessed data saved to Drive")
 
     input_size = X_train.shape[2]
     num_classes = len(label_encoder.classes_)
@@ -2679,6 +2777,12 @@ def main():
         action="store_true",
         help="Use class_weight='balanced' in CrossEntropyLoss (compensates for no SMOTE)",
     )
+    parser.add_argument(
+        "--preprocessed_dir",
+        type=str,
+        default=None,
+        help="Path to preprocessed data directory (skip preprocessing if data exists)",
+    )
 
     args = parser.parse_args()
 
@@ -2738,6 +2842,7 @@ def main():
             max_records=getattr(args, "max_records", None),
             no_balancing=args.no_balancing,
             use_class_weights=args.use_class_weights,
+            preprocessed_dir=args.preprocessed_dir,
         )
     else:
         run_experiment(

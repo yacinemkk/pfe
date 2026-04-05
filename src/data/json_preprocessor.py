@@ -37,7 +37,6 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, LabelEncoder
-from sklearn.model_selection import train_test_split
 from sklearn.feature_selection import chi2, mutual_info_classif
 from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
@@ -759,9 +758,14 @@ class JsonIoTDataProcessor:
             count = int(np.sum(y_encoded == i))
             print(f"    {i}: {cls} ({count:,} samples)")
 
-        # ─── Split temporel ANTI-LEAKAGE ─────────────────────────────────────
-        print("\n[PRE-SPLIT] Application du split temporel 80/20 par appareil...")
+        # ─── Split temporel ANTI-LEAKAGE (train/val/test) ─────────────────────
+        val_ratio = VAL_SIZE  # e.g. 0.1
+        train_ratio = 1.0 - TEST_SIZE - val_ratio  # e.g. 0.7
+        print(
+            f"\n[PRE-SPLIT] Application du split temporel {int(train_ratio * 100)}/{int(val_ratio * 100)}/{int(TEST_SIZE * 100)} par appareil..."
+        )
         train_mask = np.zeros(len(y_str), dtype=bool)
+        val_mask = np.zeros(len(y_str), dtype=bool)
 
         for device in np.unique(y_str):
             dev_indices = np.where(y_str == device)[0]
@@ -769,10 +773,12 @@ class JsonIoTDataProcessor:
                 sort_order = np.argsort(flow_start[dev_indices])
                 dev_indices = dev_indices[sort_order]
             n = len(dev_indices)
-            split_idx = max(1, int(n * 0.8))
-            train_mask[dev_indices[:split_idx]] = True
+            split_idx_train = max(1, int(n * train_ratio))
+            split_idx_val = max(split_idx_train + 1, int(n * (train_ratio + val_ratio)))
+            train_mask[dev_indices[:split_idx_train]] = True
+            val_mask[dev_indices[split_idx_train:split_idx_val]] = True
 
-        test_mask = ~train_mask
+        test_mask = ~train_mask & ~val_mask
 
         X_cont_train = X_continuous[train_mask].copy()
         X_cat_train = X_categorical[train_mask].copy()
@@ -780,13 +786,21 @@ class JsonIoTDataProcessor:
         y_enc_train = y_encoded[train_mask].copy()
         y_str_train = y_str[train_mask].copy()
 
+        X_cont_val = X_continuous[val_mask].copy()
+        X_cat_val = X_categorical[val_mask].copy()
+        X_bin_val = X_binary[val_mask].copy()
+        y_enc_val = y_encoded[val_mask].copy()
+        y_str_val = y_str[val_mask].copy()
+
         X_cont_test = X_continuous[test_mask].copy()
         X_cat_test = X_categorical[test_mask].copy()
         X_bin_test = X_binary[test_mask].copy()
         y_enc_test = y_encoded[test_mask].copy()
         y_str_test = y_str[test_mask].copy()
 
-        print(f"  Train rows: {len(y_enc_train):,} | Test rows: {len(y_enc_test):,}")
+        print(
+            f"  Train rows: {len(y_enc_train):,} | Val rows: {len(y_enc_val):,} | Test rows: {len(y_enc_test):,}"
+        )
 
         del (
             X_continuous,
@@ -796,6 +810,7 @@ class JsonIoTDataProcessor:
             y_str,
             flow_start,
             train_mask,
+            val_mask,
             test_mask,
         )
         gc.collect()
@@ -803,6 +818,7 @@ class JsonIoTDataProcessor:
         # Combiner features pour les etapes 2 et 3
         # Continuous + binary for SMOTE/outlier/feature selection
         X_train_combined = np.concatenate([X_cont_train, X_bin_train], axis=1)
+        X_val_combined = np.concatenate([X_cont_val, X_bin_val], axis=1)
         X_test_combined = np.concatenate([X_cont_test, X_bin_test], axis=1)
         all_feature_names = self.continuous_feature_names + self.binary_feature_names
 
@@ -827,6 +843,7 @@ class JsonIoTDataProcessor:
                 top_k=top_k_features,
             )
             X_train_selected = X_train_balanced[:, selected_indices]
+            X_val_selected = X_val_combined[:, selected_indices]
             X_test_selected = X_test_combined[:, selected_indices]
             self.feature_names = selected_features
 
@@ -840,9 +857,10 @@ class JsonIoTDataProcessor:
         else:
             print("\n[ETAPE 3] Selection desactivee.")
             X_train_selected = X_train_balanced
+            X_val_selected = X_val_combined
             X_test_selected = X_test_combined
 
-        del X_train_combined, X_test_combined, X_train_balanced
+        del X_train_combined, X_val_combined, X_test_combined, X_train_balanced
         gc.collect()
 
         # ─── Etape 4: Normalisation (Min-Max ONLY per docs/pretraitement) ─────
@@ -856,14 +874,17 @@ class JsonIoTDataProcessor:
         X_train_cont_scaled = self.minmax_scaler.fit_transform(X_train_selected).astype(
             np.float32
         )
+        X_val_cont_scaled = self.minmax_scaler.transform(X_val_selected).astype(
+            np.float32
+        )
         X_test_cont_scaled = self.minmax_scaler.transform(X_test_selected).astype(
             np.float32
         )
 
-        del X_train_selected, X_test_selected
+        del X_train_selected, X_val_selected, X_test_selected
         gc.collect()
 
-        # ─── Creation des sequences ──────────────────────────────────────────
+        # ─── Creation des sequences (SEPARATEMENT pour train, val, test) ──────
         print(f"\n[SEQUENCES] Creation (length={seq_length}, stride={stride})...")
 
         X_train_seq, y_train_seq = self.create_sequences_with_categorical(
@@ -872,6 +893,15 @@ class JsonIoTDataProcessor:
             X_bin_train,
             y_train_balanced,
             y_str_train if not apply_balancing else None,
+            seq_length,
+            stride,
+        )
+        X_val_seq, y_val_seq = self.create_sequences_with_categorical(
+            X_val_cont_scaled,
+            X_cat_val,
+            X_bin_val,
+            y_enc_val,
+            y_str_val,
             seq_length,
             stride,
         )
@@ -886,33 +916,23 @@ class JsonIoTDataProcessor:
         )
 
         print(f"  Train sequences: {len(X_train_seq):,}")
+        print(f"  Val   sequences: {len(X_val_seq):,}")
         print(f"  Test  sequences: {len(X_test_seq):,}")
         if len(X_train_seq) > 0:
             print(f"  Sequence shape:  {X_train_seq.shape}")
 
         del (
             X_train_cont_scaled,
+            X_val_cont_scaled,
             X_test_cont_scaled,
             X_cat_train,
+            X_cat_val,
             X_cat_test,
             X_bin_train,
+            X_bin_val,
             X_bin_test,
         )
         gc.collect()
-
-        # ─── Validation split ────────────────────────────────────────────────
-        print("\n[VALIDATION] Split stratifie 10%...")
-        val_ratio = VAL_SIZE / (1 - TEST_SIZE)
-        X_train_seq, X_val_seq, y_train_seq, y_val_seq = train_test_split(
-            X_train_seq,
-            y_train_seq,
-            test_size=val_ratio,
-            random_state=RANDOM_STATE,
-            stratify=y_train_seq,
-        )
-        print(
-            f"  Train: {len(X_train_seq):,} | Val: {len(X_val_seq):,} | Test: {len(X_test_seq):,}"
-        )
 
         # ─── Sauvegarde ─────────────────────────────────────────────────────
         if save_path:

@@ -335,16 +335,14 @@ class IoTDataProcessor:
 
     # ─── Step 3: Per-device temporal 80/20 split ─────────────────────────────
 
-    def temporal_split_per_device(self, df, train_ratio=0.8):
+    def temporal_split_per_device(self, df, train_ratio=0.8, val_ratio=0.0):
         """
-        Group → sort by timestamp → split 80/20 per device.
+        Group → sort by timestamp → split train/val/test per device.
 
-        Returns two DataFrames (train, test) with no future-data leakage.
+        Returns (df_train, df_val, df_test). If val_ratio=0, df_val is None.
         'start' column is used for sorting; falls back to row order if absent.
         """
-        train_parts = []
-        test_parts = []
-
+        train_parts, val_parts, test_parts = [], [], []
         timestamp_col = "start" if "start" in df.columns else None
 
         for device, group in df.groupby(LABEL_COLUMN, sort=False):
@@ -352,16 +350,31 @@ class IoTDataProcessor:
                 group = group.sort_values(timestamp_col)
 
             n = len(group)
-            split_idx = max(1, int(n * train_ratio))
+            split_idx_train = max(1, int(n * train_ratio))
+            train_parts.append(group.iloc[:split_idx_train])
 
-            train_parts.append(group.iloc[:split_idx])
-            test_parts.append(group.iloc[split_idx:])
+            if val_ratio > 0:
+                split_idx_val = max(
+                    split_idx_train + 1, int(n * (train_ratio + val_ratio))
+                )
+                val_parts.append(group.iloc[split_idx_train:split_idx_val])
+                test_parts.append(group.iloc[split_idx_val:])
+            else:
+                test_parts.append(group.iloc[split_idx_train:])
 
         df_train = pd.concat(train_parts, ignore_index=True)
+        df_val = pd.concat(val_parts, ignore_index=True) if val_parts else None
         df_test = pd.concat(test_parts, ignore_index=True)
 
-        print(f"  Temporal split → Train: {len(df_train):,} | Test: {len(df_test):,}")
-        return df_train, df_test
+        if df_val is not None:
+            print(
+                f"  Temporal split → Train: {len(df_train):,} | Val: {len(df_val):,} | Test: {len(df_test):,}"
+            )
+        else:
+            print(
+                f"  Temporal split → Train: {len(df_train):,} | Test: {len(df_test):,}"
+            )
+        return df_train, df_val, df_test
 
     # ─── Step 4: Feature extraction ─────────────────────────────────────────
 
@@ -497,14 +510,21 @@ class IoTDataProcessor:
         print("  1.2 Filtrage SDN (suppression IP/MAC/ports)...")
         df = self.sdn_filter(df)
 
-        # ─── Split temporel ANTI-LEAKAGE ──────────────────────────────────────
-        print("\n[PRE-SPLIT] Application du split temporel 80/20 par appareil...")
-        df_train_raw, df_test_raw = self.temporal_split_per_device(df)
+        # ─── Split temporel ANTI-LEAKAGE (train/val/test) ─────────────────────
+        val_ratio_for_split = VAL_SIZE  # e.g. 0.1
+        print("\n[PRE-SPLIT] Application du split temporel 72/18/10 par appareil...")
+        df_train_raw, df_val_raw, df_test_raw = self.temporal_split_per_device(
+            df,
+            train_ratio=1.0 - TEST_SIZE - val_ratio_for_split,
+            val_ratio=val_ratio_for_split,
+        )
         del df
 
         # Drop 'start' now that temporal split is done (not needed as a feature)
         if "start" in df_train_raw.columns:
             df_train_raw = df_train_raw.drop(columns=["start"])
+        if df_val_raw is not None and "start" in df_val_raw.columns:
+            df_val_raw = df_val_raw.drop(columns=["start"])
         if "start" in df_test_raw.columns:
             df_test_raw = df_test_raw.drop(columns=["start"])
 
@@ -513,13 +533,23 @@ class IoTDataProcessor:
         X_train_cont_raw, X_train_cat_raw, y_train_str = self.select_features(
             df_train_raw
         )
+        X_val_cont_raw, X_val_cat_raw, y_val_str = (
+            self.select_features(df_val_raw)
+            if df_val_raw is not None
+            else (None, None, None)
+        )
         X_test_cont_raw, X_test_cat_raw, y_test_str = self.select_features(df_test_raw)
         del df_train_raw, df_test_raw
+        if df_val_raw is not None:
+            del df_val_raw
 
         # ─── Encodage des labels ─────────────────────────────────────────────
         print("\n  Encodage des labels...")
         self.label_encoder.fit(y_train_str)
         y_train_enc = self.label_encoder.transform(y_train_str)
+        y_val_enc = (
+            self.label_encoder.transform(y_val_str) if y_val_str is not None else None
+        )
         y_test_enc = np.array(
             [
                 self.label_encoder.transform([lbl])[0]
@@ -552,12 +582,18 @@ class IoTDataProcessor:
                 top_k=top_k_features,
             )
             X_train_cont_selected = X_train_cont_balanced[:, selected_indices]
+            X_val_cont_selected = (
+                X_val_cont_raw[:, selected_indices]
+                if X_val_cont_raw is not None
+                else None
+            )
             X_test_cont_selected = X_test_cont_raw[:, selected_indices]
             self.continuous_feature_names = selected_features
             self.feature_names = selected_features + self.categorical_feature_names
         else:
             print("\n[ETAPE 3] Selection desactivee.")
             X_train_cont_selected = X_train_cont_balanced
+            X_val_cont_selected = X_val_cont_raw
             X_test_cont_selected = X_test_cont_raw
 
         # ─── Etape 4: Normalisation (Min-Max uniquement) ───────────────────────
@@ -571,45 +607,50 @@ class IoTDataProcessor:
         X_train_cont_scaled = self.minmax_scaler.fit_transform(
             X_train_cont_selected
         ).astype(np.float32)
+        X_val_cont_scaled = (
+            self.minmax_scaler.transform(X_val_cont_selected).astype(np.float32)
+            if X_val_cont_selected is not None
+            else None
+        )
         X_test_cont_scaled = self.minmax_scaler.transform(X_test_cont_selected).astype(
             np.float32
         )
 
         del (
             X_train_cont_raw,
+            X_val_cont_raw,
             X_test_cont_raw,
             X_train_cont_balanced,
             X_train_cont_selected,
+            X_val_cont_selected,
             X_test_cont_selected,
         )
 
-        # ─── Creation des sequences ──────────────────────────────────────────
+        # ─── Creation des sequences (SEPARATEMENT pour train, val, test) ──────
         print(f"\n[SEQUENCES] Creation (length={seq_length}, stride={stride})...")
         X_train_seq, y_train_seq = self.create_sequences_with_categorical(
             X_train_cont_scaled, X_train_cat_raw, y_train_balanced, seq_length, stride
         )
+        X_val_seq, y_val_seq = (
+            self.create_sequences_with_categorical(
+                X_val_cont_scaled, X_val_cat_raw, y_val_enc, seq_length, stride
+            )
+            if X_val_cont_scaled is not None
+            else (np.array([]), np.array([]))
+        )
         X_test_seq, y_test_seq = self.create_sequences_with_categorical(
             X_test_cont_scaled, X_test_cat_raw, y_test_enc, seq_length, stride
         )
-        del X_train_cont_scaled, X_test_cont_scaled, X_train_cat_raw, X_test_cat_raw
-        print(
-            f"  Train sequences: {len(X_train_seq):,} | Test sequences: {len(X_test_seq):,}"
-        )
-
-        # ─── Validation split ────────────────────────────────────────────────
-        print("\n[VALIDATION] Split stratifie 10%...")
-        from sklearn.model_selection import train_test_split
-
-        val_ratio = VAL_SIZE / (1 - TEST_SIZE)
-        X_train_seq, X_val_seq, y_train_seq, y_val_seq = train_test_split(
-            X_train_seq,
-            y_train_seq,
-            test_size=val_ratio,
-            random_state=RANDOM_STATE,
-            stratify=y_train_seq,
+        del (
+            X_train_cont_scaled,
+            X_val_cont_scaled,
+            X_test_cont_scaled,
+            X_train_cat_raw,
+            X_val_cat_raw,
+            X_test_cat_raw,
         )
         print(
-            f"  Train: {len(X_train_seq):,} | Val: {len(X_val_seq):,} | Test: {len(X_test_seq):,}"
+            f"  Train sequences: {len(X_train_seq):,} | Val sequences: {len(X_val_seq):,} | Test sequences: {len(X_test_seq):,}"
         )
 
         # ─── Sauvegarde ─────────────────────────────────────────────────────
