@@ -366,6 +366,8 @@ class AdversarialTrainer:
                 leave=True,
                 ncols=100,
                 disable=self.verbose,
+                file=sys.stdout,
+                mininterval=1.0,
             )
         ):
             batch_start = time.time() if self.verbose else 0
@@ -544,7 +546,12 @@ class AdversarialTrainer:
 
         with torch.no_grad():
             for X_batch, y_batch in tqdm(
-                dataloader, desc="    Validation", leave=True, ncols=100
+                dataloader,
+                desc="    Validation",
+                leave=True,
+                ncols=100,
+                file=sys.stdout,
+                mininterval=1.0,
             ):
                 X_batch = X_batch.to(self.device)
                 y_batch = y_batch.to(self.device)
@@ -586,7 +593,7 @@ class AdversarialTrainer:
 
         with torch.no_grad():
             for X_batch, y_batch in tqdm(
-                dataloader, desc="Per-class metrics", leave=False
+                dataloader, desc="Per-class metrics", leave=False, file=sys.stdout
             ):
                 X_batch = X_batch.to(self.device)
                 outputs = self.model(X_batch)
@@ -645,7 +652,7 @@ class AdversarialTrainer:
 
         with torch.no_grad():
             for X_batch, y_batch in tqdm(
-                dataloader, desc="Detailed metrics", leave=False
+                dataloader, desc="Detailed metrics", leave=False, file=sys.stdout
             ):
                 X_batch = X_batch.to(self.device)
                 y_batch = y_batch.to(self.device)
@@ -938,6 +945,7 @@ class AdversarialTrainer:
                 desc="Computing class weights",
                 leave=False,
                 disable=self.verbose,
+                file=sys.stdout,
             ):
                 y_all.extend(yb.numpy())
             y_all = np.array(y_all)
@@ -1478,7 +1486,9 @@ class AdversarialTrainer:
         predictions, labels = [], []
 
         with torch.no_grad():
-            for X_batch, y_batch in tqdm(dataloader, desc="Predicting", leave=False):
+            for X_batch, y_batch in tqdm(
+                dataloader, desc="Predicting", leave=False, file=sys.stdout
+            ):
                 X_batch = X_batch.to(self.device)
                 outputs = self.model(X_batch)
                 _, predicted = outputs.max(1)
