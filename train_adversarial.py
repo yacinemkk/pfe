@@ -305,12 +305,14 @@ class AdversarialTrainer:
         model_name: str = "model",
         tokenizer=None,
         features: Optional[List[str]] = None,
+        verbose: bool = False,
     ):
         self.model = model.to(device)
         self.device = device
         self.model_name = model_name
         self.tokenizer = tokenizer
         self.features = features
+        self.verbose = verbose
         self.history = {
             "train_loss": [],
             "train_acc": [],
@@ -340,20 +342,38 @@ class AdversarialTrainer:
             X_raw_batch: Raw feature data for re-tokenization (NLP transformer mode)
             sensitivity_results: Output from sensitivity analysis for adversarial search
         """
+        import time
+
         self.model.train()
         total_loss, correct, total = 0, 0, 0
 
-        # Default hybrid split: 60% clean, 20% feature-level, 20% sequence-level
         if hybrid_split is None:
             hybrid_split = {"clean": 0.6, "feature": 0.2, "sequence": 0.2}
 
         is_nlp = self.tokenizer is not None and self.features is not None
+        n_batches = len(train_loader)
+
+        if self.verbose:
+            print(
+                f"    [VERBOSE] train_epoch: {n_batches} batches, batch_size={train_loader.batch_size}"
+            )
+            epoch_start = time.time()
 
         for batch_idx, (X_batch, y_batch) in enumerate(
-            tqdm(train_loader, desc="    Training", leave=True, ncols=100)
+            tqdm(
+                train_loader,
+                desc="    Training",
+                leave=True,
+                ncols=100,
+                disable=self.verbose,
+            )
         ):
+            batch_start = time.time() if self.verbose else 0
             X_batch = X_batch.to(self.device)
             y_batch = y_batch.to(self.device)
+
+            if self.verbose:
+                batch_to_device = time.time() - batch_start
 
             if is_nlp and X_raw_batch is not None:
                 raw_slice = X_raw_batch[
@@ -452,6 +472,14 @@ class AdversarialTrainer:
                     _, predicted = outputs.max(1)
                     correct += predicted.eq(y_batch).sum().item()
                     total_loss += loss.item()
+
+                    if self.verbose:
+                        batch_time = time.time() - batch_start
+                        print(
+                            f"    [VERBOSE] Batch {batch_idx + 1}/{n_batches}: "
+                            f"to_device={batch_to_device:.3f}s, total={batch_time:.3f}s, "
+                            f"loss={loss.item():.4f}, acc={correct / total:.4f}"
+                        )
                 else:
                     optimizer.zero_grad()
                     outputs = self.model(X_batch)
@@ -463,10 +491,24 @@ class AdversarialTrainer:
                     _, predicted = outputs.max(1)
                     correct += predicted.eq(y_batch).sum().item()
                     total_loss += loss.item()
+
+                    if self.verbose:
+                        batch_time = time.time() - batch_start
+                        print(
+                            f"    [VERBOSE] Batch {batch_idx + 1}/{n_batches}: "
+                            f"to_device={batch_to_device:.3f}s, total={batch_time:.3f}s, "
+                            f"loss={loss.item():.4f}, acc={correct / total:.4f}"
+                        )
             else:
                 optimizer.zero_grad()
+                fwd_start = time.time() if self.verbose else 0
                 outputs = self.model(X_batch)
                 loss = criterion(outputs, y_batch)
+
+                if self.verbose:
+                    fwd_time = time.time() - fwd_start
+                    bwd_start = time.time()
+
                 loss.backward()
                 optimizer.step()
 
@@ -474,6 +516,22 @@ class AdversarialTrainer:
                 _, predicted = outputs.max(1)
                 correct += predicted.eq(y_batch).sum().item()
                 total_loss += loss.item()
+
+                if self.verbose:
+                    batch_time = time.time() - batch_start
+                    bwd_time = time.time() - bwd_start
+                    print(
+                        f"    [VERBOSE] Batch {batch_idx + 1}/{n_batches}: "
+                        f"to_dev={batch_to_device:.3f}s, fwd={fwd_time:.3f}s, "
+                        f"bwd={bwd_time:.3f}s, total={batch_time:.3f}s, "
+                        f"loss={loss.item():.4f}, acc={correct / total:.4f}"
+                    )
+
+        if self.verbose:
+            epoch_time = time.time() - epoch_start
+            print(
+                f"    [VERBOSE] Epoch completed in {epoch_time:.1f}s ({n_batches} batches)"
+            )
 
         return total_loss / len(train_loader), correct / total
 
@@ -873,8 +931,13 @@ class AdversarialTrainer:
             from sklearn.utils.class_weight import compute_class_weight
 
             y_all = []
+            if self.verbose:
+                print("  [VERBOSE] Computing class weights...")
             for _, yb in tqdm(
-                train_loader, desc="Computing class weights", leave=False
+                train_loader,
+                desc="Computing class weights",
+                leave=False,
+                disable=self.verbose,
             ):
                 y_all.extend(yb.numpy())
             y_all = np.array(y_all)
@@ -919,6 +982,10 @@ class AdversarialTrainer:
 
         for epoch in range(phase1_epochs):
             print(f"\n  ▶ Starting P1 Epoch {epoch + 1}/{phase1_epochs}...", flush=True)
+            if self.verbose:
+                print(
+                    f"  [VERBOSE] Phase 1 Epoch {epoch + 1}: train_loader has {len(train_loader)} batches"
+                )
             train_loss, train_acc = self.train_epoch(
                 train_loader,
                 optimizer,
@@ -946,23 +1013,6 @@ class AdversarialTrainer:
                 f"Train[loss={train_loss:.4f} acc={train_acc:.4f}]  "
                 f"Val[loss={val_loss:.4f} acc={val_acc:.4f}]",
                 flush=True,
-            )
-            print(
-                f"  ✓ P1 Epoch {epoch + 1} train done, running validation...",
-                flush=True,
-            )
-            val_loss, val_acc = self.evaluate(val_loader, criterion)
-            scheduler.step(val_loss)
-
-            self.history["train_loss"].append(train_loss)
-            self.history["train_acc"].append(train_acc)
-            self.history["val_loss"].append(val_loss)
-            self.history["val_acc"].append(val_acc)
-
-            print(
-                f"  P1 Epoch {epoch + 1}/{phase1_epochs}  "
-                f"Train[loss={train_loss:.4f} acc={train_acc:.4f}]  "
-                f"Val[loss={val_loss:.4f} acc={val_acc:.4f}]"
             )
 
             if val_acc > best_val_acc_p1:
@@ -1160,6 +1210,10 @@ class AdversarialTrainer:
 
         for epoch in range(phase2_epochs):
             print(f"\n  ▶ Starting P2 Epoch {epoch + 1}/{phase2_epochs}...", flush=True)
+            if self.verbose:
+                print(
+                    f"  [VERBOSE] Phase 2 Epoch {epoch + 1}: adv_train_loader has {len(adv_train_loader)} batches"
+                )
             train_loss, train_acc = self.train_epoch(
                 adv_train_loader,
                 optimizer,
@@ -1187,23 +1241,6 @@ class AdversarialTrainer:
                 f"Train[loss={train_loss:.4f} acc={train_acc:.4f}]  "
                 f"Val[loss={val_loss:.4f} acc={val_acc:.4f}]",
                 flush=True,
-            )
-            print(
-                f"  ✓ P2 Epoch {epoch + 1} train done, running validation...",
-                flush=True,
-            )
-            val_loss, val_acc = self.evaluate(val_loader, criterion)
-            scheduler.step(val_loss)
-
-            self.history["train_loss"].append(train_loss)
-            self.history["train_acc"].append(train_acc)
-            self.history["val_loss"].append(val_loss)
-            self.history["val_acc"].append(val_acc)
-
-            print(
-                f"  P2 Epoch {epoch + 1}/{phase2_epochs}  "
-                f"Train[loss={train_loss:.4f} acc={train_acc:.4f}]  "
-                f"Val[loss={val_loss:.4f} acc={val_acc:.4f}]"
             )
 
             if val_acc > best_val_acc_p2:
@@ -1882,6 +1919,7 @@ def run_experiment_with_phase_checkpoints(
     no_balancing: bool = False,
     use_class_weights: bool = False,
     preprocessed_dir: Optional[str] = None,
+    verbose: bool = False,
 ) -> Dict:
     """Run experiment avec sauvegarde et evaluation des checkpoints de phase.
 
@@ -1891,6 +1929,7 @@ def run_experiment_with_phase_checkpoints(
         use_class_weights: If True, uses class_weight='balanced' in CrossEntropyLoss.
         preprocessed_dir: If set, try to load preprocessed data from here. If data doesn't
                          exist, run preprocessing and save there for future runs.
+        verbose: If True, print detailed batch-level progress and timing for debugging.
     """
     device = get_device()
     print(f"\n{'=' * 60}")
@@ -2076,6 +2115,18 @@ def run_experiment_with_phase_checkpoints(
     val_loader = DataLoader(val_dataset, batch_size=eval_batch_size)
     test_loader = DataLoader(test_dataset, batch_size=eval_batch_size)
 
+    if verbose:
+        print(f"\n  [VERBOSE] DataLoaders created:")
+        print(
+            f"    train_loader: {len(train_dataset):,} samples / {batch_size} batch_size = {len(train_loader)} batches"
+        )
+        print(
+            f"    val_loader: {len(val_dataset):,} samples / {eval_batch_size} batch_size = {len(val_loader)} batches"
+        )
+        print(
+            f"    test_loader: {len(test_dataset):,} samples / {eval_batch_size} batch_size = {len(test_loader)} batches"
+        )
+
     print(f"\nInput size: {input_size}, Classes: {num_classes}")
     print(
         f"Continuous features: {n_continuous_features}, Binary features: {input_size - n_continuous_features}"
@@ -2120,7 +2171,12 @@ def run_experiment_with_phase_checkpoints(
     )
 
     trainer = AdversarialTrainer(
-        model, device, model_type, tokenizer=tokenizer, features=features
+        model,
+        device,
+        model_type,
+        tokenizer=tokenizer,
+        features=features,
+        verbose=verbose,
     )
 
     if hybrid_split is None:
@@ -2869,6 +2925,11 @@ def main():
         default=None,
         help="Path to preprocessed data directory (skip preprocessing if data exists)",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose mode: print batch-level progress and timing for debugging",
+    )
 
     args = parser.parse_args()
 
@@ -2929,6 +2990,7 @@ def main():
             no_balancing=args.no_balancing,
             use_class_weights=args.use_class_weights,
             preprocessed_dir=args.preprocessed_dir,
+            verbose=args.verbose,
         )
     else:
         run_experiment(
