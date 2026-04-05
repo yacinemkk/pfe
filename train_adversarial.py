@@ -916,6 +916,7 @@ class AdversarialTrainer:
         patience_counter = 0
 
         for epoch in range(phase1_epochs):
+            print(f"  ▶ Starting P1 Epoch {epoch + 1}/{phase1_epochs}...")
             train_loss, train_acc = self.train_epoch(
                 train_loader,
                 optimizer,
@@ -926,6 +927,7 @@ class AdversarialTrainer:
                 None,
                 X_raw_batch=X_train_raw,
             )
+            print(f"  ✓ P1 Epoch {epoch + 1} train done, running validation...")
             val_loss, val_acc = self.evaluate(val_loader, criterion)
             scheduler.step(val_loss)
 
@@ -1134,6 +1136,7 @@ class AdversarialTrainer:
         patience_counter = 0
 
         for epoch in range(phase2_epochs):
+            print(f"  ▶ Starting P2 Epoch {epoch + 1}/{phase2_epochs}...")
             train_loss, train_acc = self.train_epoch(
                 adv_train_loader,
                 optimizer,
@@ -1144,6 +1147,7 @@ class AdversarialTrainer:
                 None,
                 X_raw_batch=X_joint_raw,
             )
+            print(f"  ✓ P2 Epoch {epoch + 1} train done, running validation...")
             val_loss, val_acc = self.evaluate(val_loader, criterion)
             scheduler.step(val_loss)
 
@@ -1933,6 +1937,28 @@ def run_experiment_with_phase_checkpoints(
             print(
                 f"  ✅ Loaded from cache: Train={len(X_train):,}, Val={len(X_val):,}, Test={len(X_test):,}"
             )
+
+        # ── Rebalance: move 100k from test to val ─────────────────────────
+        N_MOVE = 100_000
+        print(
+            f"\n  🔄 Rebalancing split: moving {N_MOVE:,} sequences from test → val..."
+        )
+        n_test = len(X_test)
+        if n_test > N_MOVE:
+            perm = np.random.RandomState(42).permutation(n_test)
+            val_idx = perm[:N_MOVE]
+            test_idx = perm[N_MOVE:]
+
+            X_val = np.concatenate([X_val, X_test[val_idx]], axis=0)
+            y_val = np.concatenate([y_val, y_test[val_idx]], axis=0)
+            X_test = X_test[test_idx]
+            y_test = y_test[test_idx]
+
+            print(
+                f"  ✓ New split: Train={len(X_train):,}, Val={len(X_val):,}, Test={len(X_test):,}"
+            )
+        else:
+            print(f"  ⚠️  Test set too small ({n_test:,}), skipping rebalance")
     else:
         (
             X_train,
