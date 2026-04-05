@@ -350,7 +350,7 @@ class AdversarialTrainer:
         is_nlp = self.tokenizer is not None and self.features is not None
 
         for batch_idx, (X_batch, y_batch) in enumerate(
-            tqdm(train_loader, desc="Training", leave=False)
+            tqdm(train_loader, desc="    Training", leave=True, ncols=100)
         ):
             X_batch = X_batch.to(self.device)
             y_batch = y_batch.to(self.device)
@@ -485,7 +485,9 @@ class AdversarialTrainer:
         total_loss, correct, total = 0, 0, 0
 
         with torch.no_grad():
-            for X_batch, y_batch in tqdm(dataloader, desc="Evaluating", leave=False):
+            for X_batch, y_batch in tqdm(
+                dataloader, desc="    Validation", leave=True, ncols=100
+            ):
                 X_batch = X_batch.to(self.device)
                 y_batch = y_batch.to(self.device)
 
@@ -916,7 +918,7 @@ class AdversarialTrainer:
         patience_counter = 0
 
         for epoch in range(phase1_epochs):
-            print(f"  ▶ Starting P1 Epoch {epoch + 1}/{phase1_epochs}...", flush=True)
+            print(f"\n  ▶ Starting P1 Epoch {epoch + 1}/{phase1_epochs}...", flush=True)
             train_loss, train_acc = self.train_epoch(
                 train_loader,
                 optimizer,
@@ -926,6 +928,24 @@ class AdversarialTrainer:
                 adv_method,
                 None,
                 X_raw_batch=X_train_raw,
+            )
+            print(
+                f"  ✓ P1 Epoch {epoch + 1} train done, running validation...",
+                flush=True,
+            )
+            val_loss, val_acc = self.evaluate(val_loader, criterion)
+            scheduler.step(val_loss)
+
+            self.history["train_loss"].append(train_loss)
+            self.history["train_acc"].append(train_acc)
+            self.history["val_loss"].append(val_loss)
+            self.history["val_acc"].append(val_acc)
+
+            print(
+                f"  P1 Epoch {epoch + 1}/{phase1_epochs}  "
+                f"Train[loss={train_loss:.4f} acc={train_acc:.4f}]  "
+                f"Val[loss={val_loss:.4f} acc={val_acc:.4f}]",
+                flush=True,
             )
             print(
                 f"  ✓ P1 Epoch {epoch + 1} train done, running validation...",
@@ -1139,7 +1159,7 @@ class AdversarialTrainer:
         patience_counter = 0
 
         for epoch in range(phase2_epochs):
-            print(f"  ▶ Starting P2 Epoch {epoch + 1}/{phase2_epochs}...", flush=True)
+            print(f"\n  ▶ Starting P2 Epoch {epoch + 1}/{phase2_epochs}...", flush=True)
             train_loss, train_acc = self.train_epoch(
                 adv_train_loader,
                 optimizer,
@@ -1149,6 +1169,24 @@ class AdversarialTrainer:
                 adv_method,
                 None,
                 X_raw_batch=X_joint_raw,
+            )
+            print(
+                f"  ✓ P2 Epoch {epoch + 1} train done, running validation...",
+                flush=True,
+            )
+            val_loss, val_acc = self.evaluate(val_loader, criterion)
+            scheduler.step(val_loss)
+
+            self.history["train_loss"].append(train_loss)
+            self.history["train_acc"].append(train_acc)
+            self.history["val_loss"].append(val_loss)
+            self.history["val_acc"].append(val_acc)
+
+            print(
+                f"  P2 Epoch {epoch + 1}/{phase2_epochs}  "
+                f"Train[loss={train_loss:.4f} acc={train_acc:.4f}]  "
+                f"Val[loss={val_loss:.4f} acc={val_acc:.4f}]",
+                flush=True,
             )
             print(
                 f"  ✓ P2 Epoch {epoch + 1} train done, running validation...",
