@@ -132,6 +132,7 @@ def load_and_preprocess_data(
     max_records: Optional[int] = None,
     dataset: Optional[str] = None,
     low_memory: bool = True,
+    no_balancing: bool = False,
 ) -> Tuple[np.ndarray, ...]:
     """Load and preprocess data with specified sequence length.
 
@@ -143,6 +144,7 @@ def load_and_preprocess_data(
         dataset: Explicit override for pipeline selection ('csv' or 'json').
                  Takes precedence over pipeline_mode / PIPELINE_MODE config.
         low_memory: If True, uses aggressive memory cleanup during loading.
+        no_balancing: If True, disables Borderline-SMOTE + outlier filtering.
 
     Returns:
         Tuple of (X_train, X_val, X_test, y_train, y_val, y_test,
@@ -161,9 +163,13 @@ def load_and_preprocess_data(
     print(f"Pipeline mode: {pipeline_mode.upper()}")
 
     if pipeline_mode == "json":
-        result = _load_json_pipeline(seq_length, stride, data_dir, max_records)
+        result = _load_json_pipeline(
+            seq_length, stride, data_dir, max_records, no_balancing=no_balancing
+        )
     else:
-        result = _load_csv_pipeline(seq_length, stride, max_files, data_dir)
+        result = _load_csv_pipeline(
+            seq_length, stride, max_files, data_dir, no_balancing=no_balancing
+        )
 
     if low_memory:
         gc.collect()
@@ -178,6 +184,7 @@ def _load_json_pipeline(
     stride: int = 5,
     data_dir: Optional[Path] = None,
     max_records: Optional[int] = None,
+    no_balancing: bool = False,
 ) -> Tuple[np.ndarray, ...]:
     """Load JSON IPFIX Records using the native JSON preprocessor.
 
@@ -201,6 +208,7 @@ def _load_json_pipeline(
         seq_length=seq_length,
         stride=stride,
         max_records=max_records,
+        apply_balancing=not no_balancing,
     )
 
     X_train, X_val, X_test, y_train, y_val, y_test, features, scaler, label_encoder = (
@@ -234,6 +242,7 @@ def _load_csv_pipeline(
     stride: int = 5,
     max_files: Optional[int] = None,
     data_dir: Optional[Path] = None,
+    no_balancing: bool = False,
 ) -> Tuple[np.ndarray, ...]:
     """CSV pipeline — delegates to IoTDataProcessor for strict anti-leakage split.
 
@@ -257,6 +266,7 @@ def _load_csv_pipeline(
         data_dir=data_dir,
         seq_length=seq_length,
         stride=stride,
+        apply_balancing=not no_balancing,
     )
 
     X_train, X_val, X_test, y_train, y_val, y_test, features, scaler, label_encoder = (
@@ -825,6 +835,7 @@ class AdversarialTrainer:
         X_train: Optional[np.ndarray] = None,
         y_train: Optional[np.ndarray] = None,
         X_train_raw: Optional[np.ndarray] = None,
+        use_class_weights: bool = False,
     ) -> Dict:
         """Entraînement en 2 phases per docs/train.
 
@@ -848,13 +859,28 @@ class AdversarialTrainer:
         optimizer = torch.optim.AdamW(
             self.model.parameters(), lr=lr, weight_decay=weight_decay
         )
-        criterion = nn.CrossEntropyLoss()
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode="min", patience=3, factor=0.5
-        )
 
         sample_y = next(iter(test_loader))[1]
         num_classes = int(sample_y.max().item()) + 1
+
+        if use_class_weights:
+            from sklearn.utils.class_weight import compute_class_weight
+
+            y_all = []
+            for _, yb in train_loader:
+                y_all.extend(yb.numpy())
+            y_all = np.array(y_all)
+            classes = np.arange(num_classes)
+            cw = compute_class_weight("balanced", classes=classes, y=y_all)
+            class_weights = torch.FloatTensor(cw).to(self.device)
+            criterion = nn.CrossEntropyLoss(weight=class_weights)
+            print(f"  ⚖️  Class weights enabled (balanced): {cw[:5]}...")
+        else:
+            criterion = nn.CrossEntropyLoss()
+
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", patience=3, factor=0.5
+        )
 
         phase1_epochs = 20
         phase2_epochs = 10
@@ -1798,11 +1824,15 @@ def run_experiment_with_phase_checkpoints(
     dataset: Optional[str] = None,
     max_records: Optional[int] = None,
     eval_batch_size: Optional[int] = None,
+    no_balancing: bool = False,
+    use_class_weights: bool = False,
 ) -> Dict:
     """Run experiment avec sauvegarde et evaluation des checkpoints de phase.
 
     Args:
         eval_batch_size: Batch size for evaluation (defaults to batch_size//2 for RAM savings)
+        no_balancing: If True, disables Borderline-SMOTE + outlier filtering.
+        use_class_weights: If True, uses class_weight='balanced' in CrossEntropyLoss.
     """
     device = get_device()
     print(f"\n{'=' * 60}")
@@ -1833,6 +1863,7 @@ def run_experiment_with_phase_checkpoints(
         data_dir=data_dir,
         dataset=dataset,
         max_records=max_records,
+        no_balancing=no_balancing,
     )
 
     input_size = X_train.shape[2]
@@ -1937,6 +1968,7 @@ def run_experiment_with_phase_checkpoints(
         is_xgboost=(model_type == "xgboost_lstm"),
         label_encoder=label_encoder,
         X_train_raw=X_train_raw,
+        use_class_weights=use_class_weights,
     )
 
     if save_results and save_path:
@@ -2014,6 +2046,7 @@ def run_experiment(
     data_dir: Optional[Path] = None,
     dataset: Optional[str] = None,
     max_records: Optional[int] = None,
+    no_balancing: bool = False,
 ) -> Dict:
     """Run a single experiment."""
     device = get_device()
@@ -2040,6 +2073,7 @@ def run_experiment(
         data_dir=data_dir,
         dataset=dataset,
         max_records=max_records,
+        no_balancing=no_balancing,
     )
 
     train_dataset = IoTSequenceDataset(X_train, y_train)
@@ -2635,6 +2669,16 @@ def main():
         default=None,
         help="Path to JSON data directory for dual-dataset study (default: config JSON_DATA_DIR)",
     )
+    parser.add_argument(
+        "--no_balancing",
+        action="store_true",
+        help="Disable Borderline-SMOTE + outlier filtering (for comparison study)",
+    )
+    parser.add_argument(
+        "--use_class_weights",
+        action="store_true",
+        help="Use class_weight='balanced' in CrossEntropyLoss (compensates for no SMOTE)",
+    )
 
     args = parser.parse_args()
 
@@ -2692,6 +2736,8 @@ def main():
             data_dir=data_dir,
             dataset=args.dataset,
             max_records=getattr(args, "max_records", None),
+            no_balancing=args.no_balancing,
+            use_class_weights=args.use_class_weights,
         )
     else:
         run_experiment(
@@ -2707,6 +2753,8 @@ def main():
             data_dir=data_dir,
             dataset=args.dataset,
             max_records=getattr(args, "max_records", None),
+            no_balancing=args.no_balancing,
+            use_class_weights=args.use_class_weights,
         )
 
 
