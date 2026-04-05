@@ -305,12 +305,14 @@ class AdversarialTrainer:
         model_name: str = "model",
         tokenizer=None,
         features: Optional[List[str]] = None,
+        verbose: bool = False,
     ):
         self.model = model.to(device)
         self.device = device
         self.model_name = model_name
         self.tokenizer = tokenizer
         self.features = features
+        self.verbose = verbose
         self.history = {
             "train_loss": [],
             "train_acc": [],
@@ -343,6 +345,9 @@ class AdversarialTrainer:
         self.model.train()
         total_loss, correct, total = 0, 0, 0
 
+        if self.verbose:
+            print(f"    [VERBOSE] train_epoch: Starting, {len(train_loader)} batches")
+
         # Default hybrid split: 60% clean, 20% feature-level, 20% sequence-level
         if hybrid_split is None:
             hybrid_split = {"clean": 0.6, "feature": 0.2, "sequence": 0.2}
@@ -350,108 +355,127 @@ class AdversarialTrainer:
         is_nlp = self.tokenizer is not None and self.features is not None
 
         for batch_idx, (X_batch, y_batch) in enumerate(
-            tqdm(train_loader, desc="Training", leave=False)
+            tqdm(train_loader, desc="Training", leave=False, disable=self.verbose)
         ):
-            X_batch = X_batch.to(self.device)
-            y_batch = y_batch.to(self.device)
+            if self.verbose and batch_idx % 100 == 0:
+                print(
+                    f"    [VERBOSE] train_epoch: batch {batch_idx}/{len(train_loader)}"
+                )
 
-            if is_nlp and X_raw_batch is not None:
-                raw_slice = X_raw_batch[
-                    batch_idx * len(X_batch) : (batch_idx + 1) * len(X_batch)
-                ]
-            else:
-                raw_slice = None
+            try:
+                X_batch = X_batch.to(self.device)
+                y_batch = y_batch.to(self.device)
 
-            if adv_generator is not None and adv_ratio > 0:
-                n_adv = int(len(X_batch) * adv_ratio)
-                if n_adv > 0:
-                    # Calculate split sizes based on hybrid ratios
-                    n_feature = int(
-                        n_adv
-                        * hybrid_split.get("feature", 0.2)
-                        / (
-                            hybrid_split.get("feature", 0.2)
-                            + hybrid_split.get("sequence", 0.2)
+                if is_nlp and X_raw_batch is not None:
+                    raw_slice = X_raw_batch[
+                        batch_idx * len(X_batch) : (batch_idx + 1) * len(X_batch)
+                    ]
+                else:
+                    raw_slice = None
+
+                if adv_generator is not None and adv_ratio > 0:
+                    n_adv = int(len(X_batch) * adv_ratio)
+                    if n_adv > 0:
+                        # Calculate split sizes based on hybrid ratios
+                        n_feature = int(
+                            n_adv
+                            * hybrid_split.get("feature", 0.2)
+                            / (
+                                hybrid_split.get("feature", 0.2)
+                                + hybrid_split.get("sequence", 0.2)
+                            )
                         )
-                    )
-                    n_sequence = n_adv - n_feature
+                        n_sequence = n_adv - n_feature
 
-                    adv_indices = np.random.choice(len(X_batch), n_adv, replace=False)
+                        adv_indices = np.random.choice(
+                            len(X_batch), n_adv, replace=False
+                        )
 
-                    # Split indices for feature-level and sequence-level attacks
-                    idx_feature = adv_indices[:n_feature]
-                    idx_sequence = adv_indices[n_feature : n_feature + n_sequence]
+                        # Split indices for feature-level and sequence-level attacks
+                        idx_feature = adv_indices[:n_feature]
+                        idx_sequence = adv_indices[n_feature : n_feature + n_sequence]
 
-                    if is_nlp and raw_slice is not None:
-                        raw_adv = raw_slice.copy()
-                        raw_adv_feature = raw_adv[idx_feature]
-                        raw_adv_sequence = raw_adv[idx_sequence]
+                        if is_nlp and raw_slice is not None:
+                            raw_adv = raw_slice.copy()
+                            raw_adv_feature = raw_adv[idx_feature]
+                            raw_adv_sequence = raw_adv[idx_sequence]
+                        else:
+                            raw_adv_feature = X_batch[idx_feature].cpu().numpy()
+                            raw_adv_sequence = X_batch[idx_sequence].cpu().numpy()
+
+                        # Apply feature-level attack
+                        if len(idx_feature) > 0:
+                            X_adv_feature = adv_generator.feature_attack.generate_batch(
+                                raw_adv_feature,
+                                y_batch[idx_feature].cpu().numpy(),
+                            )
+                            if is_nlp:
+                                tok_adv_feature = tokenize_adversarial_batch(
+                                    X_adv_feature, self.features, self.tokenizer
+                                )
+                                X_batch[idx_feature] = torch.LongTensor(
+                                    tok_adv_feature
+                                ).to(self.device)
+                            else:
+                                X_batch[idx_feature] = torch.FloatTensor(
+                                    X_adv_feature
+                                ).to(self.device)
+                            del X_adv_feature
+
+                        # Apply sequence-level attack (adversarial search)
+                        if len(idx_sequence) > 0:
+                            if sensitivity_results is None:
+                                X_adv_sequence = (
+                                    adv_generator.feature_attack.generate_batch(
+                                        raw_adv_sequence,
+                                        y_batch[idx_sequence].cpu().numpy(),
+                                    )
+                                )
+                            else:
+                                X_adv_sequence = (
+                                    adv_generator.sequence_attack.generate_batch(
+                                        raw_adv_sequence,
+                                        y_batch[idx_sequence].cpu().numpy(),
+                                        sensitivity_results=sensitivity_results,
+                                    )
+                                )
+                            if is_nlp:
+                                tok_adv_sequence = tokenize_adversarial_batch(
+                                    X_adv_sequence, self.features, self.tokenizer
+                                )
+                                X_batch[idx_sequence] = torch.LongTensor(
+                                    tok_adv_sequence
+                                ).to(self.device)
+                            else:
+                                X_batch[idx_sequence] = torch.FloatTensor(
+                                    X_adv_sequence
+                                ).to(self.device)
+                            del X_adv_sequence
+
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+
+                        optimizer.zero_grad()
+                        outputs = self.model(X_batch)
+                        loss = criterion(outputs, y_batch)
+                        loss.backward()
+                        optimizer.step()
+
+                        total += y_batch.size(0)
+                        _, predicted = outputs.max(1)
+                        correct += predicted.eq(y_batch).sum().item()
+                        total_loss += loss.item()
                     else:
-                        raw_adv_feature = X_batch[idx_feature].cpu().numpy()
-                        raw_adv_sequence = X_batch[idx_sequence].cpu().numpy()
+                        optimizer.zero_grad()
+                        outputs = self.model(X_batch)
+                        loss = criterion(outputs, y_batch)
+                        loss.backward()
+                        optimizer.step()
 
-                    # Apply feature-level attack
-                    if len(idx_feature) > 0:
-                        X_adv_feature = adv_generator.feature_attack.generate_batch(
-                            raw_adv_feature,
-                            y_batch[idx_feature].cpu().numpy(),
-                        )
-                        if is_nlp:
-                            tok_adv_feature = tokenize_adversarial_batch(
-                                X_adv_feature, self.features, self.tokenizer
-                            )
-                            X_batch[idx_feature] = torch.LongTensor(tok_adv_feature).to(
-                                self.device
-                            )
-                        else:
-                            X_batch[idx_feature] = torch.FloatTensor(X_adv_feature).to(
-                                self.device
-                            )
-                        del X_adv_feature
-
-                    # Apply sequence-level attack (adversarial search)
-                    if len(idx_sequence) > 0:
-                        if sensitivity_results is None:
-                            X_adv_sequence = (
-                                adv_generator.feature_attack.generate_batch(
-                                    raw_adv_sequence,
-                                    y_batch[idx_sequence].cpu().numpy(),
-                                )
-                            )
-                        else:
-                            X_adv_sequence = (
-                                adv_generator.sequence_attack.generate_batch(
-                                    raw_adv_sequence,
-                                    y_batch[idx_sequence].cpu().numpy(),
-                                    sensitivity_results=sensitivity_results,
-                                )
-                            )
-                        if is_nlp:
-                            tok_adv_sequence = tokenize_adversarial_batch(
-                                X_adv_sequence, self.features, self.tokenizer
-                            )
-                            X_batch[idx_sequence] = torch.LongTensor(
-                                tok_adv_sequence
-                            ).to(self.device)
-                        else:
-                            X_batch[idx_sequence] = torch.FloatTensor(
-                                X_adv_sequence
-                            ).to(self.device)
-                        del X_adv_sequence
-
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-
-                    optimizer.zero_grad()
-                    outputs = self.model(X_batch)
-                    loss = criterion(outputs, y_batch)
-                    loss.backward()
-                    optimizer.step()
-
-                    total += y_batch.size(0)
-                    _, predicted = outputs.max(1)
-                    correct += predicted.eq(y_batch).sum().item()
-                    total_loss += loss.item()
+                        total += y_batch.size(0)
+                        _, predicted = outputs.max(1)
+                        correct += predicted.eq(y_batch).sum().item()
+                        total_loss += loss.item()
                 else:
                     optimizer.zero_grad()
                     outputs = self.model(X_batch)
@@ -463,18 +487,18 @@ class AdversarialTrainer:
                     _, predicted = outputs.max(1)
                     correct += predicted.eq(y_batch).sum().item()
                     total_loss += loss.item()
-            else:
-                optimizer.zero_grad()
-                outputs = self.model(X_batch)
-                loss = criterion(outputs, y_batch)
-                loss.backward()
-                optimizer.step()
 
-                total += y_batch.size(0)
-                _, predicted = outputs.max(1)
-                correct += predicted.eq(y_batch).sum().item()
-                total_loss += loss.item()
+            except Exception as e:
+                print(f"    [VERBOSE] ERROR in train_epoch batch {batch_idx}: {e}")
+                import traceback
 
+                traceback.print_exc()
+                raise
+
+        if self.verbose:
+            print(
+                f"    [VERBOSE] train_epoch: Done. loss={total_loss / len(train_loader):.4f}, acc={correct / total:.4f}"
+            )
         return total_loss / len(train_loader), correct / total
 
     def evaluate(
@@ -484,19 +508,40 @@ class AdversarialTrainer:
         self.model.eval()
         total_loss, correct, total = 0, 0, 0
 
+        if self.verbose:
+            print(f"    [VERBOSE] evaluate: Starting, {len(dataloader)} batches")
+
         with torch.no_grad():
-            for X_batch, y_batch in tqdm(dataloader, desc="Evaluating", leave=False):
-                X_batch = X_batch.to(self.device)
-                y_batch = y_batch.to(self.device)
+            for batch_idx, (X_batch, y_batch) in enumerate(
+                tqdm(dataloader, desc="Evaluating", leave=False, disable=self.verbose)
+            ):
+                if self.verbose and batch_idx % 50 == 0:
+                    print(
+                        f"    [VERBOSE] evaluate: batch {batch_idx}/{len(dataloader)}"
+                    )
 
-                outputs = self.model(X_batch)
-                loss = criterion(outputs, y_batch)
+                try:
+                    X_batch = X_batch.to(self.device)
+                    y_batch = y_batch.to(self.device)
 
-                total_loss += loss.item()
-                _, predicted = outputs.max(1)
-                total += y_batch.size(0)
-                correct += predicted.eq(y_batch).sum().item()
+                    outputs = self.model(X_batch)
+                    loss = criterion(outputs, y_batch)
 
+                    total_loss += loss.item()
+                    _, predicted = outputs.max(1)
+                    total += y_batch.size(0)
+                    correct += predicted.eq(y_batch).sum().item()
+                except Exception as e:
+                    print(f"    [VERBOSE] ERROR in evaluate batch {batch_idx}: {e}")
+                    import traceback
+
+                    traceback.print_exc()
+                    raise
+
+        if self.verbose:
+            print(
+                f"    [VERBOSE] evaluate: Done. loss={total_loss / len(dataloader):.4f}, acc={correct / total:.4f}"
+            )
         return total_loss / len(dataloader), correct / total
 
     def test_model(
@@ -916,44 +961,82 @@ class AdversarialTrainer:
         patience_counter = 0
 
         for epoch in range(phase1_epochs):
+            if self.verbose:
+                print(f"  [VERBOSE] P1 Epoch {epoch + 1}/{phase1_epochs} starting...")
+
             print(f"  ▶ Starting P1 Epoch {epoch + 1}/{phase1_epochs}...")
-            train_loss, train_acc = self.train_epoch(
-                train_loader,
-                optimizer,
-                criterion,
-                None,
-                0.0,
-                adv_method,
-                None,
-                X_raw_batch=X_train_raw,
-            )
-            print(f"  ✓ P1 Epoch {epoch + 1} train done, running validation...")
-            val_loss, val_acc = self.evaluate(val_loader, criterion)
-            scheduler.step(val_loss)
 
-            self.history["train_loss"].append(train_loss)
-            self.history["train_acc"].append(train_acc)
-            self.history["val_loss"].append(val_loss)
-            self.history["val_acc"].append(val_acc)
+            try:
+                if self.verbose:
+                    print(f"  [VERBOSE] Calling train_epoch...")
+                train_loss, train_acc = self.train_epoch(
+                    train_loader,
+                    optimizer,
+                    criterion,
+                    None,
+                    0.0,
+                    adv_method,
+                    None,
+                    X_raw_batch=X_train_raw,
+                )
+                if self.verbose:
+                    print(
+                        f"  [VERBOSE] train_epoch returned: loss={train_loss:.4f}, acc={train_acc:.4f}"
+                    )
 
-            print(
-                f"  P1 Epoch {epoch + 1}/{phase1_epochs}  "
-                f"Train[loss={train_loss:.4f} acc={train_acc:.4f}]  "
-                f"Val[loss={val_loss:.4f} acc={val_acc:.4f}]"
-            )
+                print(f"  ✓ P1 Epoch {epoch + 1} train done, running validation...")
 
-            if val_acc > best_val_acc_p1:
-                best_val_acc_p1 = val_acc
-                best_state_p1 = copy.deepcopy(self.model.state_dict())
-                patience_counter = 0
-            else:
-                patience_counter += 1
-                if patience_counter >= early_stopping_patience:
-                    print(f"  ⚡ Early Stopping Phase 1 à l'epoch {epoch + 1}")
-                    break
+                if self.verbose:
+                    print(f"  [VERBOSE] Calling evaluate for validation...")
+                val_loss, val_acc = self.evaluate(val_loader, criterion)
+                if self.verbose:
+                    print(
+                        f"  [VERBOSE] evaluate returned: loss={val_loss:.4f}, acc={val_acc:.4f}"
+                    )
+
+                scheduler.step(val_loss)
+
+                if self.verbose:
+                    print(f"  [VERBOSE] Appending history...")
+                self.history["train_loss"].append(train_loss)
+                self.history["train_acc"].append(train_acc)
+                self.history["val_loss"].append(val_loss)
+                self.history["val_acc"].append(val_acc)
+
+                print(
+                    f"  P1 Epoch {epoch + 1}/{phase1_epochs}  "
+                    f"Train[loss={train_loss:.4f} acc={train_acc:.4f}]  "
+                    f"Val[loss={val_loss:.4f} acc={val_acc:.4f}]"
+                )
+
+                if self.verbose:
+                    print(f"  [VERBOSE] Checking early stopping...")
+
+                if val_acc > best_val_acc_p1:
+                    best_val_acc_p1 = val_acc
+                    best_state_p1 = copy.deepcopy(self.model.state_dict())
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                    if patience_counter >= early_stopping_patience:
+                        print(f"  ⚡ Early Stopping Phase 1 à l'epoch {epoch + 1}")
+                        break
+
+                if self.verbose:
+                    print(f"  [VERBOSE] P1 Epoch {epoch + 1} completed successfully")
+
+            except Exception as e:
+                print(f"  [VERBOSE] ERROR in P1 Epoch {epoch + 1}: {e}")
+                import traceback
+
+                traceback.print_exc()
+                raise
 
         self.model.load_state_dict(best_state_p1)
         print(f"  ✓ Meilleurs poids Phase 1 rechargés (val_acc={best_val_acc_p1:.4f})")
+
+        if self.verbose:
+            print(f"  [VERBOSE] Phase 1 complete. Starting checkpoint save...")
 
         if save_path:
             checkpoint_path = save_path / "checkpoint_phase1.pt"
@@ -1136,41 +1219,70 @@ class AdversarialTrainer:
         patience_counter = 0
 
         for epoch in range(phase2_epochs):
+            if self.verbose:
+                print(f"  [VERBOSE] P2 Epoch {epoch + 1}/{phase2_epochs} starting...")
             print(f"  ▶ Starting P2 Epoch {epoch + 1}/{phase2_epochs}...")
-            train_loss, train_acc = self.train_epoch(
-                adv_train_loader,
-                optimizer,
-                criterion,
-                None,
-                0.0,
-                adv_method,
-                None,
-                X_raw_batch=X_joint_raw,
-            )
-            print(f"  ✓ P2 Epoch {epoch + 1} train done, running validation...")
-            val_loss, val_acc = self.evaluate(val_loader, criterion)
-            scheduler.step(val_loss)
 
-            self.history["train_loss"].append(train_loss)
-            self.history["train_acc"].append(train_acc)
-            self.history["val_loss"].append(val_loss)
-            self.history["val_acc"].append(val_acc)
+            try:
+                if self.verbose:
+                    print(f"  [VERBOSE] P2: Calling train_epoch...")
+                train_loss, train_acc = self.train_epoch(
+                    adv_train_loader,
+                    optimizer,
+                    criterion,
+                    None,
+                    0.0,
+                    adv_method,
+                    None,
+                    X_raw_batch=X_joint_raw,
+                )
+                if self.verbose:
+                    print(
+                        f"  [VERBOSE] P2: train_epoch returned loss={train_loss:.4f}, acc={train_acc:.4f}"
+                    )
 
-            print(
-                f"  P2 Epoch {epoch + 1}/{phase2_epochs}  "
-                f"Train[loss={train_loss:.4f} acc={train_acc:.4f}]  "
-                f"Val[loss={val_loss:.4f} acc={val_acc:.4f}]"
-            )
+                print(f"  ✓ P2 Epoch {epoch + 1} train done, running validation...")
 
-            if val_acc > best_val_acc_p2:
-                best_val_acc_p2 = val_acc
-                best_state_p2 = copy.deepcopy(self.model.state_dict())
-                patience_counter = 0
-            else:
-                patience_counter += 1
-                if patience_counter >= early_stopping_patience:
-                    print(f"  ⚡ Early Stopping Phase 2 à l'epoch {epoch + 1}")
-                    break
+                if self.verbose:
+                    print(f"  [VERBOSE] P2: Calling evaluate...")
+                val_loss, val_acc = self.evaluate(val_loader, criterion)
+                if self.verbose:
+                    print(
+                        f"  [VERBOSE] P2: evaluate returned loss={val_loss:.4f}, acc={val_acc:.4f}"
+                    )
+
+                scheduler.step(val_loss)
+
+                self.history["train_loss"].append(train_loss)
+                self.history["train_acc"].append(train_acc)
+                self.history["val_loss"].append(val_loss)
+                self.history["val_acc"].append(val_acc)
+
+                print(
+                    f"  P2 Epoch {epoch + 1}/{phase2_epochs}  "
+                    f"Train[loss={train_loss:.4f} acc={train_acc:.4f}]  "
+                    f"Val[loss={val_loss:.4f} acc={val_acc:.4f}]"
+                )
+
+                if val_acc > best_val_acc_p2:
+                    best_val_acc_p2 = val_acc
+                    best_state_p2 = copy.deepcopy(self.model.state_dict())
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                    if patience_counter >= early_stopping_patience:
+                        print(f"  ⚡ Early Stopping Phase 2 à l'epoch {epoch + 1}")
+                        break
+
+                if self.verbose:
+                    print(f"  [VERBOSE] P2 Epoch {epoch + 1} completed successfully")
+
+            except Exception as e:
+                print(f"  [VERBOSE] ERROR in P2 Epoch {epoch + 1}: {e}")
+                import traceback
+
+                traceback.print_exc()
+                raise
 
         self.model.load_state_dict(best_state_p2)
         print(f"  ✓ Meilleurs poids Phase 2 rechargés (val_acc={best_val_acc_p2:.4f})")
@@ -1838,6 +1950,7 @@ def run_experiment_with_phase_checkpoints(
     no_balancing: bool = False,
     use_class_weights: bool = False,
     preprocessed_dir: Optional[str] = None,
+    verbose: bool = False,
 ) -> Dict:
     """Run experiment avec sauvegarde et evaluation des checkpoints de phase.
 
@@ -1847,6 +1960,7 @@ def run_experiment_with_phase_checkpoints(
         use_class_weights: If True, uses class_weight='balanced' in CrossEntropyLoss.
         preprocessed_dir: If set, try to load preprocessed data from here. If data doesn't
                          exist, run preprocessing and save there for future runs.
+        verbose: If True, enable detailed logging to trace crashes.
     """
     device = get_device()
     print(f"\n{'=' * 60}")
@@ -1854,6 +1968,8 @@ def run_experiment_with_phase_checkpoints(
         f"Experiment (Phase Checkpoints): {model_type.upper()} | Seq={seq_length} | Adv={adv_method}"
     )
     print(f"Device: {device}")
+    if verbose:
+        print(f"[VERBOSE] Verbose mode enabled - detailed logging active")
     print(f"{'=' * 60}\n")
 
     if eval_batch_size is None:
@@ -2032,15 +2148,35 @@ def run_experiment_with_phase_checkpoints(
     val_loader = DataLoader(val_dataset, batch_size=eval_batch_size)
     test_loader = DataLoader(test_dataset, batch_size=eval_batch_size)
 
+    if verbose:
+        print(f"  [VERBOSE] DataLoaders created:")
+        print(f"  [VERBOSE]   train_loader: {len(train_loader)} batches x {batch_size}")
+        print(
+            f"  [VERBOSE]   val_loader: {len(val_loader)} batches x {eval_batch_size}"
+        )
+        print(
+            f"  [VERBOSE]   test_loader: {len(test_loader)} batches x {eval_batch_size}"
+        )
+
     print(f"\nInput size: {input_size}, Classes: {num_classes}")
     print(
         f"Continuous features: {n_continuous_features}, Binary features: {input_size - n_continuous_features}"
     )
 
+    if verbose:
+        print(f"  [VERBOSE] Creating model {model_type}...")
+
     model = create_model(
         model_type, input_size, num_classes, seq_length, device, pad_token_id
     )
     print(f"\nModel parameters: {sum(p.numel() for p in model.parameters()):,}")
+
+    if verbose:
+        print(f"  [VERBOSE] Model created successfully")
+        if torch.cuda.is_available():
+            print(
+                f"  [VERBOSE] GPU Memory: {torch.cuda.memory_allocated() / 1e9:.2f} GB allocated, {torch.cuda.memory_reserved() / 1e9:.2f} GB reserved"
+            )
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     save_path = (
@@ -2076,13 +2212,29 @@ def run_experiment_with_phase_checkpoints(
     )
 
     trainer = AdversarialTrainer(
-        model, device, model_type, tokenizer=tokenizer, features=features
+        model,
+        device,
+        model_type,
+        tokenizer=tokenizer,
+        features=features,
+        verbose=verbose,
     )
 
     if hybrid_split is None:
         hybrid_split = {"clean": 0.6, "feature": 0.2, "sequence": 0.2}
 
     print(f"\nTraining avec checkpoints de phase - adversarial ratio: {adv_ratio}")
+
+    if verbose:
+        print(f"  [VERBOSE] Starting training loop...")
+        print(
+            f"  [VERBOSE]   epochs={epochs}, lr={LEARNING_RATE}, weight_decay={WEIGHT_DECAY}"
+        )
+        print(f"  [VERBOSE]   adv_method={adv_method}, adv_ratio={adv_ratio}")
+        if torch.cuda.is_available():
+            print(
+                f"  [VERBOSE]   GPU before training: {torch.cuda.memory_allocated() / 1e9:.2f} GB"
+            )
 
     X_train_raw = X_tok_train if use_nlp else X_train
 
@@ -2825,6 +2977,11 @@ def main():
         default=None,
         help="Path to preprocessed data directory (skip preprocessing if data exists)",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose mode to trace execution and debug crashes",
+    )
 
     args = parser.parse_args()
 
@@ -2868,7 +3025,11 @@ def main():
             data_dir=data_dir,
         )
     elif args.phase_checkpoints:
-        # Utiliser la nouvelle méthode avec checkpoints de phase
+        print(f"\n{'#' * 70}")
+        print(
+            f"  PHASE {args.model.upper()} on {args.dataset.upper() if args.dataset else 'CSV'} (verbose={args.verbose})"
+        )
+        print(f"{'#' * 70}")
         run_experiment_with_phase_checkpoints(
             model_type=args.model,
             seq_length=args.seq_length,
@@ -2885,6 +3046,7 @@ def main():
             no_balancing=args.no_balancing,
             use_class_weights=args.use_class_weights,
             preprocessed_dir=args.preprocessed_dir,
+            verbose=args.verbose,
         )
     else:
         run_experiment(
