@@ -354,10 +354,8 @@ class AdversarialTrainer:
         n_batches = len(train_loader)
 
         if self.verbose:
-            print(
-                f"    [VERBOSE] train_epoch: {n_batches} batches, batch_size={train_loader.batch_size}"
-            )
             epoch_start = time.time()
+            last_print_time = 0
 
         for batch_idx, (X_batch, y_batch) in enumerate(
             tqdm(
@@ -370,12 +368,8 @@ class AdversarialTrainer:
                 mininterval=1.0,
             )
         ):
-            batch_start = time.time() if self.verbose else 0
             X_batch = X_batch.to(self.device)
             y_batch = y_batch.to(self.device)
-
-            if self.verbose:
-                batch_to_device = time.time() - batch_start
 
             if is_nlp and X_raw_batch is not None:
                 raw_slice = X_raw_batch[
@@ -387,7 +381,6 @@ class AdversarialTrainer:
             if adv_generator is not None and adv_ratio > 0:
                 n_adv = int(len(X_batch) * adv_ratio)
                 if n_adv > 0:
-                    # Calculate split sizes based on hybrid ratios
                     n_feature = int(
                         n_adv
                         * hybrid_split.get("feature", 0.2)
@@ -400,7 +393,6 @@ class AdversarialTrainer:
 
                     adv_indices = np.random.choice(len(X_batch), n_adv, replace=False)
 
-                    # Split indices for feature-level and sequence-level attacks
                     idx_feature = adv_indices[:n_feature]
                     idx_sequence = adv_indices[n_feature : n_feature + n_sequence]
 
@@ -412,7 +404,6 @@ class AdversarialTrainer:
                         raw_adv_feature = X_batch[idx_feature].cpu().numpy()
                         raw_adv_sequence = X_batch[idx_sequence].cpu().numpy()
 
-                    # Apply feature-level attack
                     if len(idx_feature) > 0:
                         X_adv_feature = adv_generator.feature_attack.generate_batch(
                             raw_adv_feature,
@@ -431,7 +422,6 @@ class AdversarialTrainer:
                             )
                         del X_adv_feature
 
-                    # Apply sequence-level attack (adversarial search)
                     if len(idx_sequence) > 0:
                         if sensitivity_results is None:
                             X_adv_sequence = (
@@ -474,14 +464,6 @@ class AdversarialTrainer:
                     _, predicted = outputs.max(1)
                     correct += predicted.eq(y_batch).sum().item()
                     total_loss += loss.item()
-
-                    if self.verbose:
-                        batch_time = time.time() - batch_start
-                        print(
-                            f"    [VERBOSE] Batch {batch_idx + 1}/{n_batches}: "
-                            f"to_device={batch_to_device:.3f}s, total={batch_time:.3f}s, "
-                            f"loss={loss.item():.4f}, acc={correct / total:.4f}"
-                        )
                 else:
                     optimizer.zero_grad()
                     outputs = self.model(X_batch)
@@ -493,24 +475,10 @@ class AdversarialTrainer:
                     _, predicted = outputs.max(1)
                     correct += predicted.eq(y_batch).sum().item()
                     total_loss += loss.item()
-
-                    if self.verbose:
-                        batch_time = time.time() - batch_start
-                        print(
-                            f"    [VERBOSE] Batch {batch_idx + 1}/{n_batches}: "
-                            f"to_device={batch_to_device:.3f}s, total={batch_time:.3f}s, "
-                            f"loss={loss.item():.4f}, acc={correct / total:.4f}"
-                        )
             else:
                 optimizer.zero_grad()
-                fwd_start = time.time() if self.verbose else 0
                 outputs = self.model(X_batch)
                 loss = criterion(outputs, y_batch)
-
-                if self.verbose:
-                    fwd_time = time.time() - fwd_start
-                    bwd_start = time.time()
-
                 loss.backward()
                 optimizer.step()
 
@@ -519,21 +487,32 @@ class AdversarialTrainer:
                 correct += predicted.eq(y_batch).sum().item()
                 total_loss += loss.item()
 
-                if self.verbose:
-                    batch_time = time.time() - batch_start
-                    bwd_time = time.time() - bwd_start
-                    print(
-                        f"    [VERBOSE] Batch {batch_idx + 1}/{n_batches}: "
-                        f"to_dev={batch_to_device:.3f}s, fwd={fwd_time:.3f}s, "
-                        f"bwd={bwd_time:.3f}s, total={batch_time:.3f}s, "
-                        f"loss={loss.item():.4f}, acc={correct / total:.4f}"
+            if self.verbose:
+                current_time = time.time()
+                if (
+                    batch_idx == 0
+                    or current_time - last_print_time >= 5.0
+                    or batch_idx == n_batches - 1
+                ):
+                    elapsed = current_time - epoch_start
+                    batches_per_sec = (batch_idx + 1) / elapsed if elapsed > 0 else 0
+                    eta = (
+                        (n_batches - batch_idx - 1) / batches_per_sec
+                        if batches_per_sec > 0
+                        else 0
                     )
+                    print(
+                        f"\r    [{batch_idx + 1}/{n_batches}] "
+                        f"{batches_per_sec:.1f} batch/s | ETA: {eta:.0f}s | "
+                        f"loss={total_loss / (batch_idx + 1):.4f} acc={correct / total:.4f}",
+                        end="",
+                        flush=True,
+                    )
+                    last_print_time = current_time
 
         if self.verbose:
             epoch_time = time.time() - epoch_start
-            print(
-                f"    [VERBOSE] Epoch completed in {epoch_time:.1f}s ({n_batches} batches)"
-            )
+            print(f"\n    ✓ Epoch done in {epoch_time:.1f}s ({n_batches} batches)")
 
         return total_loss / len(train_loader), correct / total
 
@@ -939,7 +918,7 @@ class AdversarialTrainer:
 
             y_all = []
             if self.verbose:
-                print("  [VERBOSE] Computing class weights...")
+                print("  [V] Computing class weights...")
             for _, yb in tqdm(
                 train_loader,
                 desc="Computing class weights",
@@ -992,7 +971,7 @@ class AdversarialTrainer:
             print(f"\n  ▶ Starting P1 Epoch {epoch + 1}/{phase1_epochs}...", flush=True)
             if self.verbose:
                 print(
-                    f"  [VERBOSE] Phase 1 Epoch {epoch + 1}: train_loader has {len(train_loader)} batches"
+                    f"  [V] P1 Epoch {epoch + 1}/{phase1_epochs}: {len(train_loader)} batches"
                 )
             train_loss, train_acc = self.train_epoch(
                 train_loader,
@@ -1220,7 +1199,7 @@ class AdversarialTrainer:
             print(f"\n  ▶ Starting P2 Epoch {epoch + 1}/{phase2_epochs}...", flush=True)
             if self.verbose:
                 print(
-                    f"  [VERBOSE] Phase 2 Epoch {epoch + 1}: adv_train_loader has {len(adv_train_loader)} batches"
+                    f"  [V] P2 Epoch {epoch + 1}/{phase2_epochs}: {len(adv_train_loader)} batches"
                 )
             train_loss, train_acc = self.train_epoch(
                 adv_train_loader,
@@ -2126,15 +2105,8 @@ def run_experiment_with_phase_checkpoints(
     test_loader = DataLoader(test_dataset, batch_size=eval_batch_size)
 
     if verbose:
-        print(f"\n  [VERBOSE] DataLoaders created:")
         print(
-            f"    train_loader: {len(train_dataset):,} samples / {batch_size} batch_size = {len(train_loader)} batches"
-        )
-        print(
-            f"    val_loader: {len(val_dataset):,} samples / {eval_batch_size} batch_size = {len(val_loader)} batches"
-        )
-        print(
-            f"    test_loader: {len(test_dataset):,} samples / {eval_batch_size} batch_size = {len(test_loader)} batches"
+            f"  [V] Batches: train={len(train_loader)}, val={len(val_loader)}, test={len(test_loader)}"
         )
 
     print(f"\nInput size: {input_size}, Classes: {num_classes}")
