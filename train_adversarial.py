@@ -870,7 +870,8 @@ class AdversarialTrainer:
             for _, yb in train_loader:
                 y_all.extend(yb.numpy())
             y_all = np.array(y_all)
-            classes = np.arange(num_classes)
+            classes = np.array(sorted(set(y_all)))
+            num_classes = max(int(y_all.max()) + 1, num_classes)
             cw = compute_class_weight("balanced", classes=classes, y=y_all)
             class_weights = torch.FloatTensor(cw).to(self.device)
             criterion = nn.CrossEntropyLoss(weight=class_weights)
