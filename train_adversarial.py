@@ -1143,57 +1143,56 @@ class AdversarialTrainer:
             return self.history
 
         # ─────────────────────────────────────────────────────────
-        # PHASE 2 : Entraînement Antagoniste (Corpus Conjoint)
+        # PHASE 2 : Entraînement Antagoniste (Dynamic Adversarial Training)
         # ─────────────────────────────────────────────────────────
         print(f"\n{'=' * 60}")
-        print("PHASE 2: ENTRAÎNEMENT ANTAGONISTE (Corpus Conjoint)")
+        print("PHASE 2: ENTRAÎNEMENT ANTAGONISTE (Dynamic Adversarial Training)")
         print(f"{'=' * 60}\n")
-
-        # Créer le corpus conjoint avec les attaques pré-générées
-        print("  Création du corpus conjoint (bénignes + adversaires)...")
-
-        adv_train_loader = train_loader
-        X_joint_raw = X_train_raw
-        if (
-            X_train is not None
-            and y_train is not None
-            and X_adv_precomputed is not None
-        ):
-            n_adv = len(X_adv_precomputed)
-            if n_adv > 0:
-                X_joint = np.concatenate([X_train, X_adv_precomputed], axis=0)
-                y_joint = np.concatenate([y_train, y_adv_precomputed], axis=0)
-                if X_train_raw is not None and X_adv_raw_precomputed is not None:
-                    X_joint_raw = np.concatenate(
-                        [X_train_raw, X_adv_raw_precomputed], axis=0
-                    )
-                joint_dataset = IoTSequenceDataset(X_joint, y_joint)
-                adv_train_loader = DataLoader(
-                    joint_dataset, batch_size=batch_size, shuffle=True
-                )
-                print(
-                    f"    Corpus conjoint: {len(X_train):,} bénignes + {n_adv:,} adversaires = {len(X_joint):,} total"
-                )
+        print(f"  Mode: Génération dynamique d'exemples adversaires par batch")
+        print(f"  Ratio adversaire: {adv_ratio * 100:.0f}%")
+        print(f"  Split: {hybrid_split}")
 
         best_val_acc_p2 = 0.0
         best_state_p2 = copy.deepcopy(self.model.state_dict())
         patience_counter = 0
 
+        sensitivity_p2 = sensitivity_results_precomputed
+
         for epoch in range(phase2_epochs):
             print(f"\n  ▶ Starting P2 Epoch {epoch + 1}/{phase2_epochs}...", flush=True)
+
+            if (
+                epoch > 0
+                and epoch % 3 == 0
+                and X_train is not None
+                and y_train is not None
+            ):
+                n_sens = min(500, len(X_train))
+                sens_indices = np.random.choice(len(X_train), n_sens, replace=False)
+                print(f"  [Sensitivity Update] Re-computing sensitivity analysis...")
+                sensitivity_p2 = feature_attack.analyze_sensitivity(
+                    self.model,
+                    X_train[sens_indices],
+                    y_train[sens_indices],
+                    self.device,
+                    batch_size=batch_size,
+                    verbose=False,
+                )
+
             if self.verbose:
                 print(
-                    f"  [V] P2 Epoch {epoch + 1}/{phase2_epochs}: {len(adv_train_loader)} batches"
+                    f"  [V] P2 Epoch {epoch + 1}/{phase2_epochs}: {len(train_loader)} batches"
                 )
             train_loss, train_acc = self.train_epoch(
-                adv_train_loader,
+                train_loader,
                 optimizer,
                 criterion,
-                None,
-                0.0,
+                adv_generator,
+                adv_ratio,
                 adv_method,
-                None,
-                X_raw_batch=X_joint_raw,
+                hybrid_split,
+                X_raw_batch=X_train_raw,
+                sensitivity_results=sensitivity_p2,
             )
             print(
                 f"  ✓ P2 Epoch {epoch + 1} train done, running validation...",
@@ -1230,7 +1229,7 @@ class AdversarialTrainer:
         # XGBoost: fit l'arbre AVANT le Crash Test Phase 2
         if is_xgboost:
             print("\n  🌲 Fitting XGBoost sur features LSTM extraites...")
-            self.model.fit_xgboost(adv_train_loader, self.device)
+            self.model.fit_xgboost(train_loader, self.device)
 
         if save_path:
             checkpoint_path = save_path / "checkpoint_phase2.pt"
@@ -1442,6 +1441,15 @@ class AdversarialTrainer:
             print(f"{'-' * 80}")
 
         print(f"{'=' * 80}\n")
+
+    def _save_phase_report(self, all_crash_results: Dict, save_path: Path):
+        """Save phase crash test results to JSON file."""
+        import json
+
+        report_path = save_path / "phase_report.json"
+        with open(report_path, "w") as f:
+            json.dump(all_crash_results, f, indent=2, default=str)
+        print(f"  📊 Phase report saved: {report_path}")
 
     def predict(self, dataloader: DataLoader) -> Tuple[np.ndarray, np.ndarray]:
         """Get predictions."""
