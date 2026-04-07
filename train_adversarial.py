@@ -1161,15 +1161,12 @@ class AdversarialTrainer:
         for epoch in range(phase2_epochs):
             print(f"\n  ▶ Starting P2 Epoch {epoch + 1}/{phase2_epochs}...", flush=True)
 
-            if (
-                epoch > 0
-                and epoch % 3 == 0
-                and X_train is not None
-                and y_train is not None
-            ):
-                n_sens = min(500, len(X_train))
+            if X_train is not None and y_train is not None:
+                n_sens = min(1000, len(X_train))
                 sens_indices = np.random.choice(len(X_train), n_sens, replace=False)
-                print(f"  [Sensitivity Update] Re-computing sensitivity analysis...")
+                print(
+                    f"  [Sensitivity Update] Re-computing sensitivity analysis (n={n_sens})..."
+                )
                 sensitivity_p2 = feature_attack.analyze_sensitivity(
                     self.model,
                     X_train[sens_indices],
@@ -1178,6 +1175,13 @@ class AdversarialTrainer:
                     batch_size=batch_size,
                     verbose=False,
                 )
+                top_vuln = sorted(
+                    sensitivity_p2, key=lambda r: r["drop"], reverse=True
+                )[:3]
+                for v in top_vuln:
+                    print(
+                        f"    → {v['feature']} ({v['strategy']}): drop={v['drop']:.4f}"
+                    )
 
             if self.verbose:
                 print(
