@@ -63,7 +63,7 @@ class TRADESAttack:
         Returns:
             x_adv: adversarial examples
         """
-        model.eval()
+        was_training = model.training
         x_adv = x.clone().detach()
 
         # Random initialization within epsilon ball
@@ -101,7 +101,6 @@ class TRADESAttack:
                 x_adv_np = self.projection_fn(x_adv_np)
                 x_adv = torch.FloatTensor(x_adv_np).to(device)
 
-        model.train()
         return x_adv.detach()
 
 
