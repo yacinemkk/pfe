@@ -194,7 +194,8 @@ class TRADESTrainer:
             adv_logits = self.model(X_adv)
 
             # KL divergence: make predictions consistent
-            clean_probs = F.softmax(clean_logits, dim=1)
+            # Detach clean_probs - gradients should only flow through adv_logits
+            clean_probs = F.softmax(clean_logits, dim=1).detach()
             adv_log_probs = F.log_softmax(adv_logits, dim=1)
             kl_loss = F.kl_div(adv_log_probs, clean_probs, reduction="batchmean")
 
