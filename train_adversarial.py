@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
 """
-Hybrid Adversarial Training for IoT Device Identification
+Adversarial Training for IoT Device Identification
 
 This script implements:
 1. Multiple model architectures (LSTM, Transformer, CNN-LSTM)
 2. Multiple sequence lengths for experimentation
-3. Feature-level adversarial attacks (IoT-SDN style)
-4. Sequence-level adversarial attacks (adversarial search via mimicry)
-5. Hybrid adversarial training with 60% clean + 20% feature-level + 20% sequence-level
-6. Comprehensive robustness evaluation
+3. Unified adversarial attack pipeline:
+   - SensitivityAnalysis: Identifies vulnerable features
+   - AdversarialSearch: Greedy search for minimal evasion
+4. Comprehensive robustness evaluation
 
 Usage:
-    # Default hybrid training: 60% clean + 20% feature + 20% sequence
-    python train_adversarial.py --model lstm --seq_length 10 --adv_method hybrid
-    
-    # Custom hybrid split
-    python train_adversarial.py --model cnn_lstm --seq_length 50 --adv_method hybrid \
-        --hybrid_clean 0.5 --hybrid_feature 0.3 --hybrid_sequence 0.2
-    
+    # Default training with adversarial examples
+    python train_adversarial.py --model lstm --seq_length 10 --adv_method search
+
+    # Phase checkpoints mode (recommended)
+    python train_adversarial.py --model cnn_lstm --seq_length 50 --phase_checkpoints
+
     # Compare all configurations
     python train_adversarial.py --compare_all --seq_lengths 10,25,50
 """
@@ -75,9 +74,8 @@ from src.models.cnn_lstm import CNNLSTMClassifier, CNNClassifier
 from src.models.xgboost_lstm import XGBoostLSTMClassifier
 from src.models.cnn_bilstm_transformer import CNNBiLSTMTransformerClassifier
 from src.adversarial.attacks import (
-    FeatureLevelAttack,
-    SequenceLevelAttack,
-    HybridAdversarialAttack,
+    SensitivityAnalysis,
+    AdversarialSearch,
     AdversarialEvaluator,
 )
 
@@ -327,18 +325,17 @@ class AdversarialTrainer:
         train_loader: DataLoader,
         optimizer: torch.optim.Optimizer,
         criterion: nn.Module,
-        adv_generator: Optional[HybridAdversarialAttack] = None,
+        adv_generator: Optional[AdversarialSearch] = None,
         adv_ratio: float = 0.0,
-        adv_method: str = "hybrid",
-        hybrid_split: Optional[Dict[str, float]] = None,
+        adv_method: str = "search",
         X_raw_batch: Optional[np.ndarray] = None,
         sensitivity_results: Optional[List[Dict]] = None,
     ) -> Tuple[float, float]:
         """Train for one epoch with optional adversarial training.
 
         Args:
-            hybrid_split: Dict with 'clean', 'feature', 'sequence' ratios (must sum to 1.0)
-                         Default: {'clean': 0.6, 'feature': 0.2, 'sequence': 0.2}
+            adv_generator: AdversarialSearch instance for generating adversarial samples
+            adv_ratio: ratio of adversarial samples per batch
             X_raw_batch: Raw feature data for re-tokenization (NLP transformer mode)
             sensitivity_results: Output from sensitivity analysis for adversarial search
         """
@@ -346,9 +343,6 @@ class AdversarialTrainer:
 
         self.model.train()
         total_loss, correct, total = 0, 0, 0
-
-        if hybrid_split is None:
-            hybrid_split = {"clean": 0.6, "feature": 0.2, "sequence": 0.2}
 
         is_nlp = self.tokenizer is not None and self.features is not None
         n_batches = len(train_loader)
@@ -371,75 +365,36 @@ class AdversarialTrainer:
             if adv_generator is not None and adv_ratio > 0:
                 n_adv = int(len(X_batch) * adv_ratio)
                 if n_adv > 0:
-                    n_feature = int(
-                        n_adv
-                        * hybrid_split.get("feature", 0.2)
-                        / (
-                            hybrid_split.get("feature", 0.2)
-                            + hybrid_split.get("sequence", 0.2)
-                        )
-                    )
-                    n_sequence = n_adv - n_feature
-
                     adv_indices = np.random.choice(len(X_batch), n_adv, replace=False)
-
-                    idx_feature = adv_indices[:n_feature]
-                    idx_sequence = adv_indices[n_feature : n_feature + n_sequence]
 
                     if is_nlp and raw_slice is not None:
                         raw_adv = raw_slice.copy()
-                        raw_adv_feature = raw_adv[idx_feature]
-                        raw_adv_sequence = raw_adv[idx_sequence]
+                        raw_adv_samples = raw_adv[adv_indices]
                     else:
-                        raw_adv_feature = X_batch[idx_feature].cpu().numpy()
-                        raw_adv_sequence = X_batch[idx_sequence].cpu().numpy()
+                        raw_adv_samples = X_batch[adv_indices].cpu().numpy()
 
-                    if len(idx_feature) > 0:
-                        X_adv_feature = adv_generator.feature_attack.generate_batch(
-                            raw_adv_feature,
-                            y_batch[idx_feature].cpu().numpy(),
+                    if sensitivity_results is not None:
+                        X_adv = adv_generator.generate_adversarial(
+                            raw_adv_samples,
+                            y_batch[adv_indices].cpu().numpy(),
+                            sensitivity_results=sensitivity_results,
+                            verbose=False,
                         )
-                        if is_nlp:
-                            tok_adv_feature = tokenize_adversarial_batch(
-                                X_adv_feature, self.features, self.tokenizer
-                            )
-                            X_batch[idx_feature] = torch.LongTensor(tok_adv_feature).to(
-                                self.device
-                            )
-                        else:
-                            X_batch[idx_feature] = torch.FloatTensor(X_adv_feature).to(
-                                self.device
-                            )
-                        del X_adv_feature
+                    else:
+                        X_adv = adv_generator.sensitivity_analysis.generate_adversarial(
+                            raw_adv_samples,
+                            y_batch[adv_indices].cpu().numpy(),
+                            verbose=False,
+                        )
 
-                    if len(idx_sequence) > 0:
-                        if sensitivity_results is None:
-                            X_adv_sequence = (
-                                adv_generator.feature_attack.generate_batch(
-                                    raw_adv_sequence,
-                                    y_batch[idx_sequence].cpu().numpy(),
-                                )
-                            )
-                        else:
-                            X_adv_sequence = (
-                                adv_generator.sequence_attack.generate_batch(
-                                    raw_adv_sequence,
-                                    y_batch[idx_sequence].cpu().numpy(),
-                                    sensitivity_results=sensitivity_results,
-                                )
-                            )
-                        if is_nlp:
-                            tok_adv_sequence = tokenize_adversarial_batch(
-                                X_adv_sequence, self.features, self.tokenizer
-                            )
-                            X_batch[idx_sequence] = torch.LongTensor(
-                                tok_adv_sequence
-                            ).to(self.device)
-                        else:
-                            X_batch[idx_sequence] = torch.FloatTensor(
-                                X_adv_sequence
-                            ).to(self.device)
-                        del X_adv_sequence
+                    if is_nlp:
+                        tok_adv = tokenize_adversarial_batch(
+                            X_adv, self.features, self.tokenizer
+                        )
+                        X_batch[adv_indices] = torch.LongTensor(tok_adv).to(self.device)
+                    else:
+                        X_batch[adv_indices] = torch.FloatTensor(X_adv).to(self.device)
+                    del X_adv
 
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
@@ -652,8 +607,8 @@ class AdversarialTrainer:
         phase_num: int,
         test_loader: DataLoader,
         criterion: nn.Module,
-        feature_attack: Optional[FeatureLevelAttack],
-        sequence_attack: Optional[SequenceLevelAttack],
+        sensitivity_analysis: Optional[SensitivityAnalysis],
+        adversarial_search: Optional[AdversarialSearch],
         X_test: Optional[np.ndarray],
         y_test: Optional[np.ndarray],
         batch_size: int,
@@ -694,54 +649,21 @@ class AdversarialTrainer:
             f"F1={clean_metrics['f1_score']:.4f}  Macro-F1={clean_per_class_data['macro_f1']:.4f}"
         )
 
-        adv_feature_per_class = {}
-        adv_search_per_class = {}
+        adv_per_class_data = {}
 
-        # 2. Feature-level attack
-        if feature_attack is not None and X_test is not None and y_test is not None:
+        # 2. Adversarial attack (unified sensitivity + search)
+        if (
+            adversarial_search is not None
+            and sensitivity_analysis is not None
+            and X_test is not None
+            and y_test is not None
+        ):
             n_eval = min(1000, len(X_test))
             eval_indices = np.random.choice(len(X_test), n_eval, replace=False)
             X_eval = X_test[eval_indices].copy()
             y_eval = y_test[eval_indices].copy()
 
-            y_eval_expanded = np.repeat(y_eval, X_eval.shape[1])
-            X_adv_feature = feature_attack.generate_batch(
-                X_eval.reshape(-1, X_eval.shape[-1]), y_eval_expanded, verbose=False
-            ).reshape(X_eval.shape)
-
-            eval_dataset = IoTSequenceDataset(X_adv_feature, y_eval)
-            eval_loader = DataLoader(eval_dataset, batch_size=batch_size)
-            feat_metrics = self._compute_detailed_metrics(
-                eval_loader, criterion, num_classes
-            )
-            feat_per_class = self.compute_per_class_metrics(
-                eval_loader, label_encoder, num_classes
-            )
-            feat_metrics["robustness_ratio"] = feat_metrics["accuracy"] / max(
-                clean_acc, 1e-8
-            )
-            feat_metrics["macro_f1"] = feat_per_class["macro_f1"]
-            feat_metrics["per_class"] = feat_per_class["per_class"]
-            adv_feature_per_class = feat_per_class["per_class"]
-            crash_results["feature_attack"] = feat_metrics
-            print(
-                f"  [FeatureAdv]  Loss={feat_metrics['loss']:.4f}  Acc={feat_metrics['accuracy']:.4f}  "
-                f"P={feat_metrics['precision']:.4f}  R={feat_metrics['recall']:.4f}  "
-                f"F1={feat_metrics['f1_score']:.4f}  Macro-F1={feat_per_class['macro_f1']:.4f}  "
-                f"RR={feat_metrics['robustness_ratio']:.4f}"
-            )
-
-            del X_adv_feature, eval_dataset, eval_loader
-            gc.collect()
-
-        # 3. Sequence-level adversarial search
-        if sequence_attack is not None and X_test is not None and y_test is not None:
-            n_eval = min(1000, len(X_test))
-            eval_indices = np.random.choice(len(X_test), n_eval, replace=False)
-            X_eval = X_test[eval_indices].copy()
-            y_eval = y_test[eval_indices].copy()
-
-            sensitivity_results = feature_attack.analyze_sensitivity(
+            sensitivity_results = sensitivity_analysis.analyze(
                 self.model,
                 X_eval,
                 y_eval,
@@ -750,32 +672,33 @@ class AdversarialTrainer:
                 verbose=False,
             )
 
-            X_adv_search = sequence_attack.generate_batch(
+            X_adv = adversarial_search.generate_adversarial(
                 X_eval, y_eval, sensitivity_results=sensitivity_results, verbose=False
             )
-            eval_dataset = IoTSequenceDataset(X_adv_search, y_eval)
+
+            eval_dataset = IoTSequenceDataset(X_adv, y_eval)
             eval_loader = DataLoader(eval_dataset, batch_size=batch_size)
-            search_metrics = self._compute_detailed_metrics(
+            adv_metrics = self._compute_detailed_metrics(
                 eval_loader, criterion, num_classes
             )
-            search_per_class = self.compute_per_class_metrics(
+            adv_per_class = self.compute_per_class_metrics(
                 eval_loader, label_encoder, num_classes
             )
-            search_metrics["robustness_ratio"] = search_metrics["accuracy"] / max(
+            adv_metrics["robustness_ratio"] = adv_metrics["accuracy"] / max(
                 clean_acc, 1e-8
             )
-            search_metrics["macro_f1"] = search_per_class["macro_f1"]
-            search_metrics["per_class"] = search_per_class["per_class"]
-            adv_search_per_class = search_per_class["per_class"]
-            crash_results["sequence_search"] = search_metrics
+            adv_metrics["macro_f1"] = adv_per_class["macro_f1"]
+            adv_metrics["per_class"] = adv_per_class["per_class"]
+            adv_per_class_data = adv_per_class["per_class"]
+            crash_results["adversarial"] = adv_metrics
             print(
-                f"  [SeqSearch]   Loss={search_metrics['loss']:.4f}  Acc={search_metrics['accuracy']:.4f}  "
-                f"P={search_metrics['precision']:.4f}  R={search_metrics['recall']:.4f}  "
-                f"F1={search_metrics['f1_score']:.4f}  Macro-F1={search_per_class['macro_f1']:.4f}  "
-                f"RR={search_metrics['robustness_ratio']:.4f}"
+                f"  [Adversarial] Loss={adv_metrics['loss']:.4f}  Acc={adv_metrics['accuracy']:.4f}  "
+                f"P={adv_metrics['precision']:.4f}  R={adv_metrics['recall']:.4f}  "
+                f"F1={adv_metrics['f1_score']:.4f}  Macro-F1={adv_per_class['macro_f1']:.4f}  "
+                f"RR={adv_metrics['robustness_ratio']:.4f}"
             )
 
-            del X_adv_search, eval_dataset, eval_loader, X_eval, y_eval
+            del X_adv, eval_dataset, eval_loader, sensitivity_results
             gc.collect()
 
         if torch.cuda.is_available():
@@ -800,11 +723,11 @@ class AdversarialTrainer:
                     src.rename(dst)
 
                 # Plot 2: Adversarial effect
-                if adv_feature_per_class or adv_search_per_class:
+                if adv_per_class_data:
                     generate_adversarial_effect_plot(
                         clean_per_class_data["per_class"],
-                        adv_feature_per_class,
-                        adv_search_per_class,
+                        adv_per_class_data,
+                        {},
                         save_path,
                         f"{self.model_name} (Phase {phase_num})",
                     )
@@ -820,15 +743,10 @@ class AdversarialTrainer:
                         "macro_f1": clean_per_class_data["macro_f1"],
                     }
                 }
-                if "feature_attack" in crash_results:
-                    summary_data["adv_feature_metrics"] = {
-                        "accuracy": crash_results["feature_attack"]["accuracy"],
-                        "macro_f1": crash_results["feature_attack"].get("macro_f1", 0),
-                    }
-                if "sequence_search" in crash_results:
-                    summary_data["adv_search_metrics"] = {
-                        "accuracy": crash_results["sequence_search"]["accuracy"],
-                        "macro_f1": crash_results["sequence_search"].get("macro_f1", 0),
+                if "adversarial" in crash_results:
+                    summary_data["adv_metrics"] = {
+                        "accuracy": crash_results["adversarial"]["accuracy"],
+                        "macro_f1": crash_results["adversarial"].get("macro_f1", 0),
                     }
                 generate_robustness_summary_plot(
                     summary_data,
@@ -853,14 +771,13 @@ class AdversarialTrainer:
         epochs: int = 30,
         lr: float = 1e-3,
         weight_decay: float = 1e-4,
-        adv_generator: Optional[HybridAdversarialAttack] = None,
+        adv_generator: Optional[AdversarialSearch] = None,
         adv_ratio: float = 0.0,
         adv_method: str = "search",
-        hybrid_split: Optional[Dict[str, float]] = None,
         save_path: Optional[Path] = None,
         early_stopping_patience: int = 5,
-        feature_attack: Optional[FeatureLevelAttack] = None,
-        sequence_attack: Optional[SequenceLevelAttack] = None,
+        sensitivity_analysis: Optional[SensitivityAnalysis] = None,
+        adversarial_search: Optional[AdversarialSearch] = None,
         X_test: Optional[np.ndarray] = None,
         y_test: Optional[np.ndarray] = None,
         batch_size: int = 64,
@@ -1017,8 +934,8 @@ class AdversarialTrainer:
             1,
             test_loader,
             criterion,
-            feature_attack,
-            sequence_attack,
+            sensitivity_analysis,
+            adversarial_search,
             X_test,
             y_test,
             batch_size,
@@ -1034,7 +951,7 @@ class AdversarialTrainer:
         if (
             adv_generator is not None
             and adv_ratio > 0
-            and sequence_attack is not None
+            and adversarial_search is not None
             and X_train is not None
             and y_train is not None
         ):
@@ -1047,7 +964,7 @@ class AdversarialTrainer:
 
             # 1) Sensitivity analysis
             print("  [1/3] Analyse de sensibilité du modèle Phase 1...")
-            sensitivity_results = feature_attack.analyze_sensitivity(
+            sensitivity_results = sensitivity_analysis.analyze(
                 self.model,
                 X_train[adv_indices],
                 y_train[adv_indices],
@@ -1080,11 +997,9 @@ class AdversarialTrainer:
             print(
                 f"\n  [2/3] Génération du batch adversaire (n={n_adv:,} échantillons)..."
             )
-            print(
-                f"  Méthode : {adv_method} (60% clean + 20% feature-level + 20% sequence-level)"
-            )
+            print(f"  Méthode : {adv_method} (recherche greedy adversariale)")
 
-            X_adv = sequence_attack.generate_batch(
+            X_adv = adversarial_search.generate_adversarial(
                 X_train[adv_indices],
                 y_train[adv_indices],
                 sensitivity_results=sensitivity_results,
@@ -1150,7 +1065,6 @@ class AdversarialTrainer:
         print(f"{'=' * 60}\n")
         print(f"  Mode: Génération dynamique d'exemples adversaires par batch")
         print(f"  Ratio adversaire: {adv_ratio * 100:.0f}%")
-        print(f"  Split: {hybrid_split}")
 
         best_val_acc_p2 = 0.0
         best_state_p2 = copy.deepcopy(self.model.state_dict())
@@ -1167,7 +1081,7 @@ class AdversarialTrainer:
                 print(
                     f"  [Sensitivity Update] Re-computing sensitivity analysis (n={n_sens})..."
                 )
-                sensitivity_p2 = feature_attack.analyze_sensitivity(
+                sensitivity_p2 = sensitivity_analysis.analyze(
                     self.model,
                     X_train[sens_indices],
                     y_train[sens_indices],
@@ -1194,7 +1108,6 @@ class AdversarialTrainer:
                 adv_generator,
                 adv_ratio,
                 adv_method,
-                hybrid_split,
                 X_raw_batch=X_train_raw,
                 sensitivity_results=sensitivity_p2,
             )
@@ -1253,8 +1166,8 @@ class AdversarialTrainer:
             2,
             test_loader,
             criterion,
-            feature_attack,
-            sequence_attack,
+            sensitivity_analysis,
+            adversarial_search,
             X_test,
             y_test,
             batch_size,
@@ -1314,8 +1227,8 @@ class AdversarialTrainer:
         phase_num: int,
         test_loader: DataLoader,
         criterion: nn.Module,
-        feature_attack: Optional[FeatureLevelAttack],
-        sequence_attack: Optional[SequenceLevelAttack],
+        sensitivity_analysis: Optional[SensitivityAnalysis],
+        adversarial_search: Optional[AdversarialSearch],
         X_test: Optional[np.ndarray],
         y_test: Optional[np.ndarray],
         batch_size: int,
@@ -1345,8 +1258,8 @@ class AdversarialTrainer:
         )
 
         if (
-            sequence_attack is not None
-            and feature_attack is not None
+            adversarial_search is not None
+            and sensitivity_analysis is not None
             and X_test is not None
             and y_test is not None
         ):
@@ -1356,7 +1269,7 @@ class AdversarialTrainer:
             X_eval = X_test[eval_indices].copy()
             y_eval = y_test[eval_indices].copy()
 
-            sensitivity_results = feature_attack.analyze_sensitivity(
+            sensitivity_results = sensitivity_analysis.analyze(
                 self.model,
                 X_eval,
                 y_eval,
@@ -1364,7 +1277,7 @@ class AdversarialTrainer:
                 batch_size=batch_size,
                 verbose=False,
             )
-            X_adv = sequence_attack.generate_batch(
+            X_adv = adversarial_search.generate_adversarial(
                 X_eval, y_eval, sensitivity_results=sensitivity_results, verbose=False
             )
 
@@ -1569,9 +1482,9 @@ def generate_device_identification_plot(
 
 def generate_adversarial_effect_plot(
     clean_per_class: Dict,
-    adv_feature_per_class: Dict,
-    adv_search_per_class: Dict,
-    save_path: Path,
+    adv_per_class: Dict,
+    adv_search_per_class: Dict = None,
+    save_path: Path = None,
     model_type: str = "LSTM",
 ):
     """
@@ -1579,13 +1492,16 @@ def generate_adversarial_effect_plot(
 
     Shows per-device accuracy under clean vs each adversarial attack.
     """
+    if adv_search_per_class is None:
+        adv_search_per_class = {}
+
     devices = sorted(clean_per_class.keys())
     clean_f1 = [clean_per_class[d]["f1"] * 100 for d in devices]
 
     attack_data = {}
-    if adv_feature_per_class:
-        attack_data["Feature-Level"] = [
-            adv_feature_per_class.get(d, {}).get("f1", 0) * 100 for d in devices
+    if adv_per_class:
+        attack_data["Adversarial"] = [
+            adv_per_class.get(d, {}).get("f1", 0) * 100 for d in devices
         ]
     if adv_search_per_class:
         attack_data["Adversarial Search"] = [
@@ -2126,7 +2042,7 @@ def run_experiment_with_phase_checkpoints(
 
     X_train_flat = X_train.reshape(-1, X_train.shape[-1])
     y_train_expanded = np.repeat(y_train, X_train.shape[1])
-    feature_attack = FeatureLevelAttack(
+    sensitivity_analysis = SensitivityAnalysis(
         X_train_flat,
         y_train_expanded,
         features,
@@ -2137,15 +2053,11 @@ def run_experiment_with_phase_checkpoints(
     del X_train_flat, y_train_expanded
     gc.collect()
 
-    sequence_attack = SequenceLevelAttack(
+    adversarial_search = AdversarialSearch(
         model,
         device,
-        feature_attack,
+        sensitivity_analysis,
         batch_size=batch_size,
-    )
-
-    adv_generator = HybridAdversarialAttack(
-        feature_attack, sequence_attack, features, combine_ratio=0.5
     )
 
     trainer = AdversarialTrainer(
@@ -2156,9 +2068,6 @@ def run_experiment_with_phase_checkpoints(
         features=features,
         verbose=verbose,
     )
-
-    if hybrid_split is None:
-        hybrid_split = {"clean": 0.6, "feature": 0.2, "sequence": 0.2}
 
     print(f"\nTraining avec checkpoints de phase - adversarial ratio: {adv_ratio}")
 
@@ -2171,15 +2080,12 @@ def run_experiment_with_phase_checkpoints(
         epochs=epochs,
         lr=LEARNING_RATE,
         weight_decay=WEIGHT_DECAY,
-        adv_generator=adv_generator if adv_method != "none" else None,
+        adv_generator=adversarial_search if adv_method != "none" else None,
         adv_ratio=adv_ratio if adv_method != "none" else 0.0,
-        adv_method=adv_method
-        if adv_method in ["search", "feature", "hybrid"]
-        else "search",
-        hybrid_split=hybrid_split,
+        adv_method=adv_method if adv_method != "none" else "search",
         save_path=save_path if save_results else None,
-        feature_attack=feature_attack,
-        sequence_attack=sequence_attack,
+        sensitivity_analysis=sensitivity_analysis,
+        adversarial_search=adversarial_search,
         X_test=X_test,
         y_test=y_test,
         batch_size=eval_batch_size,
@@ -2202,7 +2108,6 @@ def run_experiment_with_phase_checkpoints(
         "sequence_length": seq_length,
         "adversarial_method": adv_method,
         "adversarial_ratio": adv_ratio,
-        "hybrid_split": hybrid_split,
         "num_classes": num_classes,
         "input_size": input_size,
         "parameters": sum(p.numel() for p in model.parameters()),
@@ -2241,7 +2146,7 @@ def run_experiment_with_phase_checkpoints(
     del X_train, X_val, X_test, y_train, y_val, y_test
     del train_loader, val_loader, test_loader
     del train_dataset, val_dataset, test_dataset
-    del model, trainer, feature_attack, sequence_attack, adv_generator
+    del model, trainer, sensitivity_analysis, adversarial_search
     if use_nlp:
         del X_tok_train, X_tok_val, X_tok_test
     gc.collect()
@@ -2260,7 +2165,6 @@ def run_experiment(
     batch_size: int,
     max_files: Optional[int] = None,
     save_results: bool = True,
-    hybrid_split: Optional[Dict[str, float]] = None,
     data_dir: Optional[Path] = None,
     dataset: Optional[str] = None,
     max_records: Optional[int] = None,
@@ -2322,7 +2226,7 @@ def run_experiment(
 
     X_train_flat = X_train.reshape(-1, X_train.shape[-1])
     y_train_expanded = np.repeat(y_train, X_train.shape[1])
-    feature_attack = FeatureLevelAttack(
+    sensitivity_analysis = SensitivityAnalysis(
         X_train_flat,
         y_train_expanded,
         features,
@@ -2333,38 +2237,23 @@ def run_experiment(
     del X_train_flat, y_train_expanded
     gc.collect()
 
-    sequence_attack = SequenceLevelAttack(
+    adversarial_search = AdversarialSearch(
         model,
         device,
-        feature_attack,
+        sensitivity_analysis,
         batch_size=batch_size,
-    )
-
-    adv_generator = HybridAdversarialAttack(
-        feature_attack, sequence_attack, features, combine_ratio=0.5
     )
 
     trainer = AdversarialTrainer(model, device, model_type)
 
-    # Default hybrid split: 60% clean, 20% feature-level, 20% sequence-level
-    if hybrid_split is None:
-        hybrid_split = {"clean": 0.6, "feature": 0.2, "sequence": 0.2}
-
     print(f"\nTraining with adversarial ratio: {adv_ratio}")
-    if adv_method == "hybrid":
-        print(
-            f"  Phased training: 60% clean -> 20% feature-level -> 20% sequence-level"
-        )
     history = trainer.fit(
         train_loader,
         val_loader,
         epochs=epochs,
-        adv_generator=adv_generator if adv_method != "none" else None,
+        adv_generator=adversarial_search if adv_method != "none" else None,
         adv_ratio=adv_ratio if adv_method != "none" else 0.0,
-        adv_method=adv_method
-        if adv_method in ["search", "feature", "hybrid"]
-        else "search",
-        hybrid_split=hybrid_split,
+        adv_method=adv_method if adv_method != "none" else "search",
         save_path=save_path if save_results else None,
         test_loader=test_loader,
     )
@@ -2409,7 +2298,6 @@ def run_experiment(
         "sequence_length": seq_length,
         "adversarial_method": adv_method,
         "adversarial_ratio": adv_ratio,
-        "hybrid_split": hybrid_split,
         "test_accuracy_clean": test_acc,
         "test_loss_clean": test_loss,
         "best_val_accuracy": max(history["val_acc"]),
@@ -2426,8 +2314,7 @@ def run_experiment(
     }
 
     adversarial_results = {}
-    adv_feature_per_class = {}
-    adv_search_per_class = {}
+    adv_per_class = {}
 
     if adv_method != "none":
         print("\nGenerating adversarial examples for evaluation...")
@@ -2437,98 +2324,37 @@ def run_experiment(
         X_eval = X_test[eval_indices].copy()
         y_eval = y_test[eval_indices].copy()
 
-        # ── Feature-level attack ────────────────────────────────
-        print("  Feature-level attack...")
-        seq_len = X_eval.shape[1]
-        y_eval_expanded = np.repeat(y_eval, seq_len)
-        X_adv_feature = feature_attack.generate_batch(
-            X_eval.reshape(-1, X_eval.shape[-1]), y_eval_expanded, verbose=True
-        ).reshape(X_eval.shape)
-
-        eval_dataset = IoTSequenceDataset(X_adv_feature, y_eval)
-        eval_loader = DataLoader(eval_dataset, batch_size=batch_size)
-        loss_f, acc_f = trainer.evaluate(eval_loader, criterion)
-
-        feat_detailed = trainer.compute_per_class_metrics(
-            eval_loader, label_encoder, num_classes
-        )
-        adv_feature_per_class = feat_detailed["per_class"]
-        adversarial_results["feature_level"] = {
-            "loss": loss_f,
-            "accuracy": acc_f,
-            "macro_f1": feat_detailed["macro_f1"],
-            "macro_precision": feat_detailed["macro_precision"],
-            "macro_recall": feat_detailed["macro_recall"],
-        }
-        results["adv_feature_metrics"] = adversarial_results["feature_level"].copy()
-        results["adv_feature_metrics"]["per_class"] = adv_feature_per_class
-        print(
-            f"  Feature-level - Loss: {loss_f:.4f}, Acc: {acc_f:.4f}, Macro-F1: {feat_detailed['macro_f1']:.4f}"
-        )
-
-        del X_adv_feature, eval_dataset, eval_loader
-        gc.collect()
-
-        # ── Sequence-level adversarial search ─────────────────────
-        print("  Sequence-level adversarial search...")
-        sensitivity_results = feature_attack.analyze_sensitivity(
+        # ── Adversarial attack (sensitivity + greedy search) ───────────
+        print("  Adversarial attack (sensitivity + greedy search)...")
+        sensitivity_results = sensitivity_analysis.analyze(
             model, X_eval, y_eval, device, batch_size=batch_size, verbose=True
         )
-        X_adv_search = sequence_attack.generate_batch(
+        X_adv = adversarial_search.generate_adversarial(
             X_eval, y_eval, sensitivity_results=sensitivity_results, verbose=True
         )
 
-        eval_dataset = IoTSequenceDataset(X_adv_search, y_eval)
+        eval_dataset = IoTSequenceDataset(X_adv, y_eval)
         eval_loader = DataLoader(eval_dataset, batch_size=batch_size)
-        loss_s, acc_s = trainer.evaluate(eval_loader, criterion)
+        loss_adv, acc_adv = trainer.evaluate(eval_loader, criterion)
 
-        search_detailed = trainer.compute_per_class_metrics(
+        adv_detailed = trainer.compute_per_class_metrics(
             eval_loader, label_encoder, num_classes
         )
-        adv_search_per_class = search_detailed["per_class"]
-        adversarial_results["sequence_search"] = {
-            "loss": loss_s,
-            "accuracy": acc_s,
-            "macro_f1": search_detailed["macro_f1"],
-            "macro_precision": search_detailed["macro_precision"],
-            "macro_recall": search_detailed["macro_recall"],
+        adv_per_class = adv_detailed["per_class"]
+        adversarial_results["adversarial"] = {
+            "loss": loss_adv,
+            "accuracy": acc_adv,
+            "macro_f1": adv_detailed["macro_f1"],
+            "macro_precision": adv_detailed["macro_precision"],
+            "macro_recall": adv_detailed["macro_recall"],
         }
-        results["adv_search_metrics"] = adversarial_results["sequence_search"].copy()
-        results["adv_search_metrics"]["per_class"] = adv_search_per_class
+        results["adv_metrics"] = adversarial_results["adversarial"].copy()
+        results["adv_metrics"]["per_class"] = adv_per_class
         print(
-            f"  Sequence Search - Loss: {loss_s:.4f}, Acc: {acc_s:.4f}, Macro-F1: {search_detailed['macro_f1']:.4f}"
+            f"  Adversarial - Loss: {loss_adv:.4f}, Acc: {acc_adv:.4f}, Macro-F1: {adv_detailed['macro_f1']:.4f}"
         )
 
-        del X_adv_search, eval_dataset, eval_loader
-        gc.collect()
-
-        # ── Hybrid attack ───────────────────────────────────────
-        print("  Hybrid attack...")
-        X_adv_hybrid = adv_generator.generate_batch(
-            X_eval, y_eval, method="hybrid", verbose=True
-        )
-
-        eval_dataset = IoTSequenceDataset(X_adv_hybrid, y_eval)
-        eval_loader = DataLoader(eval_dataset, batch_size=batch_size)
-        loss_h, acc_h = trainer.evaluate(eval_loader, criterion)
-
-        hybrid_detailed = trainer.compute_per_class_metrics(
-            eval_loader, label_encoder, num_classes
-        )
-        adversarial_results["hybrid"] = {
-            "loss": loss_h,
-            "accuracy": acc_h,
-            "macro_f1": hybrid_detailed["macro_f1"],
-            "macro_precision": hybrid_detailed["macro_precision"],
-            "macro_recall": hybrid_detailed["macro_recall"],
-        }
-        results["adv_hybrid_metrics"] = adversarial_results["hybrid"].copy()
-        results["adv_hybrid_metrics"]["per_class"] = hybrid_detailed["per_class"]
-        print(
-            f"  Hybrid        - Loss: {loss_h:.4f}, Acc: {acc_h:.4f}, Macro-F1: {hybrid_detailed['macro_f1']:.4f}"
-        )
-
-        del X_adv_hybrid, eval_dataset, eval_loader, X_eval, y_eval
+        del X_adv, eval_dataset, eval_loader, sensitivity_results
         gc.collect()
 
         results["adversarial_results"] = adversarial_results
@@ -2559,8 +2385,8 @@ def run_experiment(
                 print("  [2/4] Adversarial effect per device...")
                 generate_adversarial_effect_plot(
                     clean_detailed["per_class"],
-                    adv_feature_per_class,
-                    adv_search_per_class,
+                    adv_per_class,
+                    {},
                     save_path,
                     model_type,
                 )
@@ -2602,7 +2428,7 @@ def run_experiment(
 
     del X_train, X_val, X_test, y_train, y_val, y_test
     del test_loader, test_dataset, train_dataset, val_dataset
-    del model, trainer, feature_attack, sequence_attack, adv_generator
+    del model, trainer, sensitivity_analysis, adversarial_search
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -2689,7 +2515,6 @@ def run_dual_dataset_study(
     batch_size: int,
     max_files: Optional[int] = None,
     max_records: Optional[int] = None,
-    hybrid_split: Optional[Dict[str, float]] = None,
     csv_data_dir: Optional[Path] = None,
     json_data_dir: Optional[Path] = None,
 ) -> Dict:
@@ -2722,7 +2547,6 @@ def run_dual_dataset_study(
                 batch_size=batch_size,
                 max_files=max_files if ds_name == "csv" else None,
                 save_results=True,
-                hybrid_split=hybrid_split,
                 data_dir=ds_dir,
                 dataset=ds_name,
                 max_records=max_records if ds_name == "json" else None,
@@ -2845,24 +2669,6 @@ def main():
         help="Comma-separated adversarial methods for comparison",
     )
     parser.add_argument(
-        "--hybrid_clean",
-        type=float,
-        default=0.6,
-        help="Ratio of clean samples in hybrid training (default: 0.6)",
-    )
-    parser.add_argument(
-        "--hybrid_feature",
-        type=float,
-        default=0.2,
-        help="Ratio of feature-level adversarial samples in hybrid training (default: 0.2)",
-    )
-    parser.add_argument(
-        "--hybrid_sequence",
-        type=float,
-        default=0.2,
-        help="Ratio of sequence-level adversarial samples in hybrid training (default: 0.2)",
-    )
-    parser.add_argument(
         "--phase_checkpoints",
         action="store_true",
         help="Utiliser la méthode avec sauvegarde et évaluation de checkpoints après chaque phase",
@@ -2916,16 +2722,6 @@ def main():
         print("Transformer model selected, defaulting sequence length to 25.")
         args.seq_length = 25
 
-    # Validate hybrid split ratios
-    hybrid_split = {
-        "clean": args.hybrid_clean,
-        "feature": args.hybrid_feature,
-        "sequence": args.hybrid_sequence,
-    }
-    total = sum(hybrid_split.values())
-    if abs(total - 1.0) > 1e-6:
-        parser.error(f"Hybrid split ratios must sum to 1.0, got {total}")
-
     # Parse data_dir / results_dir if provided
     data_dir = Path(args.data_dir) if args.data_dir else None
 
@@ -2961,7 +2757,6 @@ def main():
             batch_size=args.batch_size,
             max_files=args.max_files,
             save_results=True,
-            hybrid_split=hybrid_split,
             data_dir=data_dir,
             dataset=args.dataset,
             max_records=getattr(args, "max_records", None),
@@ -2980,7 +2775,6 @@ def main():
             batch_size=args.batch_size,
             max_files=args.max_files,
             save_results=True,
-            hybrid_split=hybrid_split,
             data_dir=data_dir,
             dataset=args.dataset,
             max_records=getattr(args, "max_records", None),

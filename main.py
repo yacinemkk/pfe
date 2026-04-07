@@ -36,9 +36,8 @@ from src.models.xgboost_lstm import XGBoostLSTMClassifier
 from src.training.trainer import Trainer, IoTSequenceDataset, create_dataloaders
 from src.training.evaluator import Evaluator, ModelComparator, CrashTestEvaluator
 from src.adversarial.attacks import (
-    FeatureLevelAttack,
-    SequenceLevelAttack,
-    HybridAdversarialAttack,
+    SensitivityAnalysis,
+    AdversarialSearch,
 )
 
 
@@ -189,14 +188,14 @@ def generate_adversarial_samples(
 
     num_classes = len(np.unique(y_train))
 
-    feature_attack = FeatureLevelAttack(
+    sensitivity_analysis = SensitivityAnalysis(
         X_train=X_train.reshape(-1, X_train.shape[-1]),
         y_train=np.repeat(y_train, X_train.shape[1]),
         feature_names=feature_names,
         num_classes=num_classes,
     )
 
-    sensitivity_results = feature_attack.analyze_sensitivity(
+    sensitivity_results = sensitivity_analysis.analyze(
         model,
         X_train,
         y_train,
@@ -205,26 +204,19 @@ def generate_adversarial_samples(
         verbose=verbose,
     )
 
-    sequence_attack = SequenceLevelAttack(
+    adversarial_search = AdversarialSearch(
         model=model,
         device=device,
-        feature_attack=feature_attack,
+        sensitivity_analysis=sensitivity_analysis,
         target_accuracy=config["adversarial"]["target_accuracy"],
         batch_size=config["training"]["batch_size"],
     )
 
-    hybrid_attack = HybridAdversarialAttack(
-        feature_attack=feature_attack,
-        sequence_attack=sequence_attack,
-        feature_names=feature_names,
-    )
-
-    X_adv = hybrid_attack.generate_batch(
+    X_adv = adversarial_search.generate_adversarial(
         X_train,
         y_train,
-        method="hybrid",
-        verbose=verbose,
         sensitivity_results=sensitivity_results,
+        verbose=verbose,
     )
 
     return X_adv, y_train.copy()
@@ -363,14 +355,14 @@ def run_crash_test(
     """
     num_classes = len(np.unique(y_adv_src))
 
-    feature_attack = FeatureLevelAttack(
+    sensitivity_analysis = SensitivityAnalysis(
         X_adv_src.reshape(-1, X_adv_src.shape[-1]),
         np.repeat(y_adv_src, X_adv_src.shape[1]),
         feature_names,
         num_classes,
     )
 
-    sensitivity_results = feature_attack.analyze_sensitivity(
+    sensitivity_results = sensitivity_analysis.analyze(
         model,
         X_adv_src,
         y_adv_src,
@@ -379,24 +371,19 @@ def run_crash_test(
         verbose=verbose,
     )
 
-    sequence_attack = SequenceLevelAttack(
+    adversarial_search = AdversarialSearch(
         model=model,
         device=device,
-        feature_attack=feature_attack,
+        sensitivity_analysis=sensitivity_analysis,
         target_accuracy=config["adversarial"]["target_accuracy"],
         batch_size=config["training"]["batch_size"],
     )
 
-    hybrid_attack = HybridAdversarialAttack(
-        feature_attack, sequence_attack, feature_names
-    )
-
-    X_adv = hybrid_attack.generate_batch(
+    X_adv = adversarial_search.generate_adversarial(
         X_adv_src,
         y_adv_src,
-        method="hybrid",
-        verbose=verbose,
         sensitivity_results=sensitivity_results,
+        verbose=verbose,
     )
 
     crash_evaluator = CrashTestEvaluator(model, device)

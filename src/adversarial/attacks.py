@@ -1,11 +1,10 @@
 """
 Adversarial Attacks for IoT Device Identification (Sequential Models)
 
-Mimicry-based attacks adapted from sensitivity analysis and adversarial search:
-1. Feature-level attack (mimicry-based: Zero, Mimic_Mean, Mimic_95th, Padding)
-2. Sequence-level attack (greedy adversarial search combining best strategies)
-3. Combined hybrid attack
-4. Adversarial evaluator
+Unified adversarial attack pipeline:
+1. SensitivityAnalysis: Identify vulnerable features using mimicry strategies
+2. AdversarialSearch: Greedy search to construct minimal evasion
+3. AdversarialEvaluator: Evaluate model robustness against attacks
 """
 
 import torch
@@ -16,16 +15,17 @@ from tqdm import tqdm
 import gc
 
 
-class FeatureLevelAttack:
+class SensitivityAnalysis:
     """
-    Feature-level adversarial attack using semantic mimicry strategies.
+    Sensitivity analysis: identifies vulnerable features by testing perturbation strategies.
 
-    Perturbs only attack samples to make them resemble benign traffic.
     Strategies per feature:
       - Zero: set feature to 0
       - Mimic_Mean: set to mean of benign samples
       - Mimic_95th: set to 95th percentile of benign samples
       - Padding_x10: multiply feature by 10
+
+    Returns ranked list of {feature, strategy, accuracy, drop} sorted by impact.
     """
 
     def __init__(
@@ -193,7 +193,7 @@ class FeatureLevelAttack:
 
         return X_proj
 
-    def analyze_sensitivity(
+    def analyze(
         self,
         model: nn.Module,
         X: np.ndarray,
@@ -206,7 +206,8 @@ class FeatureLevelAttack:
         Analyze sensitivity: for each feature, test all 4 strategies
         and measure accuracy drop.
 
-        Returns list of dicts: {feature, strategy, accuracy, drop}
+        Returns list of dicts sorted by drop (descending):
+        {feature, feature_idx, strategy, accuracy, drop}
         """
         model.eval()
         results = []
@@ -240,23 +241,43 @@ class FeatureLevelAttack:
                         f"    -> {strategy}: Acc dropped to {pert_acc:.4f} (Drop: {drop:.4f})"
                     )
 
+        results.sort(key=lambda r: r["drop"], reverse=True)
         return results
 
-    def generate_single(
+    def generate_adversarial(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        strategies: Optional[List[Dict]] = None,
+        verbose: bool = False,
+    ) -> np.ndarray:
+        """
+        Generate adversarial batch using specified or default strategies.
+
+        Args:
+            X: input data (N, seq_len, n_features) or (N, n_features)
+            y: labels (N,)
+            strategies: list of {feature_idx, strategy} to apply.
+                       If None, applies Mimic_Mean on all modifiable features.
+        """
+        X_adv = np.zeros_like(X, dtype=float)
+
+        iterator = range(len(X))
+        if verbose:
+            iterator = tqdm(iterator, desc="Generating adversarial samples")
+
+        for i in iterator:
+            X_adv[i] = self._generate_single(X[i], int(y[i]), strategies)
+
+        return X_adv
+
+    def _generate_single(
         self,
         x0: np.ndarray,
         true_class: int,
         strategies: Optional[List[Dict]] = None,
     ) -> np.ndarray:
-        """
-        Generate adversarial sample using best strategies from sensitivity analysis.
-
-        Args:
-            x0: single sample (1D or 2D for sequence)
-            true_class: true class label
-            strategies: list of {feature_idx, strategy} to apply.
-                       If None, uses Mimic_Mean on all modifiable features.
-        """
+        """Generate adversarial sample using specified strategies."""
         x_adv = x0.copy().astype(float)
 
         if strategies is None:
@@ -284,33 +305,6 @@ class FeatureLevelAttack:
         x_adv = self.projection(x_adv)
         return x_adv
 
-    def generate_batch(
-        self,
-        X: np.ndarray,
-        y: np.ndarray,
-        strategies: Optional[List[Dict]] = None,
-        verbose: bool = False,
-    ) -> np.ndarray:
-        """
-        Generate adversarial batch.
-
-        Args:
-            X: input data (N, seq_len, n_features) or (N, n_features)
-            y: labels (N,)
-            strategies: optional list from sensitivity analysis to apply.
-                       If None, applies Mimic_Mean on all modifiable features.
-        """
-        X_adv = np.zeros_like(X, dtype=float)
-
-        iterator = range(len(X))
-        if verbose:
-            iterator = tqdm(iterator, desc="Feature-level attack")
-
-        for i in iterator:
-            X_adv[i] = self.generate_single(X[i], int(y[i]), strategies)
-
-        return X_adv
-
     def _evaluate_model(
         self,
         model: nn.Module,
@@ -333,25 +327,26 @@ class FeatureLevelAttack:
         return correct / total if total > 0 else 0.0
 
 
-class SequenceLevelAttack:
+class AdversarialSearch:
     """
-    Sequence-level adversarial attack using greedy adversarial search.
+    Greedy adversarial search: combines the most effective feature-strategy pairs
+    to minimize model accuracy.
 
-    Takes sensitivity analysis results and greedily combines the most
-    effective feature-strategy pairs to minimize model accuracy.
+    Takes sensitivity analysis results and greedily applies perturbations
+    one by one, keeping only those that reduce accuracy.
     """
 
     def __init__(
         self,
         model: nn.Module,
         device: torch.device,
-        feature_attack: FeatureLevelAttack,
+        sensitivity_analysis: SensitivityAnalysis,
         target_accuracy: float = 0.5,
         batch_size: int = 64,
     ):
         self.model = model
         self.device = device
-        self.feature_attack = feature_attack
+        self.sensitivity_analysis = sensitivity_analysis
         self.target_accuracy = target_accuracy
         self.batch_size = batch_size
 
@@ -373,7 +368,7 @@ class SequenceLevelAttack:
                 correct += predicted.eq(y_batch).sum().item()
         return correct / total if total > 0 else 0.0
 
-    def adversarial_search(
+    def search(
         self,
         sensitivity_results: List[Dict],
         X: np.ndarray,
@@ -384,7 +379,7 @@ class SequenceLevelAttack:
         Greedy adversarial search: combine best strategies to minimize accuracy.
 
         Args:
-            sensitivity_results: output from FeatureLevelAttack.analyze_sensitivity()
+            sensitivity_results: output from SensitivityAnalysis.analyze()
             X: input data
             y: labels
 
@@ -417,7 +412,7 @@ class SequenceLevelAttack:
 
             temp_X = current_X.copy()
             for i in range(len(X)):
-                temp_X[i] = self.feature_attack.generate_single(
+                temp_X[i] = self.sensitivity_analysis._generate_single(
                     X[i],
                     int(y[i]),
                     strategies=[{"feature_idx": feat_idx, "strategy": strat}],
@@ -452,7 +447,7 @@ class SequenceLevelAttack:
 
         return current_X, applied_strategies
 
-    def generate_batch(
+    def generate_adversarial(
         self,
         X: np.ndarray,
         y: np.ndarray,
@@ -465,88 +460,14 @@ class SequenceLevelAttack:
         Args:
             X: input data
             y: labels
-            sensitivity_results: output from sensitivity analysis
+            sensitivity_results: output from SensitivityAnalysis.analyze()
         """
-        X_adv, applied = self.adversarial_search(
-            sensitivity_results, X, y, verbose=verbose
-        )
+        X_adv, applied = self.search(sensitivity_results, X, y, verbose=verbose)
         return X_adv
 
 
-class HybridAdversarialAttack:
-    """
-    Combines feature-level and sequence-level attacks.
-    """
-
-    def __init__(
-        self,
-        feature_attack: FeatureLevelAttack,
-        sequence_attack: SequenceLevelAttack,
-        feature_names: List[str],
-        combine_ratio: float = 0.5,
-    ):
-        self.feature_attack = feature_attack
-        self.sequence_attack = sequence_attack
-        self.feature_names = feature_names
-        self.combine_ratio = combine_ratio
-
-    def generate_batch(
-        self,
-        X: np.ndarray,
-        y: np.ndarray,
-        method: str = "hybrid",
-        verbose: bool = False,
-        sensitivity_results: Optional[List[Dict]] = None,
-    ) -> np.ndarray:
-        if method == "feature":
-            return self.feature_attack.generate_batch(X, y, verbose=verbose)
-
-        elif method == "sequence":
-            if sensitivity_results is None:
-                raise ValueError(
-                    "sensitivity_results required. "
-                    "Run FeatureLevelAttack.analyze_sensitivity() first."
-                )
-            return self.sequence_attack.generate_batch(
-                X, y, sensitivity_results=sensitivity_results, verbose=verbose
-            )
-
-        elif method == "hybrid":
-            if sensitivity_results is None:
-                raise ValueError(
-                    "sensitivity_results required for hybrid method. "
-                    "Run FeatureLevelAttack.analyze_sensitivity() first."
-                )
-            n = len(X)
-            n_feature = int(n * self.combine_ratio)
-
-            idx = np.random.permutation(n)
-            idx_feature = idx[:n_feature]
-            idx_sequence = idx[n_feature:]
-
-            X_adv = np.zeros_like(X)
-
-            if len(idx_feature) > 0:
-                X_adv[idx_feature] = self.feature_attack.generate_batch(
-                    X[idx_feature], y[idx_feature], verbose=verbose
-                )
-
-            if len(idx_sequence) > 0:
-                X_adv[idx_sequence] = self.sequence_attack.generate_batch(
-                    X[idx_sequence],
-                    y[idx_sequence],
-                    sensitivity_results=sensitivity_results,
-                    verbose=verbose,
-                )
-
-            return X_adv
-
-        else:
-            raise ValueError(f"Unknown method: {method}")
-
-
 class AdversarialEvaluator:
-    """Evaluates model robustness against various attacks."""
+    """Evaluates model robustness against adversarial attacks."""
 
     def __init__(self, model: nn.Module, device: torch.device):
         self.model = model
@@ -559,6 +480,13 @@ class AdversarialEvaluator:
         attacks: Dict[str, np.ndarray],
         batch_size: int = 64,
     ) -> Tuple[Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]:
+        """
+        Evaluate model on clean and adversarial data.
+
+        Returns:
+            results: dict with accuracy for each attack variant
+            robustness: dict with robustness ratio per attack
+        """
         results = {}
         results["clean"] = self._evaluate_clean(X, y, batch_size)
 
@@ -577,6 +505,7 @@ class AdversarialEvaluator:
     def _evaluate_clean(
         self, X: np.ndarray, y: np.ndarray, batch_size: int
     ) -> Dict[str, float]:
+        """Evaluate model on clean data."""
         self.model.eval()
         correct, total = 0, 0
         n_batches = (len(X) + batch_size - 1) // batch_size
@@ -598,4 +527,5 @@ class AdversarialEvaluator:
     def _evaluate_adversarial(
         self, X_adv: np.ndarray, y: np.ndarray, batch_size: int
     ) -> Dict[str, float]:
+        """Evaluate model on adversarial data."""
         return self._evaluate_clean(X_adv, y, batch_size)

@@ -25,9 +25,8 @@ from src.models import (
     XGBoostLSTMClassifier,
 )
 from src.adversarial.attacks import (
-    FeatureLevelAttack,
-    SequenceLevelAttack,
-    HybridAdversarialAttack,
+    SensitivityAnalysis,
+    AdversarialSearch,
 )
 from train_adversarial import load_and_preprocess_data
 
@@ -504,7 +503,7 @@ def run_local_crash_test():
 
         X_eval_flat = X_eval.reshape(-1, X_eval.shape[-1])
         y_eval_expanded = np.repeat(y_eval, X_eval.shape[1])
-        feature_attack = FeatureLevelAttack(
+        sensitivity_analysis = SensitivityAnalysis(
             X_eval_flat,
             y_eval_expanded,
             features[: X_eval.shape[-1]],
@@ -512,32 +511,31 @@ def run_local_crash_test():
             n_continuous_features=n_continuous_features,
         )
 
-        sequence_attack = SequenceLevelAttack(
+        adversarial_search = AdversarialSearch(
             tmp_model,
             device,
-            feature_attack=feature_attack,
+            sensitivity_analysis=sensitivity_analysis,
             target_accuracy=0.5,
             batch_size=128,
         )
 
-        print(" -> Génération Feature-Level...")
-        X_adv_feature_flat = feature_attack.generate_batch(
-            X_eval_flat, y_eval_expanded, verbose=False
+        print(" -> Génération adversariale (Mimicry par défaut)...")
+        X_adv_default = sensitivity_analysis.generate_adversarial(
+            X_eval, y_eval, verbose=False
         )
-        X_adv_feature = X_adv_feature_flat.reshape(X_eval.shape)
 
         print(" -> Analyse de sensibilité...")
-        sensitivity_results = feature_attack.analyze_sensitivity(
+        sensitivity_results = sensitivity_analysis.analyze(
             tmp_model, X_eval, y_eval, device, batch_size=128, verbose=False
         )
 
-        print(" -> Génération Sequence-Level (Adversarial Search)...")
-        X_adv_search = sequence_attack.generate_batch(
+        print(" -> Génération Adversarial (Greedy Search)...")
+        X_adv_search = adversarial_search.generate_adversarial(
             X_eval, y_eval, sensitivity_results=sensitivity_results, verbose=False
         )
 
-        adv_feat_dataset = IoTSequenceDataset(X_adv_feature, y_eval)
-        adv_feat_loader = DataLoader(adv_feat_dataset, batch_size=128, shuffle=False)
+        adv_dataset = IoTSequenceDataset(X_adv_default, y_eval)
+        adv_loader = DataLoader(adv_dataset, batch_size=128, shuffle=False)
 
         adv_search_dataset = IoTSequenceDataset(X_adv_search, y_eval)
         adv_search_loader = DataLoader(
@@ -563,23 +561,23 @@ def run_local_crash_test():
             model.eval()
 
             norm_metrics = evaluate_model(model, eval_loader)
-            feat_metrics = evaluate_model(model, adv_feat_loader)
+            adv_metrics = evaluate_model(model, adv_loader)
             search_metrics = evaluate_model(model, adv_search_loader)
 
             print(
                 f"  -> Normal:   Acc: {norm_metrics['accuracy']:.4f}, F1: {norm_metrics['f1']:.4f}"
             )
             print(
-                f"  -> Feature:  Acc: {feat_metrics['accuracy']:.4f}, F1: {feat_metrics['f1']:.4f}"
+                f"  -> Adversarial:  Acc: {adv_metrics['accuracy']:.4f}, F1: {adv_metrics['f1']:.4f}"
             )
             print(
-                f"  -> Seq Search: Acc: {search_metrics['accuracy']:.4f}, F1: {search_metrics['f1']:.4f}"
+                f"  -> Greedy Search: Acc: {search_metrics['accuracy']:.4f}, F1: {search_metrics['f1']:.4f}"
             )
 
             phase_metrics[phase_name] = {
                 "Normal": norm_metrics,
-                "Feature": feat_metrics,
-                "Seq Search": search_metrics,
+                "Adversarial": adv_metrics,
+                "Greedy Search": search_metrics,
             }
 
             del model

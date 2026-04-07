@@ -3,9 +3,8 @@ Adversarial Attacks Module for IoT Device Identification
 """
 
 from .attacks import (
-    FeatureLevelAttack,
-    SequenceLevelAttack,
-    HybridAdversarialAttack,
+    SensitivityAnalysis,
+    AdversarialSearch,
     AdversarialEvaluator,
 )
 from .trades import (
@@ -15,9 +14,8 @@ from .trades import (
 )
 
 __all__ = [
-    "FeatureLevelAttack",
-    "SequenceLevelAttack",
-    "HybridAdversarialAttack",
+    "SensitivityAnalysis",
+    "AdversarialSearch",
     "AdversarialEvaluator",
     "TRADESTrainer",
     "TRADESAttack",
