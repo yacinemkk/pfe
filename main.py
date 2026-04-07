@@ -242,8 +242,8 @@ def run_adversarial_training(
         print("PHASE 6: Adversarial Training")
         print("=" * 60)
 
-    clean_ratio = 0.8
-    adv_ratio = 0.2
+    clean_ratio = 0.6
+    adv_ratio = 0.4
 
     n_clean = int(len(X_train) * clean_ratio)
     n_adv = int(len(X_adv) * adv_ratio)

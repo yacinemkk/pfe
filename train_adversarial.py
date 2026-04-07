@@ -78,6 +78,9 @@ from src.adversarial.attacks import (
     AdversarialSearch,
     AdversarialEvaluator,
 )
+from src.adversarial.trades import TRADESAttack, TRADESTrainer
+from src.adversarial.input_transform import InputTransform, create_input_transform
+from src.adversarial.cutmix import AdversarialCutMix, create_adversarial_cutmix
 
 # Ensure results directory exists
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -318,7 +321,107 @@ class AdversarialTrainer:
             "val_acc": [],
             "adv_loss": [],
             "adv_acc": [],
+            "train_ce_loss": [],
+            "train_kl_loss": [],
         }
+
+    def train_epoch_trades(
+        self,
+        train_loader: DataLoader,
+        optimizer: torch.optim.Optimizer,
+        criterion: nn.Module,
+        trades_attack: TRADESAttack,
+        lambda_trades: float = 6.0,
+        input_transform: Optional[InputTransform] = None,
+        adv_cutmix: Optional[AdversarialCutMix] = None,
+    ) -> Tuple[float, float, float, float]:
+        """Train for one epoch using TRADES loss.
+
+        Loss = CE(x, y) + lambda * KL(f(x) || f(x_adv))
+
+        Args:
+            train_loader: Training data loader
+            optimizer: Optimizer
+            criterion: Cross-entropy loss
+            trades_attack: TRADES PGD attack instance
+            lambda_trades: Trade-off parameter (default 6.0)
+            input_transform: Optional input transformation
+            adv_cutmix: Optional adversarial CutMix
+
+        Returns:
+            (total_loss, ce_loss, kl_loss, accuracy)
+        """
+        import time
+        import torch.nn.functional as F
+
+        self.model.train()
+        total_loss, total_ce, total_kl = 0.0, 0.0, 0.0
+        correct, total = 0, 0
+        n_batches = len(train_loader)
+
+        if self.verbose:
+            epoch_start = time.time()
+
+        for batch_idx, (X_batch, y_batch) in enumerate(train_loader):
+            X_batch = X_batch.to(self.device)
+            y_batch = y_batch.to(self.device)
+
+            if input_transform is not None:
+                X_batch = input_transform(X_batch, training=True)
+
+            with torch.no_grad():
+                X_adv = trades_attack.generate(
+                    self.model, X_batch, y_batch, self.device
+                )
+
+            if adv_cutmix is not None and np.random.rand() < 0.5:
+                X_adv, y_batch = adv_cutmix(X_batch, X_adv, y_batch)
+
+            optimizer.zero_grad()
+
+            clean_logits = self.model(X_batch)
+            ce_loss = criterion(clean_logits, y_batch)
+
+            adv_logits = self.model(X_adv)
+
+            clean_probs = F.softmax(clean_logits, dim=1)
+            adv_log_probs = F.log_softmax(adv_logits, dim=1)
+            kl_loss = F.kl_div(adv_log_probs, clean_probs, reduction="batchmean")
+
+            loss = ce_loss + lambda_trades * kl_loss
+
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            optimizer.step()
+
+            total_loss += loss.item()
+            total_ce += ce_loss.item()
+            total_kl += kl_loss.item()
+
+            _, predicted = clean_logits.max(1)
+            total += y_batch.size(0)
+            correct += predicted.eq(y_batch).sum().item()
+
+            del X_adv
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            if self.verbose and (batch_idx + 1) % max(1, n_batches // 10) == 0:
+                elapsed = time.time() - epoch_start
+                batches_per_sec = (batch_idx + 1) / elapsed if elapsed > 0 else 0
+                pct = (batch_idx + 1) * 100 // n_batches
+                print(
+                    f"\r    TRADES: {pct}% | {batch_idx + 1}/{n_batches} | {batches_per_sec:.0f} b/s",
+                    end="",
+                    flush=True,
+                )
+
+        if self.verbose:
+            epoch_time = time.time() - epoch_start
+            print(f"\r    ✓ TRADES Done: {n_batches} batches in {epoch_time:.0f}s")
+
+        n = len(train_loader)
+        return total_loss / n, total_ce / n, total_kl / n, correct / total
 
     def train_epoch(
         self,
@@ -787,6 +890,14 @@ class AdversarialTrainer:
         y_train: Optional[np.ndarray] = None,
         X_train_raw: Optional[np.ndarray] = None,
         use_class_weights: bool = False,
+        use_trades: bool = True,
+        lambda_trades: float = 6.0,
+        trades_epsilon: float = 0.05,
+        trades_alpha: float = 0.01,
+        trades_pgd_steps: int = 7,
+        use_input_transform: bool = True,
+        use_cutmix: bool = True,
+        n_continuous_features: Optional[int] = None,
     ) -> Dict:
         """Entraînement en 2 phases per docs/train.
 
@@ -799,11 +910,21 @@ class AdversarialTrainer:
 
         PHASE 2 : Entraînement Antagoniste (Adversarial Training) et Robustesse
         1. Création du Corpus Conjoint (bénignes + adversaires)
-        2. Ré-entraînement sur corpus conjoint
+        2. Ré-entraînement sur corpus conjoint avec TRADES + Input Transform + CutMix
         3. Crash Test 2 (mêmes 3 tests)
 
         Early Stopping par phase avec patience réinitialisée.
         Pour XGBoost-LSTM: fit XGBoost avant l'évaluation finale.
+
+        Args:
+            use_trades: If True, use TRADES loss in Phase 2 (default True)
+            lambda_trades: TRADES trade-off parameter (default 6.0)
+            trades_epsilon: Perturbation budget for TRADES PGD (default 0.05)
+            trades_alpha: Step size for TRADES PGD (default 0.01)
+            trades_pgd_steps: Number of PGD steps (default 7)
+            use_input_transform: If True, apply input transformations (default True)
+            use_cutmix: If True, apply adversarial CutMix (default True)
+            n_continuous_features: Number of continuous features for transforms
         """
         import copy
 
@@ -843,7 +964,7 @@ class AdversarialTrainer:
         )
 
         phase1_epochs = 20
-        phase2_epochs = 10
+        phase2_epochs = 25
 
         print(f"\n{'=' * 70}")
         print("  ENTRAÎNEMENT EN 2 PHASES (per docs/train)")
@@ -1058,17 +1179,40 @@ class AdversarialTrainer:
             return self.history
 
         # ─────────────────────────────────────────────────────────
-        # PHASE 2 : Entraînement Antagoniste (Dynamic Adversarial Training)
+        # PHASE 2 : Entraînement Antagoniste (TRADES + Input Transform + CutMix)
         # ─────────────────────────────────────────────────────────
         print(f"\n{'=' * 60}")
-        print("PHASE 2: ENTRAÎNEMENT ANTAGONISTE (Dynamic Adversarial Training)")
+        print("PHASE 2: ENTRAÎNEMENT ANTAGONISTE (TRADES + Transform + CutMix)")
         print(f"{'=' * 60}\n")
-        print(f"  Mode: Génération dynamique d'exemples adversaires par batch")
+        print(f"  Mode: TRADES Adversarial Training")
         print(f"  Ratio adversaire: {adv_ratio * 100:.0f}%")
+        print(f"  λ_TRADES: {lambda_trades}")
+        print(f"  Input Transform: {use_input_transform}")
+        print(f"  Adversarial CutMix: {use_cutmix}")
 
         best_val_acc_p2 = 0.0
         best_state_p2 = copy.deepcopy(self.model.state_dict())
         patience_counter = 0
+
+        trades_attack = TRADESAttack(
+            epsilon=trades_epsilon,
+            alpha=trades_alpha,
+            num_steps=trades_pgd_steps,
+        )
+
+        input_transform = None
+        if use_input_transform:
+            input_transform = create_input_transform(
+                noise_std=0.02,
+                dropout_prob=0.1,
+                n_continuous_features=n_continuous_features,
+            )
+            print(f"  Input Transform: noise_std=0.02, dropout=0.1")
+
+        adv_cutmix = None
+        if use_cutmix:
+            adv_cutmix = create_adversarial_cutmix(alpha=1.0, prob=0.5)
+            print(f"  Adversarial CutMix: α=1.0, prob=0.5")
 
         sensitivity_p2 = sensitivity_results_precomputed
 
@@ -1101,16 +1245,30 @@ class AdversarialTrainer:
                 print(
                     f"  [V] P2 Epoch {epoch + 1}/{phase2_epochs}: {len(train_loader)} batches"
                 )
-            train_loss, train_acc = self.train_epoch(
-                train_loader,
-                optimizer,
-                criterion,
-                adv_generator,
-                adv_ratio,
-                adv_method,
-                X_raw_batch=X_train_raw,
-                sensitivity_results=sensitivity_p2,
-            )
+
+            if use_trades:
+                train_loss, ce_loss, kl_loss, train_acc = self.train_epoch_trades(
+                    train_loader,
+                    optimizer,
+                    criterion,
+                    trades_attack,
+                    lambda_trades=lambda_trades,
+                    input_transform=input_transform,
+                    adv_cutmix=adv_cutmix,
+                )
+                self.history["train_ce_loss"].append(ce_loss)
+                self.history["train_kl_loss"].append(kl_loss)
+            else:
+                train_loss, train_acc = self.train_epoch(
+                    train_loader,
+                    optimizer,
+                    criterion,
+                    adv_generator,
+                    adv_ratio,
+                    adv_method,
+                    X_raw_batch=X_train_raw,
+                    sensitivity_results=sensitivity_p2,
+                )
             print(
                 f"  ✓ P2 Epoch {epoch + 1} train done, running validation...",
                 flush=True,
@@ -2091,8 +2249,18 @@ def run_experiment_with_phase_checkpoints(
         batch_size=eval_batch_size,
         is_xgboost=(model_type == "xgboost_lstm"),
         label_encoder=label_encoder,
+        X_train=X_train,
+        y_train=y_train,
         X_train_raw=X_train_raw,
         use_class_weights=use_class_weights,
+        use_trades=True,
+        lambda_trades=6.0,
+        trades_epsilon=0.05,
+        trades_alpha=0.01,
+        trades_pgd_steps=7,
+        use_input_transform=True,
+        use_cutmix=True,
+        n_continuous_features=n_continuous_features,
     )
 
     if save_results and save_path:
@@ -2459,7 +2627,7 @@ def compare_models(
                     model_type=model_type,
                     seq_length=seq_len,
                     adv_method=adv_method,
-                    adv_ratio=0.2 if adv_method != "none" else 0.0,
+                    adv_ratio=0.4 if adv_method != "none" else 0.0,
                     epochs=epochs,
                     batch_size=BATCH_SIZE,
                     max_files=max_files,

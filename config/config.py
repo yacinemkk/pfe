@@ -270,3 +270,17 @@ CNN_BILSTM_TRANSFORMER_CONFIG = {
     # FC head
     "fc_dropout": 0.4,
 }
+
+# ─── Adversarial Training Configuration ───────────────────────────────────────
+ADVERSARIAL_CONFIG = {
+    "adv_ratio": 0.4,
+    "phase2_epochs": 25,
+    "lambda_trades": 6.0,
+    "trades_epsilon": 0.05,
+    "trades_alpha": 0.01,
+    "trades_pgd_steps": 7,
+    "input_transform_noise_std": 0.02,
+    "input_transform_dropout_prob": 0.1,
+    "cutmix_alpha": 1.0,
+    "cutmix_prob": 0.5,
+}
