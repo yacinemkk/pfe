@@ -241,13 +241,17 @@ class DenoisingAutoencoder(nn.Module):
 
         if self.n_continuous_features is not None:
             if decoded.dim() == 3:
-                decoded[:, :, : self.n_continuous_features] = torch.clamp(
+                cont_part = torch.clamp(
                     decoded[:, :, : self.n_continuous_features], 0.0, 1.0
                 )
+                bin_part = decoded[:, :, self.n_continuous_features :]
+                decoded = torch.cat([cont_part, bin_part], dim=-1)
             else:
-                decoded[:, : self.n_continuous_features] = torch.clamp(
+                cont_part = torch.clamp(
                     decoded[:, : self.n_continuous_features], 0.0, 1.0
                 )
+                bin_part = decoded[:, self.n_continuous_features :]
+                decoded = torch.cat([cont_part, bin_part], dim=-1)
         else:
             decoded = torch.clamp(decoded, -3.0, 3.0)
 
