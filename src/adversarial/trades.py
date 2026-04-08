@@ -75,7 +75,9 @@ class TRADESAttack:
             clean_logits = model(x)
             clean_probs = F.softmax(clean_logits, dim=1).detach()
 
-        # PGD iterations to maximize KL divergence
+        # PGD iterations require model in training mode for cuDNN RNN backward
+        model.train()
+
         for _ in range(self.num_steps):
             x_adv.requires_grad_(True)
 
@@ -100,6 +102,9 @@ class TRADESAttack:
                 x_adv_np = x_adv.cpu().numpy()
                 x_adv_np = self.projection_fn(x_adv_np)
                 x_adv = torch.FloatTensor(x_adv_np).to(device)
+
+        if not was_training:
+            model.eval()
 
         return x_adv.detach()
 
