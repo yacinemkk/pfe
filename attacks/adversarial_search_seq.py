@@ -87,10 +87,15 @@ def load_model(
     return model
 
 
-def load_test_data(data_path: Path, seq_length: int):
-    """Load and preprocess test data."""
+def load_test_data(data_path: Path, seq_length: int, preprocessor_path: Path = None):
+    """Load and preprocess test data using the saved preprocessor (anti-leakage).
+
+    If preprocessor_path is provided and exists, loads the fitted scaler and
+    label_encoder from the pickle and uses .transform() (no fit on test data).
+    Otherwise falls back to fit_transform with a deprecation warning.
+    """
     import pandas as pd
-    from sklearn.preprocessing import StandardScaler, LabelEncoder
+    import warnings
 
     df = pd.read_csv(data_path)
 
@@ -102,11 +107,35 @@ def load_test_data(data_path: Path, seq_length: int):
     X = df[feature_cols].values
     y = df[label_col].values
 
-    scaler = StandardScaler()
-    X = scaler.fit_transform(X)
+    if preprocessor_path is not None and preprocessor_path.exists():
+        with open(preprocessor_path, "rb") as f:
+            prep = pickle.load(f)
+        scaler = prep.get("scaler") or prep.get("minmax_scaler")
+        label_encoder = prep["label_encoder"]
+        X = scaler.transform(X)
+        y = np.array(
+            [
+                label_encoder.transform([lbl])[0]
+                if lbl in label_encoder.classes_
+                else -1
+                for lbl in y
+            ]
+        )
+        print(
+            f"  Loaded preprocessor from {preprocessor_path} (scaler fitted on train)"
+        )
+    else:
+        warnings.warn(
+            "No preprocessor.pkl found — using fit_transform on test data. "
+            "This causes data leakage. Pass --preprocessor_path to fix.",
+            stacklevel=2,
+        )
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
 
-    label_encoder = LabelEncoder()
-    y = label_encoder.fit_transform(y)
+        scaler = StandardScaler()
+        X = scaler.fit_transform(X)
+        label_encoder = LabelEncoder()
+        y = label_encoder.fit_transform(y)
 
     n_samples = len(X) // seq_length
     X = X[: n_samples * seq_length]
@@ -237,15 +266,26 @@ def main():
         "--max_samples", type=int, default=None, help="Max samples to process"
     )
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
+    parser.add_argument(
+        "--preprocessor_path",
+        type=str,
+        default=None,
+        help="Path to preprocessor.pkl (auto-detected from model_path if not provided)",
+    )
 
     args = parser.parse_args()
 
     device = get_device()
     print(f"Using device: {device}")
 
+    if args.preprocessor_path:
+        preprocessor_path = Path(args.preprocessor_path)
+    else:
+        preprocessor_path = Path(args.model_path).parent / "preprocessor.pkl"
+
     print(f"\nLoading test data from {args.test_data}...")
     X_test, y_test, features, scaler, label_encoder = load_test_data(
-        Path(args.test_data), args.seq_length
+        Path(args.test_data), args.seq_length, preprocessor_path
     )
 
     if args.max_samples and len(X_test) > args.max_samples:

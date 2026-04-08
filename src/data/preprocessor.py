@@ -86,7 +86,7 @@ class IoTDataProcessor:
 
     def __init__(self):
         self.minmax_scaler = MinMaxScaler(feature_range=(0, 1))
-        self.scaler = StandardScaler()
+        self.scaler = None
         self.label_encoder = LabelEncoder()
         self.feature_names = None
         self.selected_feature_indices = None
@@ -607,6 +607,7 @@ class IoTDataProcessor:
         X_train_cont_scaled = self.minmax_scaler.fit_transform(
             X_train_cont_selected
         ).astype(np.float32)
+        self.scaler = self.minmax_scaler
         X_val_cont_scaled = (
             self.minmax_scaler.transform(X_val_cont_selected).astype(np.float32)
             if X_val_cont_selected is not None

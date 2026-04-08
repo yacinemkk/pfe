@@ -250,7 +250,7 @@ def _load_csv_pipeline(
     Uses IoTDataProcessor.process_all() which implements:
       - Per-device temporal 80/20 split (docs/general §Étape 3)
       - Sequences built independently on train and test (docs/general §Étape 4)
-      - StandardScaler fitted on training data ONLY
+      - MinMaxScaler fitted on training data ONLY
     """
     from src.data.preprocessor import IoTDataProcessor
 
