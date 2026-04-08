@@ -41,6 +41,7 @@ class SensitivityAnalysis:
         self.feature_names = feature_names
         self.num_classes = num_classes
         self.n_continuous_features = n_continuous_features
+        self.n_features = len(feature_names)
 
         if non_modifiable is not None:
             self.non_modifiable = non_modifiable

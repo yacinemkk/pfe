@@ -27,6 +27,27 @@ from .cutmix import (
     HybridCutMix,
     create_adversarial_cutmix,
 )
+from .feature_dropout import (
+    AdversarialFeatureDropout,
+    GradientFeatureMasking,
+    FeatureImportanceRegularizer,
+    create_adversarial_feature_dropout,
+)
+from .denoising_autoencoder import (
+    DenoisingAutoencoder,
+    PerturbationGenerator,
+    DenoisingAETrainer,
+    create_denoising_autoencoder,
+)
+from .randomized_smoothing import (
+    RandomizedSmoothing,
+    AdaptiveRandomizedSmoothing,
+    create_randomized_smoothing,
+)
+from .ensemble import (
+    HeterogeneousEnsemble,
+    create_heterogeneous_ensemble,
+)
 
 __all__ = [
     "SensitivityAnalysis",
@@ -46,4 +67,17 @@ __all__ = [
     "FeatureCutMix",
     "HybridCutMix",
     "create_adversarial_cutmix",
+    "AdversarialFeatureDropout",
+    "GradientFeatureMasking",
+    "FeatureImportanceRegularizer",
+    "create_adversarial_feature_dropout",
+    "DenoisingAutoencoder",
+    "PerturbationGenerator",
+    "DenoisingAETrainer",
+    "create_denoising_autoencoder",
+    "RandomizedSmoothing",
+    "AdaptiveRandomizedSmoothing",
+    "create_randomized_smoothing",
+    "HeterogeneousEnsemble",
+    "create_heterogeneous_ensemble",
 ]

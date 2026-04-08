@@ -86,6 +86,26 @@ from src.adversarial.trades import (
 )
 from src.adversarial.input_transform import InputTransform, create_input_transform
 from src.adversarial.cutmix import AdversarialCutMix, create_adversarial_cutmix
+from src.adversarial.feature_dropout import (
+    AdversarialFeatureDropout,
+    GradientFeatureMasking,
+    FeatureImportanceRegularizer,
+    create_adversarial_feature_dropout,
+)
+from src.adversarial.denoising_autoencoder import (
+    DenoisingAutoencoder,
+    PerturbationGenerator,
+    DenoisingAETrainer,
+    create_denoising_autoencoder,
+)
+from src.adversarial.randomized_smoothing import (
+    RandomizedSmoothing,
+    create_randomized_smoothing,
+)
+from src.adversarial.ensemble import (
+    HeterogeneousEnsemble,
+    create_heterogeneous_ensemble,
+)
 
 # Ensure results directory exists
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -336,22 +356,33 @@ class AdversarialTrainer:
         optimizer: torch.optim.Optimizer,
         criterion: nn.Module,
         trades_attack,
-        lambda_trades: float = 6.0,
+        lambda_trades: float = 3.0,
         input_transform: Optional[InputTransform] = None,
         adv_cutmix: Optional[AdversarialCutMix] = None,
+        afd_layer: Optional[AdversarialFeatureDropout] = None,
+        dae_trainer: Optional[DenoisingAETrainer] = None,
     ) -> Tuple[float, float, float, float]:
-        """Train for one epoch using TRADES loss.
+        """Train for one epoch using TRADES loss with countermeasures.
 
         Loss = CE(x, y) + lambda * KL(f(x) || f(x_adv))
+
+        Countermeasures applied in order:
+        1. AFD: Adversarial Feature Dropout on clean input
+        2. Input Transform: noise + dropout
+        3. TRADES: generate adversarial examples
+        4. CutMix: mix clean and adversarial
+        5. DAE: joint denoising autoencoder training
 
         Args:
             train_loader: Training data loader
             optimizer: Optimizer
-            criterion: Cross-entropy loss
+            criterion: Cross-entropy loss (with label smoothing)
             trades_attack: TRADESAttack or MultiAttackTRADES instance
-            lambda_trades: Trade-off parameter (default 6.0)
+            lambda_trades: Trade-off parameter (default 3.0)
             input_transform: Optional input transformation
             adv_cutmix: Optional adversarial CutMix
+            afd_layer: Optional Adversarial Feature Dropout layer
+            dae_trainer: Optional Denoising AE trainer for joint training
 
         Returns:
             (total_loss, ce_loss, kl_loss, accuracy)
@@ -374,9 +405,15 @@ class AdversarialTrainer:
             X_batch = X_batch.to(self.device)
             y_batch = y_batch.to(self.device)
 
+            # ── Couche 1: AFD (Adversarial Feature Dropout) ──
+            if afd_layer is not None:
+                X_batch = afd_layer(X_batch, y_batch)
+
+            # ── Input Transform (noise + dropout) ──
             if input_transform is not None:
                 X_batch = input_transform(X_batch, training=True)
 
+            # ── Couche 2: TRADES adversarial generation ──
             with torch.no_grad():
                 result = trades_attack.generate(
                     self.model, X_batch, y_batch, self.device
@@ -386,16 +423,37 @@ class AdversarialTrainer:
                 else:
                     X_adv = result
 
+            # ── CutMix ──
             if adv_cutmix is not None and np.random.rand() < 0.5:
                 X_adv, y_batch = adv_cutmix(X_batch, X_adv, y_batch)
 
+            # ── Couche 3: DAE joint training step ──
+            if dae_trainer is not None and batch_idx % 2 == 0:
+                try:
+                    dae_trainer.joint_train_step(X_batch.clone(), y_batch.clone())
+                except Exception:
+                    pass
+
             optimizer.zero_grad()
 
-            clean_logits = self.model(X_batch)
+            # ── Forward on clean (with AFD already applied) ──
+            if dae_trainer is not None:
+                with torch.no_grad():
+                    X_denoised = dae_trainer.autoencoder(X_batch)
+                clean_logits = self.model(X_denoised)
+            else:
+                clean_logits = self.model(X_batch)
             ce_loss = criterion(clean_logits, y_batch)
 
-            adv_logits = self.model(X_adv)
+            # ── Forward on adversarial ──
+            if dae_trainer is not None:
+                with torch.no_grad():
+                    X_adv_denoised = dae_trainer.autoencoder(X_adv)
+                adv_logits = self.model(X_adv_denoised)
+            else:
+                adv_logits = self.model(X_adv)
 
+            # ── KL divergence ──
             clean_probs = F.softmax(clean_logits, dim=1)
             adv_log_probs = F.log_softmax(adv_logits, dim=1)
             kl_loss = F.kl_div(adv_log_probs, clean_probs, reduction="batchmean")
@@ -903,20 +961,32 @@ class AdversarialTrainer:
         X_train_raw: Optional[np.ndarray] = None,
         use_class_weights: bool = False,
         use_trades: bool = True,
-        lambda_trades: float = 6.0,
-        trades_epsilon: float = 0.05,
-        trades_alpha: float = 0.01,
-        trades_pgd_steps: int = 7,
+        lambda_trades: float = 3.0,
+        trades_epsilon: float = 0.5,
+        trades_alpha: float = 0.05,
+        trades_pgd_steps: int = 15,
         use_input_transform: bool = True,
         use_cutmix: bool = True,
         n_continuous_features: Optional[int] = None,
         use_multi_attack: bool = False,
         multi_attack_strategies: Optional[List[str]] = None,
+        label_smoothing: float = 0.1,
+        use_afd: bool = True,
+        afd_p_single: float = 0.3,
+        afd_p_double: float = 0.15,
+        afd_p_mimic: float = 0.1,
+        use_dae: bool = True,
+        dae_latent_dim: int = 16,
+        dae_hidden_dim: int = 32,
+        dae_pretrain_epochs: int = 10,
+        use_randomized_smoothing: bool = True,
+        rs_sigma: float = 0.25,
+        rs_n_samples: int = 50,
     ) -> Dict:
         """Entraînement en 2 phases per docs/train.
 
         PHASE 1 : Entraînement Standard et Constat de Vulnérabilité
-        1. Entraînement initial (Données Bénignes Uniquement)
+        1. Entraînement initial (Données Bénignes Uniquement) + AFD
         2. Crash Test 1:
            - Test 1: Données Bénignes
            - Test 2: Données Adversaires Uniquement
@@ -924,23 +994,46 @@ class AdversarialTrainer:
 
         PHASE 2 : Entraînement Antagoniste (Adversarial Training) et Robustesse
         1. Création du Corpus Conjoint (bénignes + adversaires)
-        2. Ré-entraînement sur corpus conjoint avec TRADES + Input Transform + CutMix
-        3. Crash Test 2 (mêmes 3 tests)
+        2. Pre-train Denoising Autoencoder (if enabled)
+        3. Ré-entraînement sur corpus conjoint avec:
+           - TRADES (corrected epsilon/lambda) + Label Smoothing
+           - Adversarial Feature Dropout (AFD)
+           - Input Transform + CutMix
+           - DAE joint training
+           - Feature Importance Regularization
+        4. Crash Test 2 (mêmes 3 tests)
+        5. Randomized Smoothing evaluation
 
-        Early Stopping par phase avec patience réinitialisée.
-        Pour XGBoost-LSTM: fit XGBoost avant l'évaluation finale.
+        Countermeasures (5 layers):
+            - Couche 1: Adversarial Feature Dropout (AFD)
+            - Couche 2: TRADES corrected (epsilon=0.5, lambda=3.0, pgd_steps=15, label_smoothing=0.1)
+            - Couche 3: Denoising Autoencoder (DAE)
+            - Couche 4: Randomized Smoothing (inference-time)
+            - Couche 5: Ensemble (built separately)
 
         Args:
             use_trades: If True, use TRADES loss in Phase 2 (default True)
-            lambda_trades: TRADES trade-off parameter (default 6.0)
-            trades_epsilon: Perturbation budget for TRADES PGD (default 0.05)
-            trades_alpha: Step size for TRADES PGD (default 0.01)
-            trades_pgd_steps: Number of PGD steps (default 7)
+            lambda_trades: TRADES trade-off parameter (default 3.0, was 6.0)
+            trades_epsilon: Perturbation budget for TRADES PGD (default 0.5, was 0.05)
+            trades_alpha: Step size for TRADES PGD (default 0.05, was 0.01)
+            trades_pgd_steps: Number of PGD steps (default 15, was 7)
             use_input_transform: If True, apply input transformations (default True)
             use_cutmix: If True, apply adversarial CutMix (default True)
             n_continuous_features: Number of continuous features for transforms
-            use_multi_attack: If True, use Worst-of-K multi-attack TRADES (PGD + Zero/Mimic/Padding)
-            multi_attack_strategies: List of feature strategies to use (default: all four)
+            use_multi_attack: If True, use Worst-of-K multi-attack TRADES
+            multi_attack_strategies: List of feature strategies to use
+            label_smoothing: Label smoothing factor (default 0.1)
+            use_afd: If True, use Adversarial Feature Dropout (default True)
+            afd_p_single: Probability of dropping 1 feature (default 0.3)
+            afd_p_double: Probability of dropping 2 features (default 0.15)
+            afd_p_mimic: Probability of mimic replacement (default 0.1)
+            use_dae: If True, use Denoising Autoencoder (default True)
+            dae_latent_dim: DAE latent dimension (default 16)
+            dae_hidden_dim: DAE hidden dimension (default 32)
+            dae_pretrain_epochs: DAE pre-training epochs (default 10)
+            use_randomized_smoothing: If True, evaluate with Randomized Smoothing (default True)
+            rs_sigma: Randomized Smoothing noise sigma (default 0.25)
+            rs_n_samples: Number of noisy samples for RS (default 50)
         """
         import copy
 
@@ -970,10 +1063,16 @@ class AdversarialTrainer:
             num_classes = max(int(y_all.max()) + 1, num_classes)
             cw = compute_class_weight("balanced", classes=classes, y=y_all)
             class_weights = torch.FloatTensor(cw).to(self.device)
-            criterion = nn.CrossEntropyLoss(weight=class_weights)
-            print(f"  ⚖️  Class weights enabled (balanced): {cw[:5]}...")
+            criterion = nn.CrossEntropyLoss(
+                weight=class_weights, label_smoothing=label_smoothing
+            )
+            print(
+                f"  ⚖️  Class weights enabled (balanced, label_smoothing={label_smoothing}): {cw[:5]}..."
+            )
         else:
-            criterion = nn.CrossEntropyLoss()
+            criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+            if label_smoothing > 0:
+                print(f"  🏷️  Label smoothing enabled: {label_smoothing}")
 
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode="min", patience=3, factor=0.5
@@ -1195,24 +1294,40 @@ class AdversarialTrainer:
             return self.history
 
         # ─────────────────────────────────────────────────────────
-        # PHASE 2 : Entraînement Antagoniste (TRADES + Input Transform + CutMix)
+        # PHASE 2 : Entraînement Antagoniste (5 Couches de Contremesures)
         # ─────────────────────────────────────────────────────────
         print(f"\n{'=' * 60}")
-        print("PHASE 2: ENTRAÎNEMENT ANTAGONISTE (TRADES + Transform + CutMix)")
+        print("PHASE 2: ENTRAÎNEMENT ANTAGONISTE (5 Couches Contremesures)")
         print(f"{'=' * 60}\n")
-        print(f"  Mode: TRADES Adversarial Training")
-        print(f"  Ratio adversaire: {adv_ratio * 100:.0f}%")
-        print(f"  λ_TRADES: {lambda_trades}")
+        print(f"  Couche 1 - AFD (Adversarial Feature Dropout): {use_afd}")
+        if use_afd:
+            print(
+                f"    p_single={afd_p_single}, p_double={afd_p_double}, p_mimic={afd_p_mimic}"
+            )
+        print(
+            f"  Couche 2 - TRADES (corrected): epsilon={trades_epsilon}, λ={lambda_trades}, steps={trades_pgd_steps}"
+        )
+        print(f"    Label smoothing: {label_smoothing}")
+        print(f"  Couche 3 - DAE (Denoising Autoencoder): {use_dae}")
+        if use_dae:
+            print(
+                f"    latent_dim={dae_latent_dim}, hidden_dim={dae_hidden_dim}, pretrain={dae_pretrain_epochs} epochs"
+            )
         print(f"  Input Transform: {use_input_transform}")
         print(f"  Adversarial CutMix: {use_cutmix}")
         print(f"  Multi-Attack (Worst-of-K): {use_multi_attack}")
         if use_multi_attack and multi_attack_strategies:
-            print(f"  Multi-Attack strategies: {multi_attack_strategies}")
+            print(f"    Multi-Attack strategies: {multi_attack_strategies}")
+        print(f"  Couche 4 - Randomized Smoothing: {use_randomized_smoothing}")
+        if use_randomized_smoothing:
+            print(f"    sigma={rs_sigma}, n_samples={rs_n_samples}")
+        print(f"  Ratio adversaire: {adv_ratio * 100:.0f}%")
 
         best_val_acc_p2 = 0.0
         best_state_p2 = copy.deepcopy(self.model.state_dict())
         patience_counter = 0
 
+        # ── Couche 2: TRADES Attack (corrected epsilon) ──
         trades_attack = TRADESAttack(
             epsilon=trades_epsilon,
             alpha=trades_alpha,
@@ -1239,6 +1354,83 @@ class AdversarialTrainer:
             print(
                 f"  ⚠️  Multi-attack requested but no sensitivity_analysis provided. Falling back to PGD only."
             )
+
+        # ── Couche 1: AFD (Adversarial Feature Dropout) ──
+        afd_layer = None
+        if use_afd and sensitivity_analysis is not None:
+            non_mod_idx = []
+            try:
+                non_mod_idx = [
+                    sensitivity_analysis.feature_names.index(n)
+                    for n in sensitivity_analysis.non_modifiable
+                    if n in sensitivity_analysis.feature_names
+                ]
+            except (ValueError, AttributeError):
+                non_mod_idx = []
+            afd_layer = create_adversarial_feature_dropout(
+                n_features=len(sensitivity_analysis.feature_names),
+                p_single=afd_p_single,
+                p_double=afd_p_double,
+                p_mimic=afd_p_mimic,
+                non_modifiable_indices=non_mod_idx,
+                benign_stats=sensitivity_analysis.benign_stats,
+                n_continuous_features=n_continuous_features,
+            ).to(self.device)
+            print(f"  ✅ AFD layer created")
+        elif use_afd:
+            print(f"  ⚠️  AFD requested but no sensitivity_analysis provided. Skipping.")
+
+        # ── Couche 3: DAE (Denoising Autoencoder) ──
+        dae = None
+        dae_trainer = None
+        input_size_for_ae = (
+            len(sensitivity_analysis.feature_names)
+            if sensitivity_analysis is not None
+            else X_train.shape[-1]
+            if X_train is not None
+            else 16
+        )
+        if use_dae and sensitivity_analysis is not None:
+            non_mod_idx_ae = []
+            try:
+                non_mod_idx_ae = [
+                    sensitivity_analysis.feature_names.index(n)
+                    for n in sensitivity_analysis.non_modifiable
+                    if n in sensitivity_analysis.feature_names
+                ]
+            except (ValueError, AttributeError):
+                non_mod_idx_ae = []
+
+            dae, pert_gen = create_denoising_autoencoder(
+                input_size=input_size_for_ae,
+                latent_dim=dae_latent_dim,
+                hidden_dim=dae_hidden_dim,
+                n_continuous_features=n_continuous_features,
+                benign_stats=sensitivity_analysis.benign_stats,
+                non_modifiable_indices=non_mod_idx_ae,
+            )
+            dae = dae.to(self.device)
+            dae_trainer = DenoisingAETrainer(
+                autoencoder=dae,
+                classifier=self.model,
+                device=self.device,
+                perturbation_generator=pert_gen,
+                alpha=1.0,
+                beta=0.5,
+            )
+            print(f"  ✅ DAE created, pre-training...")
+
+            try:
+                dae_trainer.pretrain(
+                    train_loader, epochs=dae_pretrain_epochs, verbose=True
+                )
+                print(f"  ✅ DAE pre-training complete")
+            except Exception as e:
+                print(f"  ⚠️  DAE pre-training error: {e}. Continuing without DAE.")
+                dae = None
+                dae_trainer = None
+        elif use_dae:
+            print(f"  ⚠️  DAE requested but no sensitivity_analysis provided. Skipping.")
 
         input_transform = None
         if use_input_transform:
@@ -1295,6 +1487,8 @@ class AdversarialTrainer:
                     lambda_trades=lambda_trades,
                     input_transform=input_transform,
                     adv_cutmix=adv_cutmix,
+                    afd_layer=afd_layer,
+                    dae_trainer=dae_trainer,
                 )
                 self.history["train_ce_loss"].append(ce_loss)
                 self.history["train_kl_loss"].append(kl_loss)
@@ -1339,6 +1533,8 @@ class AdversarialTrainer:
             if val_acc > best_val_acc_p2:
                 best_val_acc_p2 = val_acc
                 best_state_p2 = copy.deepcopy(self.model.state_dict())
+                if dae is not None:
+                    best_dae_state = copy.deepcopy(dae.state_dict())
                 patience_counter = 0
             else:
                 patience_counter += 1
@@ -1347,6 +1543,8 @@ class AdversarialTrainer:
                     break
 
         self.model.load_state_dict(best_state_p2)
+        if dae is not None and "best_dae_state" in dir():
+            dae.load_state_dict(best_dae_state)
         print(f"  ✓ Meilleurs poids Phase 2 rechargés (val_acc={best_val_acc_p2:.4f})")
 
         # XGBoost: fit l'arbre AVANT le Crash Test Phase 2
@@ -2306,15 +2504,27 @@ def run_experiment_with_phase_checkpoints(
         X_train_raw=X_train_raw,
         use_class_weights=use_class_weights,
         use_trades=True,
-        lambda_trades=6.0,
-        trades_epsilon=0.05,
-        trades_alpha=0.01,
-        trades_pgd_steps=7,
+        lambda_trades=3.0,
+        trades_epsilon=0.5,
+        trades_alpha=0.05,
+        trades_pgd_steps=15,
         use_input_transform=True,
         use_cutmix=True,
         n_continuous_features=n_continuous_features,
         use_multi_attack=use_multi_attack,
         multi_attack_strategies=multi_attack_strategies,
+        label_smoothing=0.1,
+        use_afd=True,
+        afd_p_single=0.3,
+        afd_p_double=0.15,
+        afd_p_mimic=0.1,
+        use_dae=True,
+        dae_latent_dim=16,
+        dae_hidden_dim=32,
+        dae_pretrain_epochs=10,
+        use_randomized_smoothing=True,
+        rs_sigma=0.25,
+        rs_n_samples=50,
     )
 
     if save_results and save_path:

@@ -275,12 +275,53 @@ CNN_BILSTM_TRANSFORMER_CONFIG = {
 ADVERSARIAL_CONFIG = {
     "adv_ratio": 0.4,
     "phase2_epochs": 25,
-    "lambda_trades": 6.0,
-    "trades_epsilon": 0.05,
-    "trades_alpha": 0.01,
-    "trades_pgd_steps": 7,
+    "lambda_trades": 3.0,
+    "trades_epsilon": 0.5,
+    "trades_alpha": 0.05,
+    "trades_pgd_steps": 15,
     "input_transform_noise_std": 0.02,
     "input_transform_dropout_prob": 0.1,
     "cutmix_alpha": 1.0,
     "cutmix_prob": 0.5,
+    "label_smoothing": 0.1,
+}
+
+# ─── Countermeasure Configurations ─────────────────────────────────────────────
+
+# Couche 1: Adversarial Feature Dropout
+AFD_CONFIG = {
+    "p_single": 0.3,
+    "p_double": 0.15,
+    "p_mimic": 0.1,
+}
+
+# Couche 2: TRADES (updated - see ADVERSARIAL_CONFIG above)
+# Key changes: epsilon 0.05->0.5, lambda 6.0->3.0, pgd_steps 7->15, label_smoothing 0.1
+
+# Couche 3: Denoising Autoencoder
+DAE_CONFIG = {
+    "latent_dim": 16,
+    "hidden_dim": 32,
+    "pretrain_epochs": 10,
+    "alpha": 1.0,
+    "beta": 0.5,
+    "pert_p_zero": 0.3,
+    "pert_p_noise": 0.3,
+    "pert_p_scale": 0.2,
+    "pert_p_mimic": 0.2,
+    "pert_noise_std": 0.3,
+}
+
+# Couche 4: Randomized Smoothing
+RS_CONFIG = {
+    "sigma": 0.25,
+    "n_samples": 50,
+    "n_samples_certify": 500,
+    "adaptive": False,
+}
+
+# Couche 5: Heterogeneous Ensemble
+ENSEMBLE_CONFIG = {
+    "architectures": ["lstm", "bilstm", "cnn_lstm"],
+    "voting": "soft",
 }
