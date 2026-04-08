@@ -78,7 +78,12 @@ from src.adversarial.attacks import (
     AdversarialSearch,
     AdversarialEvaluator,
 )
-from src.adversarial.trades import TRADESAttack, TRADESTrainer
+from src.adversarial.trades import (
+    TRADESAttack,
+    TRADESTrainer,
+    MultiAttackTRADES,
+    FeatureAttackGenerator,
+)
 from src.adversarial.input_transform import InputTransform, create_input_transform
 from src.adversarial.cutmix import AdversarialCutMix, create_adversarial_cutmix
 
@@ -330,7 +335,7 @@ class AdversarialTrainer:
         train_loader: DataLoader,
         optimizer: torch.optim.Optimizer,
         criterion: nn.Module,
-        trades_attack: TRADESAttack,
+        trades_attack,
         lambda_trades: float = 6.0,
         input_transform: Optional[InputTransform] = None,
         adv_cutmix: Optional[AdversarialCutMix] = None,
@@ -343,7 +348,7 @@ class AdversarialTrainer:
             train_loader: Training data loader
             optimizer: Optimizer
             criterion: Cross-entropy loss
-            trades_attack: TRADES PGD attack instance
+            trades_attack: TRADESAttack or MultiAttackTRADES instance
             lambda_trades: Trade-off parameter (default 6.0)
             input_transform: Optional input transformation
             adv_cutmix: Optional adversarial CutMix
@@ -354,10 +359,13 @@ class AdversarialTrainer:
         import time
         import torch.nn.functional as F
 
+        from src.adversarial.trades import MultiAttackTRADES
+
         self.model.train()
         total_loss, total_ce, total_kl = 0.0, 0.0, 0.0
         correct, total = 0, 0
         n_batches = len(train_loader)
+        is_multi_attack = isinstance(trades_attack, MultiAttackTRADES)
 
         if self.verbose:
             epoch_start = time.time()
@@ -370,9 +378,13 @@ class AdversarialTrainer:
                 X_batch = input_transform(X_batch, training=True)
 
             with torch.no_grad():
-                X_adv = trades_attack.generate(
+                result = trades_attack.generate(
                     self.model, X_batch, y_batch, self.device
                 )
+                if is_multi_attack:
+                    X_adv, _ = result
+                else:
+                    X_adv = result
 
             if adv_cutmix is not None and np.random.rand() < 0.5:
                 X_adv, y_batch = adv_cutmix(X_batch, X_adv, y_batch)
@@ -898,6 +910,8 @@ class AdversarialTrainer:
         use_input_transform: bool = True,
         use_cutmix: bool = True,
         n_continuous_features: Optional[int] = None,
+        use_multi_attack: bool = False,
+        multi_attack_strategies: Optional[List[str]] = None,
     ) -> Dict:
         """Entraînement en 2 phases per docs/train.
 
@@ -925,6 +939,8 @@ class AdversarialTrainer:
             use_input_transform: If True, apply input transformations (default True)
             use_cutmix: If True, apply adversarial CutMix (default True)
             n_continuous_features: Number of continuous features for transforms
+            use_multi_attack: If True, use Worst-of-K multi-attack TRADES (PGD + Zero/Mimic/Padding)
+            multi_attack_strategies: List of feature strategies to use (default: all four)
         """
         import copy
 
@@ -1189,6 +1205,9 @@ class AdversarialTrainer:
         print(f"  λ_TRADES: {lambda_trades}")
         print(f"  Input Transform: {use_input_transform}")
         print(f"  Adversarial CutMix: {use_cutmix}")
+        print(f"  Multi-Attack (Worst-of-K): {use_multi_attack}")
+        if use_multi_attack and multi_attack_strategies:
+            print(f"  Multi-Attack strategies: {multi_attack_strategies}")
 
         best_val_acc_p2 = 0.0
         best_state_p2 = copy.deepcopy(self.model.state_dict())
@@ -1199,6 +1218,27 @@ class AdversarialTrainer:
             alpha=trades_alpha,
             num_steps=trades_pgd_steps,
         )
+
+        active_attack = trades_attack
+        if use_multi_attack and sensitivity_analysis is not None:
+            feature_attack = FeatureAttackGenerator(
+                benign_stats=sensitivity_analysis.benign_stats,
+                feature_names=sensitivity_analysis.feature_names,
+                num_classes=sensitivity_analysis.num_classes,
+                n_continuous_features=sensitivity_analysis.n_continuous_features,
+                strategies=multi_attack_strategies,
+            )
+            active_attack = MultiAttackTRADES(
+                trades_attack=trades_attack,
+                feature_attack=feature_attack,
+                strategies=multi_attack_strategies
+                or FeatureAttackGenerator.VALID_STRATEGIES,
+            )
+            print(f"  → Worst-of-K active: PGD + {active_attack.strategies}")
+        elif use_multi_attack:
+            print(
+                f"  ⚠️  Multi-attack requested but no sensitivity_analysis provided. Falling back to PGD only."
+            )
 
         input_transform = None
         if use_input_transform:
@@ -1251,7 +1291,7 @@ class AdversarialTrainer:
                     train_loader,
                     optimizer,
                     criterion,
-                    trades_attack,
+                    active_attack,
                     lambda_trades=lambda_trades,
                     input_transform=input_transform,
                     adv_cutmix=adv_cutmix,
@@ -1287,6 +1327,14 @@ class AdversarialTrainer:
                 f"Val[loss={val_loss:.4f} acc={val_acc:.4f}]",
                 flush=True,
             )
+
+            if use_multi_attack and isinstance(active_attack, MultiAttackTRADES):
+                stats = active_attack.get_selection_stats()
+                freq_str = " | ".join(
+                    f"{name}: {s['frequency']:.1%}" for name, s in stats.items()
+                )
+                print(f"  [Worst-of-K] {freq_str}")
+                active_attack.reset_epoch_stats()
 
             if val_acc > best_val_acc_p2:
                 best_val_acc_p2 = val_acc
@@ -1979,6 +2027,8 @@ def run_experiment_with_phase_checkpoints(
     use_class_weights: bool = False,
     preprocessed_dir: Optional[str] = None,
     verbose: bool = False,
+    use_multi_attack: bool = False,
+    multi_attack_strategies: Optional[List[str]] = None,
 ) -> Dict:
     """Run experiment avec sauvegarde et evaluation des checkpoints de phase.
 
@@ -1989,6 +2039,8 @@ def run_experiment_with_phase_checkpoints(
         preprocessed_dir: If set, try to load preprocessed data from here. If data doesn't
                          exist, run preprocessing and save there for future runs.
         verbose: If True, print detailed batch-level progress and timing for debugging.
+        use_multi_attack: If True, enable Worst-of-K multi-attack TRADES (PGD + Zero/Mimic/Padding).
+        multi_attack_strategies: List of feature strategies for multi-attack (default: all four).
     """
     device = get_device()
     print(f"\n{'=' * 60}")
@@ -2261,6 +2313,8 @@ def run_experiment_with_phase_checkpoints(
         use_input_transform=True,
         use_cutmix=True,
         n_continuous_features=n_continuous_features,
+        use_multi_attack=use_multi_attack,
+        multi_attack_strategies=multi_attack_strategies,
     )
 
     if save_results and save_path:
@@ -2882,6 +2936,24 @@ def main():
         action="store_true",
         help="Enable verbose mode: print batch-level progress and timing for debugging",
     )
+    parser.add_argument(
+        "--multi_attack",
+        action="store_true",
+        help=(
+            "Enable Worst-of-K multi-attack TRADES: generate x_adv with PGD + "
+            "Zero/Mimic/Padding and select the one that maximizes KL divergence"
+        ),
+    )
+    parser.add_argument(
+        "--multi_attack_strategies",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated feature attack strategies for multi-attack TRADES "
+            "(default: Zero,Mimic_Mean,Mimic_95th,Padding_x10). "
+            "Example: --multi_attack_strategies Zero,Mimic_Mean"
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -2915,7 +2987,11 @@ def main():
             data_dir=data_dir,
         )
     elif args.phase_checkpoints:
-        # Utiliser la nouvelle méthode avec checkpoints de phase
+        multi_attack_strategies = None
+        if args.multi_attack_strategies:
+            multi_attack_strategies = [
+                s.strip() for s in args.multi_attack_strategies.split(",")
+            ]
         run_experiment_with_phase_checkpoints(
             model_type=args.model,
             seq_length=args.seq_length,
@@ -2932,6 +3008,8 @@ def main():
             use_class_weights=args.use_class_weights,
             preprocessed_dir=args.preprocessed_dir,
             verbose=args.verbose,
+            use_multi_attack=args.multi_attack,
+            multi_attack_strategies=multi_attack_strategies,
         )
     else:
         run_experiment(

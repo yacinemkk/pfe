@@ -524,6 +524,296 @@ class TRADESTrainer:
         return results
 
 
+class FeatureAttackGenerator:
+    """
+    Torch-native feature-level adversarial attack generator.
+
+    Applies Zero / Mimic_Mean / Mimic_95th / Padding_x10 strategies
+    directly on GPU tensors without numpy conversion.
+
+    Unlike SensitivityAnalysis which operates per-feature with ranking,
+    this class applies a chosen strategy to ALL modifiable features at once,
+    producing an x_adv tensor compatible with the TRADES training loop.
+    """
+
+    VALID_STRATEGIES = ["Zero", "Mimic_Mean", "Mimic_95th", "Padding_x10"]
+
+    def __init__(
+        self,
+        benign_stats: Dict[int, Dict[str, np.ndarray]],
+        feature_names: List[str],
+        num_classes: int,
+        n_continuous_features: Optional[int] = None,
+        non_modifiable: Optional[List[str]] = None,
+        dependent_pairs: Optional[Dict[str, str]] = None,
+        strategies: Optional[List[str]] = None,
+    ):
+        self.num_classes = num_classes
+        self.n_continuous_features = n_continuous_features
+        self.feature_names = feature_names
+        self.strategies = strategies or self.VALID_STRATEGIES
+
+        if non_modifiable is not None:
+            self.non_modifiable = non_modifiable
+        else:
+            has_pkt_dir = any(f.startswith("pkt_dir_") for f in feature_names)
+            if has_pkt_dir:
+                self.non_modifiable = ["protocolIdentifier"] + [
+                    f"pkt_dir_{i}" for i in range(8)
+                ]
+            else:
+                self.non_modifiable = ["ipProto"]
+
+        if dependent_pairs is not None:
+            self.dependent_pairs = dependent_pairs
+        else:
+            has_pkt_dir = any(f.startswith("pkt_dir_") for f in feature_names)
+            if has_pkt_dir:
+                self.dependent_pairs = {
+                    "reversePacketTotalCount": "packetTotalCount",
+                    "reverseOctetTotalCount": "octetTotalCount",
+                    "reverseAverageInterarrivalTime": "averageInterarrivalTime",
+                }
+            else:
+                self.dependent_pairs = {
+                    "inPacketCount": "outPacketCount",
+                    "inByteCount": "outByteCount",
+                    "inAvgIAT": "outAvgIAT",
+                    "inAvgPacketSize": "outAvgPacketSize",
+                }
+
+        self.modifiable_indices = self._get_modifiable_indices()
+        self.dependent_indices = self._get_dependent_indices()
+
+        self._benign_means_np = {}
+        self._benign_p95_np = {}
+        for cls, stats in benign_stats.items():
+            self._benign_means_np[cls] = stats["mean"].astype(np.float32)
+            self._benign_p95_np[cls] = stats["p95"].astype(np.float32)
+
+        self._benign_means_torch: Optional[torch.Tensor] = None
+        self._benign_p95_torch: Optional[torch.Tensor] = None
+        self._device: Optional[torch.device] = None
+
+    def _get_modifiable_indices(self) -> np.ndarray:
+        modifiable = []
+        for i, name in enumerate(self.feature_names):
+            if name not in self.non_modifiable:
+                modifiable.append(i)
+        return np.array(modifiable)
+
+    def _get_dependent_indices(self) -> List[Tuple[int, int]]:
+        pairs = []
+        for dep, indep in self.dependent_pairs.items():
+            if dep in self.feature_names and indep in self.feature_names:
+                pairs.append(
+                    (self.feature_names.index(indep), self.feature_names.index(dep))
+                )
+        return pairs
+
+    def _ensure_torch_stats(self, device: torch.device):
+        if self._device == device and self._benign_means_torch is not None:
+            return
+        means = np.zeros((self.num_classes, len(self.feature_names)), dtype=np.float32)
+        p95s = np.zeros((self.num_classes, len(self.feature_names)), dtype=np.float32)
+        for cls in range(self.num_classes):
+            if cls in self._benign_means_np:
+                means[cls] = self._benign_means_np[cls]
+                p95s[cls] = self._benign_p95_np[cls]
+        self._benign_means_torch = torch.from_numpy(means).to(device)
+        self._benign_p95_torch = torch.from_numpy(p95s).to(device)
+        self._mod_idx_torch = (
+            torch.from_numpy(self.modifiable_indices).long().to(device)
+        )
+        self._device = device
+
+    @torch.no_grad()
+    def generate(
+        self,
+        model: nn.Module,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        device: torch.device,
+        strategy: str = "Mimic_Mean",
+    ) -> torch.Tensor:
+        """
+        Generate adversarial examples by applying a feature-level strategy
+        to ALL modifiable features simultaneously.
+
+        Args:
+            model: target model (used only for interface consistency)
+            x: clean inputs (batch, seq_len, features) or (batch, features)
+            y: true labels (batch,)
+            device: torch device
+            strategy: one of "Zero", "Mimic_Mean", "Mimic_95th", "Padding_x10"
+
+        Returns:
+            x_adv: adversarial examples, same shape as x
+        """
+        self._ensure_torch_stats(device)
+        x_adv = x.clone()
+
+        mod_idx = self._mod_idx_torch
+
+        if strategy == "Zero":
+            x_adv[..., mod_idx] = 0.0
+        elif strategy == "Mimic_Mean":
+            means = self._benign_means_torch[y]
+            if x_adv.ndim == 3:
+                means = means.unsqueeze(1)
+            x_adv[..., mod_idx] = means[..., mod_idx]
+        elif strategy == "Mimic_95th":
+            p95s = self._benign_p95_torch[y]
+            if x_adv.ndim == 3:
+                p95s = p95s.unsqueeze(1)
+            x_adv[..., mod_idx] = p95s[..., mod_idx]
+        elif strategy == "Padding_x10":
+            x_adv[..., mod_idx] = x_adv[..., mod_idx] * 10.0
+        else:
+            raise ValueError(
+                f"Unknown strategy '{strategy}'. Valid: {self.VALID_STRATEGIES}"
+            )
+
+        x_adv = self._project(x_adv)
+
+        return x_adv.detach()
+
+    def _project(self, x: torch.Tensor) -> torch.Tensor:
+        """Project adversarial examples to valid feature ranges (torch-native)."""
+        n_cont = self.n_continuous_features
+        if n_cont is not None:
+            x[..., :n_cont] = torch.clamp(x[..., :n_cont], -3.0, 3.0)
+            x[..., n_cont:] = torch.clamp(torch.round(x[..., n_cont:]), 0.0, 1.0)
+        else:
+            x = torch.clamp(x, -3.0, 3.0)
+
+        for indep_idx, dep_idx in self.dependent_indices:
+            if self.n_continuous_features is not None and (
+                dep_idx >= self.n_continuous_features
+                or indep_idx >= self.n_continuous_features
+            ):
+                continue
+            ratio = torch.abs(x[..., dep_idx]) / (torch.abs(x[..., indep_idx]) + 1e-8)
+            x[..., dep_idx] = x[..., indep_idx] * torch.clamp(ratio, 0.5, 2.0)
+
+        return x
+
+
+class MultiAttackTRADES:
+    """
+    Worst-of-K adversarial attack generator for TRADES training.
+
+    Generates adversarial examples using multiple attack methods (PGD + feature-level
+    strategies) and selects the one that maximizes KL divergence from clean predictions.
+    This ensures the model is trained against the strongest available attack at each step.
+
+    Usage:
+        multi_attack = MultiAttackTRADES(
+            trades_attack=trades_attack,
+            feature_attack=feature_attack,
+            strategies=["Zero", "Mimic_Mean", "Mimic_95th", "Padding_x10"],
+        )
+        x_adv = multi_attack.generate(model, x, y, device)
+        # x_adv is the adversarial example that maximizes KL(clean || adv)
+    """
+
+    def __init__(
+        self,
+        trades_attack: TRADESAttack,
+        feature_attack: Optional[FeatureAttackGenerator] = None,
+        strategies: Optional[List[str]] = None,
+        projection_fn=None,
+    ):
+        self.trades_attack = trades_attack
+        self.feature_attack = feature_attack
+        self.strategies = strategies or FeatureAttackGenerator.VALID_STRATEGIES
+        self.projection_fn = projection_fn
+        self.selection_counts: Dict[str, int] = {}
+
+    def generate(
+        self,
+        model: nn.Module,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        device: torch.device,
+    ) -> Tuple[torch.Tensor, Dict[str, int]]:
+        """
+        Generate adversarial examples using worst-of-K selection.
+
+        Generates x_adv with each attack method, computes KL(clean || x_adv)
+        for each, and returns the one that maximizes KL divergence.
+
+        Args:
+            model: target model
+            x: clean inputs (batch, seq_len, features) or (batch, features)
+            y: true labels (batch,)
+            device: torch device
+
+        Returns:
+            x_adv_worst: the adversarial example that maximizes KL divergence
+            batch_counts: dict mapping attack name -> count of samples where it won
+        """
+        was_training = model.training
+
+        with torch.no_grad():
+            clean_logits = model(x)
+            clean_probs = F.softmax(clean_logits, dim=1).detach()
+
+        candidates = {}
+
+        pgd_adv = self.trades_attack.generate(model, x, y, device)
+        candidates["PGD"] = pgd_adv
+
+        if self.feature_attack is not None:
+            for strat in self.strategies:
+                feat_adv = self.feature_attack.generate(
+                    model, x, y, device, strategy=strat
+                )
+                candidates[strat] = feat_adv
+
+        best_kl = torch.full((x.size(0),), -float("inf"), device=device)
+        best_adv = pgd_adv.clone()
+        batch_counts = {name: 0 for name in candidates}
+
+        model.eval()
+        with torch.no_grad():
+            for name, x_adv_i in candidates.items():
+                adv_logits = model(x_adv_i)
+                adv_log_probs = F.log_softmax(adv_logits, dim=1)
+                kl_per_sample = F.kl_div(
+                    adv_log_probs, clean_probs, reduction="none"
+                ).sum(dim=1)
+
+                mask = kl_per_sample > best_kl
+                best_adv[mask] = x_adv_i[mask]
+                best_kl[mask] = kl_per_sample[mask]
+
+                batch_counts[name] = mask.sum().item()
+
+        for name, count in batch_counts.items():
+            self.selection_counts[name] = self.selection_counts.get(name, 0) + count
+
+        if was_training:
+            model.train()
+
+        return best_adv.detach(), batch_counts
+
+    def get_selection_stats(self) -> Dict[str, Dict[str, float]]:
+        """Return selection frequency statistics for each attack."""
+        total = sum(self.selection_counts.values()) or 1
+        return {
+            name: {
+                "count": count,
+                "frequency": count / total,
+            }
+            for name, count in self.selection_counts.items()
+        }
+
+    def reset_epoch_stats(self):
+        """Reset selection counts for a new epoch."""
+        self.selection_counts = {}
+
+
 def create_trades_projection_fn(feature_attack, n_continuous_features: int):
     """
     Create a projection function for TRADES that respects feature constraints.

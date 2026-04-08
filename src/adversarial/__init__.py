@@ -10,6 +10,8 @@ from .attacks import (
 from .trades import (
     TRADESTrainer,
     TRADESAttack,
+    FeatureAttackGenerator,
+    MultiAttackTRADES,
     create_trades_projection_fn,
 )
 from .input_transform import (
@@ -32,6 +34,8 @@ __all__ = [
     "AdversarialEvaluator",
     "TRADESTrainer",
     "TRADESAttack",
+    "FeatureAttackGenerator",
+    "MultiAttackTRADES",
     "create_trades_projection_fn",
     "InputTransform",
     "MixupTransform",
