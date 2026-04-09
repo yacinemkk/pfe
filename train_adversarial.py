@@ -1556,6 +1556,19 @@ class AdversarialTrainer:
         # ── Couche 4: IBP (Interval Bound Propagation) ──
         ibp_trainer = None
         if use_ibp:
+            _ibp_benign_stats = None
+            _ibp_non_mod = []
+            if sensitivity_analysis is not None:
+                _ibp_benign_stats = sensitivity_analysis.benign_stats
+                try:
+                    _ibp_non_mod = [
+                        sensitivity_analysis.feature_names.index(n)
+                        for n in sensitivity_analysis.non_modifiable
+                        if n in sensitivity_analysis.feature_names
+                    ]
+                except (ValueError, AttributeError):
+                    _ibp_non_mod = []
+
             ibp_trainer = IBPTrainer(
                 self.model,
                 self.device,
@@ -1564,10 +1577,18 @@ class AdversarialTrainer:
                 n_continuous_features=n_continuous_features,
                 method=ibp_method,
                 warmup_epochs=ibp_warmup_epochs,
+                benign_stats=_ibp_benign_stats,
+                perturbation_types=["zero", "mean", "p95"],
+                non_modifiable_indices=_ibp_non_mod,
             )
-            print(
-                f"  ✅ IBP trainer created (epsilon={ibp_epsilon}, method={ibp_method})"
-            )
+            if _ibp_benign_stats is not None:
+                print(
+                    f"  ✅ IBP trainer created (data-driven: zero/mean/p95, method={ibp_method})"
+                )
+            else:
+                print(
+                    f"  ✅ IBP trainer created (epsilon={ibp_epsilon}, method={ibp_method})"
+                )
 
         sensitivity_p2 = sensitivity_results_precomputed
 
