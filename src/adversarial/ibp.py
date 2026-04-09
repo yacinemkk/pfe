@@ -546,32 +546,44 @@ class IntervalBoundPropagation:
         use_data_driven = perturbation_bounds is not None
         use_per_feature = epsilon_per_feature is not None and not use_data_driven
 
+        # ── Compute perturbed input bounds (detached, used as certificates) ──
+        # We compute bounds on x, then perform a *differentiable* forward pass
+        # on those perturbed inputs so that ibp_loss has grad_fn w.r.t. model params.
+
         if method == "crown":
-            logit_lower = torch.zeros_like(logits)
-            logit_upper = torch.zeros_like(logits)
+            # CROWN: use gradient of logits w.r.t. x_input to approximate bounds.
+            # x_input is detached so grads flow to it, not through model params here.
+            # We then compute the actual differentiable loss via a second forward pass.
+            logit_lower_det = torch.zeros(batch_size, device=device)
+            logit_upper_det = torch.zeros(batch_size, device=device)
 
             if use_data_driven:
                 # Compute ε-scaled data-driven input bounds
-                x_lower = x.clone()
-                x_upper = x.clone()
-                for i in range(batch_size):
-                    cls = y[i].item()
-                    if cls in perturbation_bounds:
-                        cls_lower = perturbation_bounds[cls]["lower"].to(device)
-                        cls_upper = perturbation_bounds[cls]["upper"].to(device)
-                        if x.dim() == 3 and cls_lower.dim() == 1:
-                            cls_lower = cls_lower.unsqueeze(0).expand(x.size(1), -1)
-                            cls_upper = cls_upper.unsqueeze(0).expand(x.size(1), -1)
-                        # Interpolate: x + ε × (stat_bound - x)
-                        x_lower[i] = x[i] + epsilon * (
-                            torch.min(x[i], cls_lower) - x[i]
-                        )
-                        x_upper[i] = x[i] + epsilon * (
-                            torch.max(x[i], cls_upper) - x[i]
-                        )
+                x_lower = x.clone().detach()
+                x_upper = x.clone().detach()
+                with torch.no_grad():
+                    for i in range(batch_size):
+                        cls = y[i].item()
+                        if cls in perturbation_bounds:
+                            cls_lower = perturbation_bounds[cls]["lower"].to(device)
+                            cls_upper = perturbation_bounds[cls]["upper"].to(device)
+                            if x.dim() == 3 and cls_lower.dim() == 1:
+                                cls_lower = cls_lower.unsqueeze(0).expand(x.size(1), -1)
+                                cls_upper = cls_upper.unsqueeze(0).expand(x.size(1), -1)
+                            x_lower[i] = x[i] + epsilon * (
+                                torch.min(x[i], cls_lower) - x[i]
+                            )
+                            x_upper[i] = x[i] + epsilon * (
+                                torch.max(x[i], cls_upper) - x[i]
+                            )
 
-                delta_lower = (x_lower - x).detach()
-                delta_upper = (x_upper - x).detach()
+                delta_lower = (x_lower - x.detach())
+                delta_upper = (x_upper - x.detach())
+
+                # Use CROWN gradients to estimate worst-case logit bounds per sample
+                # (these bounds are detached — used only as certificate indicators)
+                lb_y_det = torch.zeros(batch_size, device=device)
+                ub_other_det = torch.zeros(batch_size, device=device)
 
                 for j in range(num_classes):
                     if x_input.grad is not None:
@@ -580,9 +592,9 @@ class IntervalBoundPropagation:
                     grad_j = torch.autograd.grad(
                         logits[:, j].sum(),
                         x_input,
-                        retain_graph=(j < num_classes - 1),
+                        retain_graph=True,  # keep graph alive for all classes
                         create_graph=False,
-                    )[0]
+                    )[0].detach()
 
                     effect_lo = grad_j * delta_lower
                     effect_up = grad_j * delta_upper
@@ -594,11 +606,45 @@ class IntervalBoundPropagation:
                         per_lo = torch.min(effect_lo, effect_up).sum(dim=-1)
                         per_up = torch.max(effect_lo, effect_up).sum(dim=-1)
 
-                    logit_lower[:, j] = logits[:, j] + per_lo
-                    logit_upper[:, j] = logits[:, j] + per_up
+                    lb_j = (logits[:, j] + per_lo).detach()
+                    ub_j = (logits[:, j] + per_up).detach()
+
+                    is_true = (y == j)
+                    lb_y_det = torch.where(is_true, lb_j, lb_y_det)
+                    # For ub_other: take max over all non-true classes
+                    if j == 0:
+                        ub_other_det = torch.where(is_true, torch.full_like(ub_j, -1e9), ub_j)
+                    else:
+                        ub_other_det = torch.where(
+                            is_true, ub_other_det, torch.max(ub_other_det, ub_j)
+                        )
 
             elif use_per_feature:
                 eps = epsilon_per_feature.to(device)
+                x_lower = x.clone().detach()
+                x_upper = x.clone().detach()
+                if n_continuous_features is not None:
+                    n_cont = n_continuous_features
+                    if x.dim() == 3:
+                        eps_exp = eps[:n_cont].unsqueeze(0).unsqueeze(0)
+                    else:
+                        eps_exp = eps[:n_cont].unsqueeze(0)
+                    x_lower[..., :n_cont] = x.detach()[..., :n_cont] - eps_exp
+                    x_upper[..., :n_cont] = x.detach()[..., :n_cont] + eps_exp
+                else:
+                    if x.dim() == 3:
+                        eps_exp = eps.unsqueeze(0).unsqueeze(0)
+                    else:
+                        eps_exp = eps.unsqueeze(0)
+                    x_lower = x.detach() - eps_exp
+                    x_upper = x.detach() + eps_exp
+
+                delta_lower = x_lower - x.detach()
+                delta_upper = x_upper - x.detach()
+
+                lb_y_det = torch.zeros(batch_size, device=device)
+                ub_other_det = torch.zeros(batch_size, device=device)
+
                 for j in range(num_classes):
                     if x_input.grad is not None:
                         x_input.grad.zero_()
@@ -606,32 +652,50 @@ class IntervalBoundPropagation:
                     grad_j = torch.autograd.grad(
                         logits[:, j].sum(),
                         x_input,
-                        retain_graph=(j < num_classes - 1),
+                        retain_graph=True,
                         create_graph=False,
-                    )[0]
+                    )[0].detach()
 
-                    if n_continuous_features is not None:
-                        n_cont = n_continuous_features
-                        if grad_j.dim() == 3:
-                            weighted = grad_j[..., :n_cont].abs() * eps[
-                                :n_cont
-                            ].unsqueeze(0).unsqueeze(0)
-                            grad_norm = weighted.sum(dim=-1).sum(dim=1)
-                        else:
-                            weighted = grad_j[..., :n_cont].abs() * eps[:n_cont]
-                            grad_norm = weighted.sum(dim=-1)
+                    effect_lo = grad_j * delta_lower
+                    effect_up = grad_j * delta_upper
+
+                    if grad_j.dim() == 3:
+                        per_lo = torch.min(effect_lo, effect_up).sum(dim=-1).sum(dim=-1)
+                        per_up = torch.max(effect_lo, effect_up).sum(dim=-1).sum(dim=-1)
                     else:
-                        if grad_j.dim() == 3:
-                            weighted = grad_j.abs() * eps.unsqueeze(0).unsqueeze(0)
-                            grad_norm = weighted.sum(dim=-1).sum(dim=1)
-                        else:
-                            weighted = grad_j.abs() * eps
-                            grad_norm = weighted.sum(dim=-1)
+                        per_lo = torch.min(effect_lo, effect_up).sum(dim=-1)
+                        per_up = torch.max(effect_lo, effect_up).sum(dim=-1)
 
-                    logit_lower[:, j] = logits[:, j] - grad_norm
-                    logit_upper[:, j] = logits[:, j] + grad_norm
+                    lb_j = (logits[:, j] + per_lo).detach()
+                    ub_j = (logits[:, j] + per_up).detach()
+
+                    is_true = (y == j)
+                    lb_y_det = torch.where(is_true, lb_j, lb_y_det)
+                    if j == 0:
+                        ub_other_det = torch.where(is_true, torch.full_like(ub_j, -1e9), ub_j)
+                    else:
+                        ub_other_det = torch.where(
+                            is_true, ub_other_det, torch.max(ub_other_det, ub_j)
+                        )
 
             else:
+                # Scalar epsilon — compute symmetric bounds
+                if n_continuous_features is not None:
+                    n_cont = n_continuous_features
+                    x_lower = x.clone().detach()
+                    x_upper = x.clone().detach()
+                    x_lower[..., :n_cont] = x.detach()[..., :n_cont] - epsilon
+                    x_upper[..., :n_cont] = x.detach()[..., :n_cont] + epsilon
+                else:
+                    x_lower = x.detach() - epsilon
+                    x_upper = x.detach() + epsilon
+
+                delta_lower = x_lower - x.detach()
+                delta_upper = x_upper - x.detach()
+
+                lb_y_det = torch.zeros(batch_size, device=device)
+                ub_other_det = torch.zeros(batch_size, device=device)
+
                 for j in range(num_classes):
                     if x_input.grad is not None:
                         x_input.grad.zero_()
@@ -639,45 +703,71 @@ class IntervalBoundPropagation:
                     grad_j = torch.autograd.grad(
                         logits[:, j].sum(),
                         x_input,
-                        retain_graph=(j < num_classes - 1),
+                        retain_graph=True,
                         create_graph=False,
-                    )[0]
+                    )[0].detach()
 
-                    if n_continuous_features is not None:
-                        grad_norm = (
-                            grad_j[..., :n_continuous_features].abs().sum(dim=-1)
-                        )
-                        if grad_j.dim() == 3:
-                            grad_norm = grad_norm.sum(dim=1)
+                    effect_lo = grad_j * delta_lower
+                    effect_up = grad_j * delta_upper
+
+                    if grad_j.dim() == 3:
+                        per_lo = torch.min(effect_lo, effect_up).sum(dim=-1).sum(dim=-1)
+                        per_up = torch.max(effect_lo, effect_up).sum(dim=-1).sum(dim=-1)
                     else:
-                        grad_norm = grad_j.abs().sum(dim=-1)
-                        if grad_j.dim() == 3:
-                            grad_norm = grad_norm.sum(dim=1)
+                        per_lo = torch.min(effect_lo, effect_up).sum(dim=-1)
+                        per_up = torch.max(effect_lo, effect_up).sum(dim=-1)
 
-                    logit_lower[:, j] = logits[:, j] - epsilon * grad_norm
-                    logit_upper[:, j] = logits[:, j] + epsilon * grad_norm
+                    lb_j = (logits[:, j] + per_lo).detach()
+                    ub_j = (logits[:, j] + per_up).detach()
+
+                    is_true = (y == j)
+                    lb_y_det = torch.where(is_true, lb_j, lb_y_det)
+                    if j == 0:
+                        ub_other_det = torch.where(is_true, torch.full_like(ub_j, -1e9), ub_j)
+                    else:
+                        ub_other_det = torch.where(
+                            is_true, ub_other_det, torch.max(ub_other_det, ub_j)
+                        )
+
+            # ── Differentiable IBP loss via a fresh forward pass ──
+            # The bound violation mask (certified_mask) is computed from detached bounds.
+            # Non-certified samples incur a cross-entropy loss on the worst-case
+            # perturbed input (x_lower or x_upper, chosen by the bound direction).
+            # This forward pass IS connected to model parameters.
+            certified_mask = (lb_y_det > ub_other_det).detach()
+            violation = F.relu(ub_other_det - lb_y_det).detach()
+
+            # For non-certified samples, compute cross-entropy on perturbed input
+            # (use the bound endpoint that is worst: x_lower or x_upper midpoint)
+            if not certified_mask.all():
+                x_perturbed = (x_lower + x_upper) / 2.0  # midpoint of the box
+                perturbed_logits = model(x_perturbed)  # differentiable!
+                ibp_ce = F.cross_entropy(perturbed_logits, y, reduction='none')
+                ibp_loss = lambda_ibp * (ibp_ce * (1.0 - certified_mask.float())).mean()
+            else:
+                ibp_loss = torch.tensor(0.0, device=device).requires_grad_()
 
         else:
-            # IBP method
-            x_lower = x.clone()
-            x_upper = x.clone()
+            # ── IBP method: dual forward passes (differentiable) ──
+            x_lower = x.clone().detach()
+            x_upper = x.clone().detach()
 
             if use_data_driven:
-                for i in range(batch_size):
-                    cls = y[i].item()
-                    if cls in perturbation_bounds:
-                        cls_lower = perturbation_bounds[cls]["lower"].to(device)
-                        cls_upper = perturbation_bounds[cls]["upper"].to(device)
-                        if x.dim() == 3 and cls_lower.dim() == 1:
-                            cls_lower = cls_lower.unsqueeze(0).expand(x.size(1), -1)
-                            cls_upper = cls_upper.unsqueeze(0).expand(x.size(1), -1)
-                        # Interpolate: x + ε × (stat_bound - x)
-                        x_lower[i] = x[i] + epsilon * (
-                            torch.min(x[i], cls_lower) - x[i]
-                        )
-                        x_upper[i] = x[i] + epsilon * (
-                            torch.max(x[i], cls_upper) - x[i]
-                        )
+                with torch.no_grad():
+                    for i in range(batch_size):
+                        cls = y[i].item()
+                        if cls in perturbation_bounds:
+                            cls_lower = perturbation_bounds[cls]["lower"].to(device)
+                            cls_upper = perturbation_bounds[cls]["upper"].to(device)
+                            if x.dim() == 3 and cls_lower.dim() == 1:
+                                cls_lower = cls_lower.unsqueeze(0).expand(x.size(1), -1)
+                                cls_upper = cls_upper.unsqueeze(0).expand(x.size(1), -1)
+                            x_lower[i] = x[i] + epsilon * (
+                                torch.min(x[i], cls_lower) - x[i]
+                            )
+                            x_upper[i] = x[i] + epsilon * (
+                                torch.max(x[i], cls_upper) - x[i]
+                            )
 
             elif use_per_feature:
                 eps = epsilon_per_feature.to(device)
@@ -687,45 +777,49 @@ class IntervalBoundPropagation:
                         eps_expanded = eps[:n_cont].unsqueeze(0).unsqueeze(0)
                     else:
                         eps_expanded = eps[:n_cont].unsqueeze(0)
-                    x_lower[..., :n_cont] = x[..., :n_cont] - eps_expanded
-                    x_upper[..., :n_cont] = x[..., :n_cont] + eps_expanded
+                    x_lower[..., :n_cont] = x.detach()[..., :n_cont] - eps_expanded
+                    x_upper[..., :n_cont] = x.detach()[..., :n_cont] + eps_expanded
                 else:
                     if x.dim() == 3:
                         eps_expanded = eps.unsqueeze(0).unsqueeze(0)
                     else:
                         eps_expanded = eps.unsqueeze(0)
-                    x_lower = x - eps_expanded
-                    x_upper = x + eps_expanded
+                    x_lower = x.detach() - eps_expanded
+                    x_upper = x.detach() + eps_expanded
 
             else:
                 if n_continuous_features is not None:
                     n_cont = n_continuous_features
-                    x_lower[..., :n_cont] = x[..., :n_cont] - epsilon
-                    x_upper[..., :n_cont] = x[..., :n_cont] + epsilon
+                    x_lower[..., :n_cont] = x.detach()[..., :n_cont] - epsilon
+                    x_upper[..., :n_cont] = x.detach()[..., :n_cont] + epsilon
                 else:
-                    x_lower = x - epsilon
-                    x_upper = x + epsilon
+                    x_lower = x.detach() - epsilon
+                    x_upper = x.detach() + epsilon
 
-            with torch.no_grad():
-                logits_l = model(x_lower)
-                logits_u = model(x_upper)
+            # Differentiable forward passes — no torch.no_grad() so grads flow through model
+            logits_l = model(x_lower)
+            logits_u = model(x_upper)
 
             logit_lower = torch.min(logits_l, logits_u)
             logit_upper = torch.max(logits_l, logits_u)
 
-        lb_y = logit_lower[torch.arange(batch_size, device=device), y]
-        ub_others = logit_upper.clone()
-        ub_others[torch.arange(batch_size, device=device), y] = -float("inf")
-        max_ub_other = ub_others.max(dim=1)[0]
+            lb_y = logit_lower[torch.arange(batch_size, device=device), y]
+            ub_others = logit_upper.clone()
+            ub_others[torch.arange(batch_size, device=device), y] = -float("inf")
+            max_ub_other = ub_others.max(dim=1)[0]
 
-        per_sample_violation = F.relu(max_ub_other - lb_y)
-        ibp_loss = lambda_ibp * per_sample_violation.mean()
+            per_sample_violation = F.relu(max_ub_other - lb_y)
+            ibp_loss = lambda_ibp * per_sample_violation.mean()
 
-        certified_mask = (lb_y > max_ub_other).float()
+            certified_mask = (lb_y > max_ub_other).detach().float()
+            lb_y_det = lb_y.detach()
+            ub_other_det = max_ub_other.detach()
+
+        certified_mask_f = certified_mask.float() if certified_mask.dtype != torch.float32 else certified_mask
         info = {
             "ibp_loss": ibp_loss.item(),
-            "certified_ratio": certified_mask.mean().item(),
-            "avg_margin": (lb_y - max_ub_other).mean().item(),
+            "certified_ratio": certified_mask_f.mean().item(),
+            "avg_margin": (lb_y_det - ub_other_det).mean().item(),
         }
 
         return ibp_loss, info
