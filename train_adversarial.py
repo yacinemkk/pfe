@@ -1580,10 +1580,11 @@ class AdversarialTrainer:
                 benign_stats=_ibp_benign_stats,
                 perturbation_types=["zero", "mean", "p95"],
                 non_modifiable_indices=_ibp_non_mod,
+                epsilon_start=0.05,
             )
             if _ibp_benign_stats is not None:
                 print(
-                    f"  ✅ IBP trainer created (data-driven: zero/mean/p95, method={ibp_method})"
+                    f"  ✅ IBP trainer created (data-driven+ε-scaling: ε 0.05→{ibp_epsilon}, method={ibp_method})"
                 )
             else:
                 print(

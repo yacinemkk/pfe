@@ -12,35 +12,46 @@ Key result: If the lower bound of the correct-class logit exceeds the upper
 bounds of every other class logit, the prediction is *certified* – no
 perturbation within epsilon can change it.
 
-Three modes for defining the perturbation box:
-  1. Scalar epsilon:      [x - ε, x + ε]  uniform for all features
-  2. Per-feature epsilon: [x - ε_f, x + ε_f]  feature-specific budgets
-  3. Data-driven:         Uses benign_stats (zero, mean, p95) per class to
-                           define the actual reachable range under realistic
-                           IoT perturbations.  Each feature's box reflects
-                           the specific attack strategies (Zero, Mimic_Mean,
-                           Mimic_95th) that the adversary can apply.
+Perturbation box modes:
+
+  1. Scalar epsilon:
+     [x - ε, x + ε]  uniform for all features.
+
+  2. Per-feature epsilon:
+     [x - ε_f, x + ε_f]  feature-specific budgets.
+
+  3. Data-driven with epsilon scaling (combined, recommended for IoT):
+     Uses benign_stats (zero, mean, p95) per class to define the maximum
+     reachable range under realistic IoT perturbations, then scales it
+     by ε ∈ [0, 1]:
+
+         effective_bound[f] = x[f] + ε × (stat_bound[f] - x[f])
+
+     - ε = 0  → no perturbation (box = x)
+     - ε = 1  → full data-driven box
+     - ε = 0.3 → 30% of the way to the stat bound (tighter, certifiable)
+
+     This keeps ε as a meaningful "budget knob" while respecting the
+     per-feature, per-class structure of real IoT attacks.
 
 Reference:
     Gowal et al., "On the Effectiveness of Interval Bound Propagation
     for Training Certifiably Robust Models" (NeurIPS 2019)
 
 Usage:
-    # Scalar epsilon (original)
-    ibp = IntervalBoundPropagation(model, epsilon=0.1)
-    certified_acc, certified_radius = ibp.certify(test_loader, device)
-
-    # Data-driven bounds from benign stats
+    # Combined mode (recommended for IoT)
     ibp = IntervalBoundPropagation(
-        model, epsilon=0.1,
+        model, epsilon=0.3,
         benign_stats=sensitivity_analysis.benign_stats,
         perturbation_types=["zero", "mean", "p95"],
         non_modifiable_indices=[0, 5],
     )
-    certified_acc = ibp.certify(test_loader, device)
+
+    # Scalar epsilon (fallback)
+    ibp = IntervalBoundPropagation(model, epsilon=0.1)
 
     # Per-feature epsilon
-    eps_vec = torch.FloatTensor([0.05, 0.1, 0.0, ...])  # 0 = non-modifiable
+    eps_vec = torch.FloatTensor([0.05, 0.1, 0.0, ...])
     ibp = IntervalBoundPropagation(model, epsilon=0.1, epsilon_per_feature=eps_vec)
 """
 
@@ -57,36 +68,33 @@ class IntervalBoundPropagation:
     Interval Bound Propagation for certified robustness evaluation and
     adversarial training.
 
-    Three modes for defining the perturbation box:
+    Perturbation box modes (selected automatically based on available data):
 
-    1. Scalar epsilon (original):
+    1. Scalar epsilon (fallback):
        [x-ε, x+ε] uniform for all continuous features.
 
     2. Per-feature epsilon:
        [x-ε_f, x+ε_f] with feature-specific budgets.
-       epsilon_per_feature is a 1-D tensor of shape (n_features,).
 
-    3. Data-driven (benign_stats):
-       For each feature, the box is derived from the actual values
-       reachable under the specified perturbation strategies:
-         - "zero": feature can be set to 0       → lower bound ≤ 0
-         - "mean": feature can be set to class mean → interval includes mean
-         - "p95":  feature can be set to 95th pct → interval includes p95
-       Non-modifiable features keep their original value (ε=0).
+    3. Data-driven with epsilon scaling (when benign_stats provided):
+       For each feature f of class c, the stat-derived bound represents the
+       maximum reachable value under realistic IoT perturbations (zero, mean,
+       p95).  The effective bound is then *scaled* by ε:
+
+           effective_lower[f] = x[f] + ε × (stat_lower[f] - x[f])
+           effective_upper[f] = x[f] + ε × (stat_upper[f] - x[f])
+
+       ε acts as a "budget knob":
+         - ε = 0   → no perturbation (box collapses to x)
+         - ε = 1   → full data-driven box (may be very wide)
+         - ε = 0.3 → 30% of the way (tighter, more likely to certify)
+
+       Non-modifiable features keep their original value regardless of ε.
 
     Two bound computation methods:
       1. 'ibp'   – Forward-pass interval propagation.
       2. 'crown' – Linear relaxation (CROWN-IBP hybrid) using Jacobian.
                    Supports asymmetric (data-driven) bounds.
-
-    Attributes:
-        model:  The classifier to certify.
-        epsilon:  L-infinity perturbation budget (scalar fallback).
-        epsilon_per_feature:  Per-feature budget tensor (n_features,).
-        n_continuous_features:  Number of continuous (perturbable) features.
-        benign_stats:  {class_idx: {"mean": ndarray, "p95": ndarray}}
-        perturbation_types:  List of strategies, e.g. ["zero", "mean", "p95"].
-        non_modifiable_indices:  Feature indices that should never be perturbed.
     """
 
     def __init__(
@@ -116,7 +124,7 @@ class IntervalBoundPropagation:
         """Pre-compute per-class perturbation bounds from benign_stats.
 
         For each class *c* and feature *f*, the bounds represent the
-        reachable values under all specified perturbation strategies:
+        extreme reachable values under all specified perturbation strategies:
 
         +-----------+-------------------------------------------+
         | Strategy  | Effect on bounds                          |
@@ -131,8 +139,11 @@ class IntervalBoundPropagation:
             lower[f] = min(0, mean_c[f], p95_c[f])
             upper[f] = max(0, mean_c[f], p95_c[f])
 
-        At runtime, the box is expanded to also include the original
-        input value x[f] (since "no perturbation" is always valid).
+        At runtime, these bounds are **scaled by ε** via interpolation:
+
+            effective[f] = x[f] + ε × (stat_bound[f] - x[f])
+
+        so ε acts as a budget knob (0 = no perturbation, 1 = full stats).
 
         Non-modifiable features are marked with lower=+inf / upper=-inf
         so they are never perturbed.
@@ -192,10 +203,14 @@ class IntervalBoundPropagation:
 
         Three modes (selected automatically based on available data):
 
-        1. **Data-driven** (requires ``benign_stats`` + ``y``):
-           For each sample of class *c*, the box includes the original
-           value x[f] AND all reachable perturbation values (0, mean, p95).
-           This produces class-specific, asymmetric bounds.
+        1. **Data-driven with ε scaling** (requires ``benign_stats`` + ``y``):
+           For each sample of class *c*, the stat-derived bounds are
+           interpolated toward x using ε:
+
+               effective[f] = x[f] + ε × (stat_bound[f] - x[f])
+
+           This produces class-specific, asymmetric bounds that are
+           proportionally controlled by ε.
 
         2. **Per-feature epsilon** (requires ``epsilon_per_feature``):
            ``[x - ε_f, x + ε_f]`` with a different ε per feature.
@@ -213,8 +228,9 @@ class IntervalBoundPropagation:
         x_lower = x.clone()
         x_upper = x.clone()
 
-        # Mode 3: data-driven bounds from benign_stats
+        # Mode 1: data-driven with epsilon scaling
         if self.perturbation_bounds is not None and y is not None:
+            eps = self.epsilon
             for i in range(x.size(0)):
                 cls = y[i].item()
                 if cls in self.perturbation_bounds:
@@ -225,8 +241,9 @@ class IntervalBoundPropagation:
                         cls_lower = cls_lower.unsqueeze(0).expand(x.size(1), -1)
                         cls_upper = cls_upper.unsqueeze(0).expand(x.size(1), -1)
 
-                    x_lower[i] = torch.min(x[i], cls_lower)
-                    x_upper[i] = torch.max(x[i], cls_upper)
+                    # Interpolate: x + ε × (stat_bound - x)
+                    x_lower[i] = x[i] + eps * (torch.min(x[i], cls_lower) - x[i])
+                    x_upper[i] = x[i] + eps * (torch.max(x[i], cls_upper) - x[i])
 
         # Mode 2: per-feature epsilon
         elif self.epsilon_per_feature is not None:
@@ -244,7 +261,7 @@ class IntervalBoundPropagation:
                 x_lower = x - eps_expanded
                 x_upper = x + eps_expanded
 
-        # Mode 1: scalar epsilon (original)
+        # Mode 3: scalar epsilon (fallback)
         else:
             if self.n_continuous_features is not None:
                 n_cont = self.n_continuous_features
@@ -275,32 +292,24 @@ class IntervalBoundPropagation:
 
         For scalar / per-feature epsilon (symmetric bounds)::
 
-            logit_j(x + δ) ≈ logit_j(x) + <∇logit_j, δ>
             logit_j_lower  ≈ logit_j  -  Σ_f |∇_f| · ε_f
 
-        For data-driven (asymmetric) bounds::
+        For data-driven with ε scaling (asymmetric bounds)::
 
             δ_lo = x_lower - x   (negative or zero)
             δ_up = x_upper - x   (positive or zero)
 
             logit_j_lower = logit_j + Σ_f min(∇_f·δ_lo_f, ∇_f·δ_up_f)
             logit_j_upper = logit_j + Σ_f max(∇_f·δ_lo_f, ∇_f·δ_up_f)
-
-        Args:
-            x: Input tensor.
-            device: Torch device.
-            y: Class labels (needed for data-driven mode).
         """
         x_input = x.clone().detach().requires_grad_(True)
         logits = self.model(x_input)
 
-        batch_size = x.size(0)
         num_classes = logits.size(-1)
 
         logit_lower = torch.zeros_like(logits)
         logit_upper = torch.zeros_like(logits)
 
-        # Pre-compute input perturbation bounds for asymmetric CROWN
         use_asymmetric = self.perturbation_bounds is not None and y is not None
         if use_asymmetric:
             x_l, x_u = self._input_bounds(x, y)
@@ -380,13 +389,7 @@ class IntervalBoundPropagation:
         device: torch.device,
         y: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Compute output bounds using forward-pass IBP.
-
-        Propagates lower and upper input bounds through the model.
-        For FC layers the propagation is exact; for nonlinear layers
-        (LSTM, attention) the bounds are conservative (over-approximated)
-        by taking the min/max of the outputs at the lower and upper inputs.
-        """
+        """Compute output bounds using forward-pass IBP."""
         x_lower, x_upper = self._input_bounds(x, y)
 
         logits_lower = self.model(x_lower)
@@ -428,11 +431,6 @@ class IntervalBoundPropagation:
 
         A sample is *certified* if the lower bound of the correct-class
         logit exceeds the upper bound of every incorrect-class logit.
-
-        Returns:
-            dict with 'certified_accuracy', 'certified_ratio',
-                      'clean_accuracy', 'avg_certified_radius',
-                      'per_sample_radius', 'perturbation_types'
         """
         self.model.eval()
         certified = 0
@@ -484,6 +482,7 @@ class IntervalBoundPropagation:
             "avg_certified_radius": avg_radius,
             "total_samples": total,
             "perturbation_types": self.perturbation_types,
+            "epsilon": self.epsilon,
         }
 
     # ------------------------------------------------------------------ #
@@ -510,10 +509,11 @@ class IntervalBoundPropagation:
 
         Supports three modes:
 
-        1. **Data-driven** (``perturbation_bounds`` provided):
-           Asymmetric CROWN bounds derived from benign_stats per class.
-           The box for feature *f* of class *c* includes 0, mean_c[f],
-           p95_c[f], and the original input value.
+        1. **Data-driven with ε scaling** (``perturbation_bounds`` provided):
+           Asymmetric CROWN bounds derived from benign_stats per class,
+           scaled by ε:
+
+               effective[f] = x[f] + ε × (stat_bound[f] - x[f])
 
         2. **Per-feature epsilon** (``epsilon_per_feature`` provided):
            Symmetric CROWN bounds with feature-specific budgets.
@@ -525,7 +525,7 @@ class IntervalBoundPropagation:
             model:  Classifier.
             x:  Input batch (batch, seq_len, features) or (batch, features).
             y:  Labels (batch,).
-            epsilon:  Perturbation budget (scalar mode).
+            epsilon:  Perturbation budget / scaling factor.
             lambda_ibp:  Weight for the IBP loss term.
             n_continuous_features:  Number of perturbable features.
             method:  'crown' or 'ibp'.
@@ -551,6 +551,7 @@ class IntervalBoundPropagation:
             logit_upper = torch.zeros_like(logits)
 
             if use_data_driven:
+                # Compute ε-scaled data-driven input bounds
                 x_lower = x.clone()
                 x_upper = x.clone()
                 for i in range(batch_size):
@@ -561,8 +562,13 @@ class IntervalBoundPropagation:
                         if x.dim() == 3 and cls_lower.dim() == 1:
                             cls_lower = cls_lower.unsqueeze(0).expand(x.size(1), -1)
                             cls_upper = cls_upper.unsqueeze(0).expand(x.size(1), -1)
-                        x_lower[i] = torch.min(x[i], cls_lower)
-                        x_upper[i] = torch.max(x[i], cls_upper)
+                        # Interpolate: x + ε × (stat_bound - x)
+                        x_lower[i] = x[i] + epsilon * (
+                            torch.min(x[i], cls_lower) - x[i]
+                        )
+                        x_upper[i] = x[i] + epsilon * (
+                            torch.max(x[i], cls_upper) - x[i]
+                        )
 
                 delta_lower = (x_lower - x).detach()
                 delta_upper = (x_upper - x).detach()
@@ -665,13 +671,13 @@ class IntervalBoundPropagation:
                         if x.dim() == 3 and cls_lower.dim() == 1:
                             cls_lower = cls_lower.unsqueeze(0).expand(x.size(1), -1)
                             cls_upper = cls_upper.unsqueeze(0).expand(x.size(1), -1)
-                        x_lower[i] = torch.min(x[i], cls_lower)
-                        x_upper[i] = torch.max(x[i], cls_upper)
-
-                for idx_set in [
-                    set(),
-                ]:  # placeholder for non-modifiable handling
-                    pass
+                        # Interpolate: x + ε × (stat_bound - x)
+                        x_lower[i] = x[i] + epsilon * (
+                            torch.min(x[i], cls_lower) - x[i]
+                        )
+                        x_upper[i] = x[i] + epsilon * (
+                            torch.max(x[i], cls_upper) - x[i]
+                        )
 
             elif use_per_feature:
                 eps = epsilon_per_feature.to(device)
@@ -712,8 +718,7 @@ class IntervalBoundPropagation:
         ub_others[torch.arange(batch_size, device=device), y] = -float("inf")
         max_ub_other = ub_others.max(dim=1)[0]
 
-        margin = 0.0
-        per_sample_violation = F.relu(max_ub_other - lb_y + margin)
+        per_sample_violation = F.relu(max_ub_other - lb_y)
         ibp_loss = lambda_ibp * per_sample_violation.mean()
 
         certified_mask = (lb_y > max_ub_other).float()
@@ -729,36 +734,34 @@ class IntervalBoundPropagation:
 class IBPTrainer:
     """Helper for integrating IBP loss into the adversarial training loop.
 
-    Supports three modes for defining perturbation bounds:
+    Uses **combined mode** when benign_stats is provided:
 
-    1. **Scalar epsilon**: uniform perturbation budget (original).
-    2. **Per-feature epsilon**: feature-specific budgets via
-       ``epsilon_per_feature`` tensor.
-    3. **Data-driven** (recommended for IoT): uses ``benign_stats``
-       (zero, mean, p95) per class to define the actual reachable range
-       under realistic IoT perturbations.
+        effective_bound[f] = x[f] + ε × (stat_bound[f] - x[f])
+
+    ε acts as a budget knob:
+      - ε = 0   → no perturbation
+      - ε = 1   → full data-driven box
+      - ε = 0.3 → 30% of the way (tighter, more certifiable)
+
+    Additionally supports epsilon scheduling during warmup:
+      - First ``warmup_epochs`` epochs: ε ramps linearly from
+        ``epsilon_start`` to ``epsilon``.
+      - After warmup: ε = ``epsilon`` (full budget).
+
+    Lambda scaling also ramps during warmup (0 → lambda_ibp).
 
     Usage inside a training loop::
 
-        # Data-driven mode (recommended for IoT):
         ibp_trainer = IBPTrainer(
-            model, device, epsilon=0.1,
+            model, device, epsilon=0.3,
             benign_stats=sensitivity_analysis.benign_stats,
             perturbation_types=["zero", "mean", "p95"],
             non_modifiable_indices=[0, 5],
+            epsilon_start=0.05,
         )
         ...
         ibp_loss, info = ibp_trainer.compute_loss(X_batch, y_batch)
         total_loss = ce_loss + kl_loss + ibp_loss
-
-        # Per-feature epsilon mode:
-        eps_vec = torch.FloatTensor([0.05, 0.1, 0.0, ...])
-        ibp_trainer = IBPTrainer(
-            model, device, epsilon=0.1, epsilon_per_feature=eps_vec,
-        )
-
-        # Scalar epsilon mode (backward compatible):
-        ibp_trainer = IBPTrainer(model, device, epsilon=0.1)
     """
 
     def __init__(
@@ -774,6 +777,7 @@ class IBPTrainer:
         benign_stats: Optional[Dict[int, Dict[str, np.ndarray]]] = None,
         perturbation_types: Optional[List[str]] = None,
         non_modifiable_indices: Optional[List[int]] = None,
+        epsilon_start: Optional[float] = None,
     ):
         self.model = model
         self.device = device
@@ -787,15 +791,12 @@ class IBPTrainer:
         self.benign_stats = benign_stats
         self.perturbation_types = perturbation_types or ["zero", "mean", "p95"]
         self.non_modifiable_indices = non_modifiable_indices or []
+        self.epsilon_start = epsilon_start if epsilon_start is not None else 0.0
 
         self.perturbation_bounds = self._compute_perturbation_bounds()
 
     def _compute_perturbation_bounds(self) -> Optional[Dict]:
-        """Pre-compute per-class perturbation bounds from benign_stats.
-
-        Same logic as ``IntervalBoundPropagation._compute_perturbation_bounds``.
-        Stored here so ``compute_loss`` can pass them to the static method.
-        """
+        """Pre-compute per-class perturbation bounds from benign_stats."""
         if self.benign_stats is None:
             return None
 
@@ -838,10 +839,25 @@ class IBPTrainer:
     def set_epoch(self, epoch: int):
         self.current_epoch = epoch
 
+    def _get_effective_epsilon(self) -> float:
+        """Get the effective epsilon for the current epoch.
+
+        During warmup, ε ramps linearly from epsilon_start to epsilon.
+        After warmup, ε = epsilon (full budget).
+        """
+        if self.current_epoch < self.warmup_epochs:
+            t = (self.current_epoch + 1) / self.warmup_epochs
+            return self.epsilon_start + t * (self.epsilon - self.epsilon_start)
+        return self.epsilon
+
     def compute_loss(
         self, x: torch.Tensor, y: torch.Tensor
     ) -> Tuple[torch.Tensor, Dict]:
-        """Compute IBP loss with warmup scaling.
+        """Compute IBP loss with warmup scaling (both λ and ε).
+
+        During warmup:
+          - λ ramps from 0 to lambda_ibp (prevents early instability)
+          - ε ramps from epsilon_start to epsilon (grows perturbation box)
 
         Args:
             x: Input batch.
@@ -851,11 +867,13 @@ class IBPTrainer:
             (ibp_loss, info_dict)
         """
         if self.current_epoch < self.warmup_epochs:
-            scale = (self.current_epoch + 1) / self.warmup_epochs
+            lambda_scale = (self.current_epoch + 1) / self.warmup_epochs
         else:
-            scale = 1.0
+            lambda_scale = 1.0
 
-        effective_lambda = self.lambda_ibp * scale
+        effective_lambda = self.lambda_ibp * lambda_scale
+        effective_epsilon = self._get_effective_epsilon()
+
         if effective_lambda < 1e-8:
             return torch.tensor(0.0, device=self.device, requires_grad=True), {}
 
@@ -863,21 +881,18 @@ class IBPTrainer:
             self.model,
             x,
             y,
-            epsilon=self.epsilon,
+            epsilon=effective_epsilon,
             lambda_ibp=effective_lambda,
             n_continuous_features=self.n_continuous_features,
             method=self.method,
             epsilon_per_feature=self.epsilon_per_feature,
             perturbation_bounds=self.perturbation_bounds,
         )
+        info["effective_epsilon"] = effective_epsilon
         return ibp_loss, info
 
     def certify(self, dataloader, max_samples=None) -> Dict:
-        """Run certified accuracy evaluation.
-
-        Creates an ``IntervalBoundPropagation`` instance with the same
-        perturbation settings and delegates to its ``certify`` method.
-        """
+        """Run certified accuracy evaluation."""
         propagator = IntervalBoundPropagation(
             self.model,
             epsilon=self.epsilon,
