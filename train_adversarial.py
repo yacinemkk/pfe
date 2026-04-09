@@ -106,6 +106,10 @@ from src.adversarial.ensemble import (
     HeterogeneousEnsemble,
     create_heterogeneous_ensemble,
 )
+from src.adversarial.ibp import (
+    IntervalBoundPropagation,
+    IBPTrainer,
+)
 
 # Ensure results directory exists
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -361,6 +365,7 @@ class AdversarialTrainer:
         adv_cutmix: Optional[AdversarialCutMix] = None,
         afd_layer: Optional[AdversarialFeatureDropout] = None,
         dae_trainer: Optional[DenoisingAETrainer] = None,
+        ibp_trainer: Optional["IBPTrainer"] = None,
     ) -> Tuple[float, float, float, float]:
         """Train for one epoch using TRADES loss with countermeasures.
 
@@ -414,14 +419,11 @@ class AdversarialTrainer:
                 X_batch = input_transform(X_batch, training=True)
 
             # ── Couche 2: TRADES adversarial generation ──
-            with torch.no_grad():
-                result = trades_attack.generate(
-                    self.model, X_batch, y_batch, self.device
-                )
-                if is_multi_attack:
-                    X_adv, _ = result
-                else:
-                    X_adv = result
+            result = trades_attack.generate(self.model, X_batch, y_batch, self.device)
+            if is_multi_attack:
+                X_adv, _ = result
+            else:
+                X_adv = result
 
             # ── CutMix ──
             if adv_cutmix is not None and np.random.rand() < 0.5:
@@ -460,6 +462,11 @@ class AdversarialTrainer:
 
             loss = ce_loss + lambda_trades * kl_loss
 
+            # ── Couche 4: IBP certified robustness loss ──
+            if ibp_trainer is not None:
+                ibp_loss, ibp_info = ibp_trainer.compute_loss(X_batch, y_batch)
+                loss = loss + ibp_loss
+
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             optimizer.step()
@@ -492,6 +499,91 @@ class AdversarialTrainer:
 
         n = len(train_loader)
         return total_loss / n, total_ce / n, total_kl / n, correct / total
+
+    def train_epoch_countermeasures(
+        self,
+        train_loader: DataLoader,
+        optimizer: torch.optim.Optimizer,
+        criterion: nn.Module,
+        afd_layer=None,
+        input_transform=None,
+        adv_cutmix=None,
+        dae_trainer=None,
+    ) -> Tuple[float, float]:
+        """Train one epoch with countermeasures (AFD, InputTransform, CutMix, DAE)
+        but WITHOUT TRADES. Used in Phase 1.
+
+        Returns:
+            (avg_loss, accuracy)
+        """
+        import time
+        import torch.nn.functional as F
+
+        self.model.train()
+        if afd_layer is not None:
+            afd_layer.train()
+        total_loss, correct, total = 0.0, 0, 0
+        n_batches = len(train_loader)
+
+        if self.verbose:
+            epoch_start = time.time()
+
+        for batch_idx, (X_batch, y_batch) in enumerate(train_loader):
+            X_batch = X_batch.to(self.device)
+            y_batch = y_batch.to(self.device)
+
+            if afd_layer is not None:
+                X_batch = afd_layer(X_batch, y_batch)
+
+            if input_transform is not None:
+                X_batch = input_transform(X_batch, training=True)
+
+            if adv_cutmix is not None and np.random.rand() < 0.5:
+                idx_perm = torch.randperm(X_batch.size(0), device=self.device)
+                X_other = X_batch[idx_perm]
+                X_batch, y_batch = adv_cutmix(X_batch, X_other, y_batch)
+
+            if dae_trainer is not None and batch_idx % 2 == 0:
+                try:
+                    dae_trainer.joint_train_step(X_batch.clone(), y_batch.clone())
+                except Exception:
+                    pass
+
+            optimizer.zero_grad()
+
+            if dae_trainer is not None:
+                with torch.no_grad():
+                    X_denoised = dae_trainer.autoencoder(X_batch)
+                logits = self.model(X_denoised)
+            else:
+                logits = self.model(X_batch)
+
+            loss = criterion(logits, y_batch)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            optimizer.step()
+
+            total_loss += loss.item()
+            _, predicted = logits.max(1)
+            total += y_batch.size(0)
+            correct += predicted.eq(y_batch).sum().item()
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            if self.verbose and (batch_idx + 1) % max(1, n_batches // 10) == 0:
+                elapsed = time.time() - epoch_start
+                pct = (batch_idx + 1) * 100 // n_batches
+                print(
+                    f"\r    P1 CM: {pct}% | {batch_idx + 1}/{n_batches}",
+                    end="",
+                    flush=True,
+                )
+
+        if self.verbose:
+            print(f"\r    ✓ P1 CM Done: {n_batches} batches")
+
+        return total_loss / len(train_loader), correct / total
 
     def train_epoch(
         self,
@@ -982,34 +1074,38 @@ class AdversarialTrainer:
         use_randomized_smoothing: bool = True,
         rs_sigma: float = 0.25,
         rs_n_samples: int = 50,
+        use_ibp: bool = True,
+        ibp_epsilon: float = 0.1,
+        lambda_ibp: float = 1.0,
+        ibp_method: str = "crown",
+        ibp_warmup_epochs: int = 5,
     ) -> Dict:
         """Entraînement en 2 phases per docs/train.
 
-        PHASE 1 : Entraînement Standard et Constat de Vulnérabilité
-        1. Entraînement initial (Données Bénignes Uniquement) + AFD
-        2. Crash Test 1:
-           - Test 1: Données Bénignes
-           - Test 2: Données Adversaires Uniquement
-           - Test 3: Mélange Bénignes + Adversaires
-
-        PHASE 2 : Entraînement Antagoniste (Adversarial Training) et Robustesse
-        1. Création du Corpus Conjoint (bénignes + adversaires)
-        2. Pre-train Denoising Autoencoder (if enabled)
-        3. Ré-entraînement sur corpus conjoint avec:
-           - TRADES (corrected epsilon/lambda) + Label Smoothing
+        PHASE 1 : Entraînement avec Contre-mesures (Robustesse Empirique)
+        1. Entraînement initial avec contre-mesures:
            - Adversarial Feature Dropout (AFD)
-           - Input Transform + CutMix
-           - DAE joint training
-           - Feature Importance Regularization
-        4. Crash Test 2 (mêmes 3 tests)
-        5. Randomized Smoothing evaluation
+           - Input Transform (noise + dropout)
+           - Adversarial CutMix
+           - Denoising Autoencoder (DAE) pretrain + joint
+        2. Crash Test 1
 
-        Countermeasures (5 layers):
+        PHASE 2 : Entraînement Adversarial TRADES + IBP (Robustesse Certifiée)
+        1. Ré-entraînement avec:
+           - TRADES (corrected epsilon/lambda) + Label Smoothing
+           - Toutes les contre-mesures de Phase 1
+           - Interval Bound Propagation (IBP) pour robustesse certifiée
+        2. Crash Test 2
+        3. Certified Robustness evaluation (IBP)
+        4. Randomized Smoothing evaluation
+
+        Countermeasures (6 layers):
             - Couche 1: Adversarial Feature Dropout (AFD)
             - Couche 2: TRADES corrected (epsilon=0.5, lambda=3.0, pgd_steps=15, label_smoothing=0.1)
             - Couche 3: Denoising Autoencoder (DAE)
-            - Couche 4: Randomized Smoothing (inference-time)
-            - Couche 5: Ensemble (built separately)
+            - Couche 4: Interval Bound Propagation (IBP) — Certified Robustness
+            - Couche 5: Randomized Smoothing (inference-time)
+            - Couche 6: Ensemble (built separately)
 
         Args:
             use_trades: If True, use TRADES loss in Phase 2 (default True)
@@ -1034,6 +1130,11 @@ class AdversarialTrainer:
             use_randomized_smoothing: If True, evaluate with Randomized Smoothing (default True)
             rs_sigma: Randomized Smoothing noise sigma (default 0.25)
             rs_n_samples: Number of noisy samples for RS (default 50)
+            use_ibp: If True, use Interval Bound Propagation (default True)
+            ibp_epsilon: IBP perturbation budget (default 0.1)
+            lambda_ibp: IBP loss weight (default 1.0)
+            ibp_method: IBP bound method, 'crown' or 'ibp' (default 'crown')
+            ibp_warmup_epochs: IBP warmup epochs for lambda scaling (default 5)
         """
         import copy
 
@@ -1082,23 +1183,114 @@ class AdversarialTrainer:
         phase2_epochs = 25
 
         print(f"\n{'=' * 70}")
-        print("  ENTRAÎNEMENT EN 2 PHASES (per docs/train)")
+        print("  ENTRAÎNEMENT EN 2 PHASES")
         print(f"{'=' * 70}")
-        print(f"  Phase 1 (Entraînement Standard):       max {phase1_epochs} epochs")
+        print(f"  Phase 1 (Contre-mesures):       max {phase1_epochs} epochs")
         if adv_generator and adv_ratio > 0:
-            print(
-                f"  Phase 2 (Entraînement Antagoniste):    max {phase2_epochs} epochs"
-            )
+            print(f"  Phase 2 (TRADES + IBP):          max {phase2_epochs} epochs")
         print(f"{'=' * 70}\n")
 
         all_crash_results = {}
 
+        # ── Setup countermeasures BEFORE Phase 1 ──────────────────
+        afd_layer = None
+        if use_afd and sensitivity_analysis is not None:
+            non_mod_idx = []
+            try:
+                non_mod_idx = [
+                    sensitivity_analysis.feature_names.index(n)
+                    for n in sensitivity_analysis.non_modifiable
+                    if n in sensitivity_analysis.feature_names
+                ]
+            except (ValueError, AttributeError):
+                non_mod_idx = []
+            afd_layer = create_adversarial_feature_dropout(
+                n_features=len(sensitivity_analysis.feature_names),
+                p_single=afd_p_single,
+                p_double=afd_p_double,
+                p_mimic=afd_p_mimic,
+                non_modifiable_indices=non_mod_idx,
+                benign_stats=sensitivity_analysis.benign_stats,
+                n_continuous_features=n_continuous_features,
+            ).to(self.device)
+            print(f"  ✅ AFD layer created (Phase 1)")
+        elif use_afd:
+            print(f"  ⚠️  AFD requested but no sensitivity_analysis provided. Skipping.")
+
+        input_transform = None
+        if use_input_transform:
+            input_transform = create_input_transform(
+                noise_std=0.02,
+                dropout_prob=0.1,
+                n_continuous_features=n_continuous_features,
+            )
+            print(f"  Input Transform: noise_std=0.02, dropout=0.1 (Phase 1)")
+
+        adv_cutmix = None
+        if use_cutmix:
+            adv_cutmix = create_adversarial_cutmix(alpha=1.0, prob=0.5)
+            print(f"  Adversarial CutMix: α=1.0, prob=0.5 (Phase 1)")
+
+        dae = None
+        dae_trainer = None
+        input_size_for_ae = (
+            len(sensitivity_analysis.feature_names)
+            if sensitivity_analysis is not None
+            else X_train.shape[-1]
+            if X_train is not None
+            else 16
+        )
+        if use_dae and sensitivity_analysis is not None:
+            non_mod_idx_ae = []
+            try:
+                non_mod_idx_ae = [
+                    sensitivity_analysis.feature_names.index(n)
+                    for n in sensitivity_analysis.non_modifiable
+                    if n in sensitivity_analysis.feature_names
+                ]
+            except (ValueError, AttributeError):
+                non_mod_idx_ae = []
+
+            dae, pert_gen = create_denoising_autoencoder(
+                input_size=input_size_for_ae,
+                latent_dim=dae_latent_dim,
+                hidden_dim=dae_hidden_dim,
+                n_continuous_features=n_continuous_features,
+                benign_stats=sensitivity_analysis.benign_stats,
+                non_modifiable_indices=non_mod_idx_ae,
+            )
+            dae = dae.to(self.device)
+            dae_trainer = DenoisingAETrainer(
+                autoencoder=dae,
+                classifier=self.model,
+                device=self.device,
+                perturbation_generator=pert_gen,
+                alpha=1.0,
+                beta=0.5,
+            )
+            print(f"  ✅ DAE created, pre-training...")
+            try:
+                dae_trainer.pretrain(
+                    train_loader, epochs=dae_pretrain_epochs, verbose=True
+                )
+                print(f"  ✅ DAE pre-training complete")
+            except Exception as e:
+                print(f"  ⚠️  DAE pre-training error: {e}. Continuing without DAE.")
+                dae = None
+                dae_trainer = None
+        elif use_dae:
+            print(f"  ⚠️  DAE requested but no sensitivity_analysis provided. Skipping.")
+
         # ─────────────────────────────────────────────────────────
-        # PHASE 1 : Entraînement Standard (Données Bénignes Uniquement)
+        # PHASE 1 : Entraînement avec Contre-mesures (sans TRADES)
         # ─────────────────────────────────────────────────────────
         print(f"\n{'=' * 60}")
-        print("PHASE 1: ENTRAÎNEMENT STANDARD (Données Bénignes Uniquement)")
+        print("PHASE 1: ENTRAÎNEMENT AVEC CONTRE-MESURES")
         print(f"{'=' * 60}\n")
+        print(f"  AFD: {afd_layer is not None}")
+        print(f"  Input Transform: {input_transform is not None}")
+        print(f"  CutMix: {adv_cutmix is not None}")
+        print(f"  DAE: {dae_trainer is not None}")
 
         best_val_acc_p1 = 0.0
         best_state_p1 = copy.deepcopy(self.model.state_dict())
@@ -1110,15 +1302,14 @@ class AdversarialTrainer:
                 print(
                     f"  [V] P1 Epoch {epoch + 1}/{phase1_epochs}: {len(train_loader)} batches"
                 )
-            train_loss, train_acc = self.train_epoch(
+            train_loss, train_acc = self.train_epoch_countermeasures(
                 train_loader,
                 optimizer,
                 criterion,
-                None,
-                0.0,
-                adv_method,
-                None,
-                X_raw_batch=X_train_raw,
+                afd_layer=afd_layer,
+                input_transform=input_transform,
+                adv_cutmix=adv_cutmix,
+                dae_trainer=dae_trainer,
             )
             print(
                 f"  ✓ P1 Epoch {epoch + 1} train done, running validation...",
@@ -1294,13 +1485,15 @@ class AdversarialTrainer:
             return self.history
 
         # ─────────────────────────────────────────────────────────
-        # PHASE 2 : Entraînement Antagoniste (5 Couches de Contremesures)
+        # PHASE 2 : Entraînement Adversarial (TRADES + IBP)
         # ─────────────────────────────────────────────────────────
         print(f"\n{'=' * 60}")
-        print("PHASE 2: ENTRAÎNEMENT ANTAGONISTE (5 Couches Contremesures)")
+        print("PHASE 2: ENTRAÎNEMENT ADVERSARIAL (TRADES + IBP)")
         print(f"{'=' * 60}\n")
-        print(f"  Couche 1 - AFD (Adversarial Feature Dropout): {use_afd}")
-        if use_afd:
+        print(
+            f"  Couche 1 - AFD (Adversarial Feature Dropout): {afd_layer is not None}"
+        )
+        if afd_layer is not None:
             print(
                 f"    p_single={afd_p_single}, p_double={afd_p_double}, p_mimic={afd_p_mimic}"
             )
@@ -1308,17 +1501,18 @@ class AdversarialTrainer:
             f"  Couche 2 - TRADES (corrected): epsilon={trades_epsilon}, λ={lambda_trades}, steps={trades_pgd_steps}"
         )
         print(f"    Label smoothing: {label_smoothing}")
-        print(f"  Couche 3 - DAE (Denoising Autoencoder): {use_dae}")
-        if use_dae:
-            print(
-                f"    latent_dim={dae_latent_dim}, hidden_dim={dae_hidden_dim}, pretrain={dae_pretrain_epochs} epochs"
-            )
-        print(f"  Input Transform: {use_input_transform}")
-        print(f"  Adversarial CutMix: {use_cutmix}")
+        print(f"  Couche 3 - DAE (Denoising Autoencoder): {dae_trainer is not None}")
+        if dae_trainer is not None:
+            print(f"    latent_dim={dae_latent_dim}, hidden_dim={dae_hidden_dim}")
+        print(f"  Couche 4 - IBP (Certified Robustness): {use_ibp}")
+        if use_ibp:
+            print(f"    epsilon={ibp_epsilon}, λ_ibp={lambda_ibp}, method={ibp_method}")
+        print(f"  Input Transform: {input_transform is not None}")
+        print(f"  Adversarial CutMix: {adv_cutmix is not None}")
         print(f"  Multi-Attack (Worst-of-K): {use_multi_attack}")
         if use_multi_attack and multi_attack_strategies:
             print(f"    Multi-Attack strategies: {multi_attack_strategies}")
-        print(f"  Couche 4 - Randomized Smoothing: {use_randomized_smoothing}")
+        print(f"  Couche 5 - Randomized Smoothing: {use_randomized_smoothing}")
         if use_randomized_smoothing:
             print(f"    sigma={rs_sigma}, n_samples={rs_n_samples}")
         print(f"  Ratio adversaire: {adv_ratio * 100:.0f}%")
@@ -1355,101 +1549,33 @@ class AdversarialTrainer:
                 f"  ⚠️  Multi-attack requested but no sensitivity_analysis provided. Falling back to PGD only."
             )
 
-        # ── Couche 1: AFD (Adversarial Feature Dropout) ──
-        afd_layer = None
-        if use_afd and sensitivity_analysis is not None:
-            non_mod_idx = []
-            try:
-                non_mod_idx = [
-                    sensitivity_analysis.feature_names.index(n)
-                    for n in sensitivity_analysis.non_modifiable
-                    if n in sensitivity_analysis.feature_names
-                ]
-            except (ValueError, AttributeError):
-                non_mod_idx = []
-            afd_layer = create_adversarial_feature_dropout(
-                n_features=len(sensitivity_analysis.feature_names),
-                p_single=afd_p_single,
-                p_double=afd_p_double,
-                p_mimic=afd_p_mimic,
-                non_modifiable_indices=non_mod_idx,
-                benign_stats=sensitivity_analysis.benign_stats,
+        # ── Couche 1: AFD — already created before Phase 1 ──
+        # ── Couche 3: DAE — already created before Phase 1 ──
+        # ── Input Transform / CutMix — already created before Phase 1 ──
+
+        # ── Couche 4: IBP (Interval Bound Propagation) ──
+        ibp_trainer = None
+        if use_ibp:
+            ibp_trainer = IBPTrainer(
+                self.model,
+                self.device,
+                epsilon=ibp_epsilon,
+                lambda_ibp=lambda_ibp,
                 n_continuous_features=n_continuous_features,
-            ).to(self.device)
-            print(f"  ✅ AFD layer created")
-        elif use_afd:
-            print(f"  ⚠️  AFD requested but no sensitivity_analysis provided. Skipping.")
-
-        # ── Couche 3: DAE (Denoising Autoencoder) ──
-        dae = None
-        dae_trainer = None
-        input_size_for_ae = (
-            len(sensitivity_analysis.feature_names)
-            if sensitivity_analysis is not None
-            else X_train.shape[-1]
-            if X_train is not None
-            else 16
-        )
-        if use_dae and sensitivity_analysis is not None:
-            non_mod_idx_ae = []
-            try:
-                non_mod_idx_ae = [
-                    sensitivity_analysis.feature_names.index(n)
-                    for n in sensitivity_analysis.non_modifiable
-                    if n in sensitivity_analysis.feature_names
-                ]
-            except (ValueError, AttributeError):
-                non_mod_idx_ae = []
-
-            dae, pert_gen = create_denoising_autoencoder(
-                input_size=input_size_for_ae,
-                latent_dim=dae_latent_dim,
-                hidden_dim=dae_hidden_dim,
-                n_continuous_features=n_continuous_features,
-                benign_stats=sensitivity_analysis.benign_stats,
-                non_modifiable_indices=non_mod_idx_ae,
+                method=ibp_method,
+                warmup_epochs=ibp_warmup_epochs,
             )
-            dae = dae.to(self.device)
-            dae_trainer = DenoisingAETrainer(
-                autoencoder=dae,
-                classifier=self.model,
-                device=self.device,
-                perturbation_generator=pert_gen,
-                alpha=1.0,
-                beta=0.5,
+            print(
+                f"  ✅ IBP trainer created (epsilon={ibp_epsilon}, method={ibp_method})"
             )
-            print(f"  ✅ DAE created, pre-training...")
-
-            try:
-                dae_trainer.pretrain(
-                    train_loader, epochs=dae_pretrain_epochs, verbose=True
-                )
-                print(f"  ✅ DAE pre-training complete")
-            except Exception as e:
-                print(f"  ⚠️  DAE pre-training error: {e}. Continuing without DAE.")
-                dae = None
-                dae_trainer = None
-        elif use_dae:
-            print(f"  ⚠️  DAE requested but no sensitivity_analysis provided. Skipping.")
-
-        input_transform = None
-        if use_input_transform:
-            input_transform = create_input_transform(
-                noise_std=0.02,
-                dropout_prob=0.1,
-                n_continuous_features=n_continuous_features,
-            )
-            print(f"  Input Transform: noise_std=0.02, dropout=0.1")
-
-        adv_cutmix = None
-        if use_cutmix:
-            adv_cutmix = create_adversarial_cutmix(alpha=1.0, prob=0.5)
-            print(f"  Adversarial CutMix: α=1.0, prob=0.5")
 
         sensitivity_p2 = sensitivity_results_precomputed
 
         for epoch in range(phase2_epochs):
             print(f"\n  ▶ Starting P2 Epoch {epoch + 1}/{phase2_epochs}...", flush=True)
+
+            if ibp_trainer is not None:
+                ibp_trainer.set_epoch(epoch)
 
             if X_train is not None and y_train is not None:
                 n_sens = min(1000, len(X_train))
@@ -1489,6 +1615,7 @@ class AdversarialTrainer:
                     adv_cutmix=adv_cutmix,
                     afd_layer=afd_layer,
                     dae_trainer=dae_trainer,
+                    ibp_trainer=ibp_trainer,
                 )
                 self.history["train_ce_loss"].append(ce_loss)
                 self.history["train_kl_loss"].append(kl_loss)
@@ -1580,6 +1707,26 @@ class AdversarialTrainer:
             save_path=save_path,
         )
         all_crash_results["phase_2"] = crash_p2
+
+        # ── IBP Certified Robustness Evaluation ──
+        if ibp_trainer is not None:
+            print(f"\n{'─' * 60}")
+            print("  CERTIFIED ROBUSTNESS (IBP)")
+            print(f"{'─' * 60}")
+            try:
+                ibp_results = ibp_trainer.certify(test_loader, max_samples=2000)
+                all_crash_results["ibp_certified"] = ibp_results
+                print(f"  Certified Accuracy:  {ibp_results['certified_accuracy']:.4f}")
+                print(f"  Clean Accuracy:      {ibp_results['clean_accuracy']:.4f}")
+                print(
+                    f"  Avg Certified Radius: {ibp_results['avg_certified_radius']:.4f}"
+                )
+                print(
+                    f"  Samples certified:   {ibp_results.get('certified_ratio', 0):.2%}"
+                )
+            except Exception as e:
+                print(f"  ⚠️  IBP certification error: {e}")
+                all_crash_results["ibp_certified"] = {"error": str(e)}
 
         if save_path:
             final_path = save_path / "best_model.pt"
@@ -2525,6 +2672,11 @@ def run_experiment_with_phase_checkpoints(
         use_randomized_smoothing=True,
         rs_sigma=0.25,
         rs_n_samples=50,
+        use_ibp=True,
+        ibp_epsilon=0.1,
+        lambda_ibp=1.0,
+        ibp_method="crown",
+        ibp_warmup_epochs=5,
     )
 
     if save_results and save_path:

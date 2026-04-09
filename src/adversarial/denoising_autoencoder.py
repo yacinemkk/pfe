@@ -302,9 +302,6 @@ class DenoisingAETrainer:
         self.ae_optimizer = torch.optim.AdamW(
             autoencoder.parameters(), lr=lr, weight_decay=weight_decay
         )
-        self.clf_optimizer = torch.optim.AdamW(
-            classifier.parameters(), lr=lr * 0.1, weight_decay=weight_decay
-        )
         self.mse_loss = nn.MSELoss()
         self.ce_loss = nn.CrossEntropyLoss()
 
@@ -356,31 +353,33 @@ class DenoisingAETrainer:
         y_batch: torch.Tensor,
     ) -> Tuple[float, float, float]:
         """
-        One joint training step: autoencoder + classifier.
+        One joint training step: autoencoder reconstruction only.
+
+        Does NOT step the classifier optimizer to avoid corrupting the
+        main training loop's optimizer state.
 
         Returns:
             (total_loss, mse_loss, ce_loss)
         """
         self.autoencoder.train()
-        self.classifier.train()
+        self.classifier.eval()
 
-        X_pert = self.pert_gen.generate(X_batch, y_batch)
+        with torch.no_grad():
+            X_pert = self.pert_gen.generate(X_batch, y_batch)
 
         X_recon = self.autoencoder(X_pert)
         mse = self.mse_loss(X_recon, X_batch)
 
-        logits = self.classifier(X_recon)
-        ce = self.ce_loss(logits, y_batch)
+        with torch.no_grad():
+            logits = self.classifier(X_recon)
+            ce = self.ce_loss(logits, y_batch)
 
         loss = self.alpha * mse + self.beta * ce
 
         self.ae_optimizer.zero_grad()
-        self.clf_optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.autoencoder.parameters(), 1.0)
-        torch.nn.utils.clip_grad_norm_(self.classifier.parameters(), 1.0)
         self.ae_optimizer.step()
-        self.clf_optimizer.step()
 
         return loss.item(), mse.item(), ce.item()
 

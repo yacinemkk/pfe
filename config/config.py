@@ -325,3 +325,11 @@ ENSEMBLE_CONFIG = {
     "architectures": ["lstm", "bilstm", "cnn_lstm"],
     "voting": "soft",
 }
+
+# Couche 6: Interval Bound Propagation (Certified Robustness)
+IBP_CONFIG = {
+    "epsilon": 0.1,
+    "lambda_ibp": 1.0,
+    "method": "crown",
+    "warmup_epochs": 5,
+}

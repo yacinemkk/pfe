@@ -48,6 +48,10 @@ from .ensemble import (
     HeterogeneousEnsemble,
     create_heterogeneous_ensemble,
 )
+from .ibp import (
+    IntervalBoundPropagation,
+    IBPTrainer,
+)
 
 __all__ = [
     "SensitivityAnalysis",
@@ -80,4 +84,6 @@ __all__ = [
     "create_randomized_smoothing",
     "HeterogeneousEnsemble",
     "create_heterogeneous_ensemble",
+    "IntervalBoundPropagation",
+    "IBPTrainer",
 ]
