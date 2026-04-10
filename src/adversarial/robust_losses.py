@@ -163,10 +163,12 @@ def feature_diversity_loss(model: nn.Module, x: torch.Tensor,
     x_req = x.detach().requires_grad_(True)
     
     # Disable CuDNN to allow double backward pass on RNNs
+    # Disable Flash/MemEfficient Attention to allow double backward on Transformers
     with torch.backends.cudnn.flags(enabled=False):
-        out = model(x_req)
-        loss_ce = F.cross_entropy(out, y)
-        grads = torch.autograd.grad(loss_ce, x_req, create_graph=True)[0]
+        with torch.backends.cuda.sdp_kernel(enable_flash=False, enable_math=True, enable_mem_efficient=False):
+            out = model(x_req)
+            loss_ce = F.cross_entropy(out, y)
+            grads = torch.autograd.grad(loss_ce, x_req, create_graph=True)[0]
 
     feat_importance = grads.abs().mean(dim=(0, 1))  # [n_features]
     total = feat_importance.sum() + 1e-8
