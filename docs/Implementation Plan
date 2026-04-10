@@ -1,0 +1,132 @@
+# Pipeline d'Entraînement Robuste — Plan Définitif Complet
+
+> **But** : Intégrer `robust_training_final.py` dans `train_adversarial.py` via une boucle unifiée `train_epoch_robust` et un curriculum 4 phases.
+
+---
+
+## Architecture — 8 Couches Défensives
+
+| # | Couche | Rôle | Attaques ciblées |
+|---|--------|------|-----------------|
+| 1 | **InputDefenseLayer** | Clip ±3.5σ + lissage temporel | `Padding_x10`, `Zero`, `Mimic` |
+| 2 | **Feature Dropout** | Masquage aléatoire de features par batch | Stabilité du greedy search |
+| 3 | **Randomized Smoothing** | Bruit gaussien sur l'input | Perturbations continues |
+| 4 | **AFD Loss** | Compacité intra-classe + séparation inter-classe | `Greedy Search` |
+| 5 | **Worst-of-K (k variable)** | Rejoue `adversarial_search_seq.py` avec k ∈ [1..5] aléatoire | Attaques combinatoires |
+| 6 | **TRADES** | Boule L∞(ε) progressive | `Zero`, `Mimic_Mean` |
+| 7 | **IBP** | Borne mathématique certifiée | Toutes perturbations bornées |
+| 8 | **CutMix** | Mixage adversarial/propre — anti-overfitting | Surapprentissage |
+| 9 | **Feature Diversity Loss** | Pénalise concentration sur <5 features | `Greedy Search` ciblé |
+
+---
+
+## Curriculum 4 Phases — Détail par Couche
+
+### Phase 0 — Fondation propre (epochs 1–15)
+
+| Couche | Config | Justification |
+|--------|--------|---------------|
+| InputDefenseLayer | ✅ actif | Défense permanente dès le départ |
+| Feature Dropout | p = 0.10 | Faible : évite de déstabiliser la convergence initiale |
+| AFD Loss | λ = 0.5 | Fort : apprendre les frontières de classes avant les attaques |
+| Feature Diversity | λ = 0.05 | Léger : habitue le modèle à ne pas dépendre d'une seule feature |
+| Worst-of-K / TRADES / IBP / CutMix | ❌ désactivés | Fondation uniquement. Aucune attaque = convergence stable garantie |
+
+---
+
+### Phase 1 — Robustesse douce (epochs 16–35)
+
+| Couche | Config | Justification |
+|--------|--------|---------------|
+| InputDefenseLayer | ✅ | Permanent |
+| Feature Dropout | p = 0.20 | Augmenté : rend le gradient instable → greedy search moins efficace |
+| Randomized Smoothing | σ = 0.10 | Introduction douce du bruit pour généralisation |
+| AFD Loss | λ = 0.2 | Réduit : le modèle est déjà structuré, on laisse plus de place aux attaques |
+| Worst-of-K | k ∈ {1, 2} aléatoire | Commence softement, mais k=2 introduit les attaques combinées |
+| TRADES | β = 1.0, ε : 0.01 → 0.05 | Warmup progressif pour ne pas exploser la loss |
+| IBP | Warmup (λ croissant) | Certifiabilité mathématique dès cette phase |
+| CutMix | p = 0.20 | Évite le surapprentissage sur les exemples adversariaux |
+| Feature Diversity | λ = 0.10 | Renforcé : combat l'instabilité du greedy |
+
+---
+
+### Phase 2 — Robustesse forte (epochs 36–55)
+
+| Couche | Config | Justification |
+|--------|--------|---------------|
+| InputDefenseLayer | ✅ | Permanent |
+| Feature Dropout | p = 0.30 | Maximum : importance des features totalement instable → greedy aveugle |
+| Randomized Smoothing | σ = 0.25 | Bruit fort pour robustesse aux perturbations continues |
+| AFD Loss | λ = 0.1 | Minimal : les centres de classes sont stables, on libère la capacité |
+| Worst-of-K | k ∈ {1..5} aléatoire | Toutes tailles d'attaques combinées = résistance universelle |
+| TRADES | β = 2.0, ε : 0.05 → 0.10 | Pression maximale sur la boule L∞ |
+| IBP | ✅ Actif (λ fixe) | Robustesse certifiée à pleine puissance |
+| CutMix | p = 0.30 | Maximal pour éviter surapprentissage sous forte pression |
+| Feature Diversity | λ = 0.15 | Maximum : attaques sur 5 features → modèle doit utiliser toutes |
+| **AutoAttack** | Évaluation ~epoch 45 | ⚡ Benchmark objectif indépendant pour vérifier la défense réelle |
+
+---
+
+### Phase 3 — Consolidation (epochs 56–65)
+
+| Couche | Config | Justification |
+|--------|--------|---------------|
+| InputDefenseLayer | ✅ | Permanent |
+| Feature Dropout | p = 0.20 | Réduit légèrement pour affinage sans déstabiliser |
+| Randomized Smoothing | σ = 0.25 | Maintenu |
+| AFD Loss | λ = 0.05 | Minimal : affinage fin de l'espace latent |
+| Worst-of-K | k ∈ {3, 4, 5} | Uniquement les cas difficiles → préparation déploiement |
+| TRADES | β = 2.0, ε = 0.10 (gelé) | Gel : stabilisation finale |
+| IBP | ✅ Gelé | Gel : préserve les garanties certifiées |
+| CutMix | p = 0.30 | Maintenu |
+| Feature Diversity | λ = 0.10 | Légèrement réduit pour affinage |
+| **AutoAttack** | Évaluation epoch 65 | ⚡ Évaluation finale officielle (APGD-CE + APGD-DLR + FAB + Square) |
+
+> **Pourquoi AutoAttack seulement en évaluation (jamais dans la loss) ?** Il combine 4 algorithmes (APGD × 2 + FAB + Square), ce qui est 5–10× plus lent qu'une epoch normale. L'inclure dans la boucle rendrait l'entraînement impraticable. Il sert uniquement de **jauge externe non biaisée**.
+
+---
+
+## Loss Finale par Batch
+
+```
+loss_total = normalize(
+    1.0 × loss_CE(clean)
+  + β   × loss_TRADES(ε)       [Phase 1+]
+  + 1.5 × loss_CE(WoK_adv)     [Phase 1+]
+  + λ   × loss_AFD(latent)     [Phase 0+, λ décroissant]
+  + λ   × loss_IBP(certified)  [Phase 1+, warmup → fixe]
+  + λ   × loss_Diversity       [Phase 0+]
+)
+# Poids normalisés par somme totale pour éviter explosion de loss
+```
+
+---
+
+## Early Stopping Adaptatif
+
+| Condition | Action |
+|-----------|--------|
+| gap (benign − adv accuracy) > 60% | Réduire ε de 30% |
+| loss adversariale > 10.0 | Réduire ε de 30% |
+| 5 violations consécutives | Arrêt propre + sauvegarde meilleur checkpoint |
+
+---
+
+## Fichiers à Modifier
+
+| Fichier | Action | Contenu |
+|---------|--------|---------|
+| `src/adversarial/robust_losses.py` | **[NEW]** | `InputDefenseLayer`, `MultiFeatureWorstOfK` (k variable), `AFDLoss`, `feature_diversity_loss`, `AdversarialEarlyStopping`, `get_phase_config`, `combined_loss_normalized` |
+| `train_adversarial.py` | **[MODIFY]** | Import + `train_epoch_robust` + refonte `fit_with_phase_checkpoints` |
+
+---
+
+## Vérification
+
+| Étape | Commande / Action |
+|-------|-------------------|
+| Dry run | `python train_adversarial.py --model cnn_lstm --seq_length 10 --epochs 65` |
+| Logs | Vérifier affichage phase + toutes sous-losses par batch |
+| Crash tests | Automatiques à epoch 15, 35, 55, 65 |
+| AutoAttack | Automatique ~epoch 45 et epoch 65 |
+| Métriques finales | `acc_clean`, `acc_adv_k3`, `robustness_ratio`, `certified_acc_IBP` |
