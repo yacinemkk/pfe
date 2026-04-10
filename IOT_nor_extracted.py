@@ -463,7 +463,8 @@ def train_epoch_robust(
     correct = total_samples = 0
     n_batches = 0
 
-    for X_batch, y_batch in train_loader:
+    from tqdm.auto import tqdm
+    for X_batch, y_batch in tqdm(train_loader, desc=f"Epoch {epoch}", leave=False):
         X_batch, y_batch = X_batch.to(device), y_batch.to(device)
 
         # ── Couche 1: InputDefenseLayer (permanent) ──────────────────────────
