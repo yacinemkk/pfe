@@ -161,9 +161,12 @@ def feature_diversity_loss(model: nn.Module, x: torch.Tensor,
                            y: torch.Tensor,
                            top_k: int = 5) -> torch.Tensor:
     x_req = x.detach().requires_grad_(True)
-    out = model(x_req)
-    loss_ce = F.cross_entropy(out, y)
-    grads = torch.autograd.grad(loss_ce, x_req, create_graph=True)[0]
+    
+    # Disable CuDNN to allow double backward pass on RNNs
+    with torch.backends.cudnn.flags(enabled=False):
+        out = model(x_req)
+        loss_ce = F.cross_entropy(out, y)
+        grads = torch.autograd.grad(loss_ce, x_req, create_graph=True)[0]
 
     feat_importance = grads.abs().mean(dim=(0, 1))  # [n_features]
     total = feat_importance.sum() + 1e-8
