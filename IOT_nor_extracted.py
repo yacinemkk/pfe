@@ -499,7 +499,7 @@ def train_epoch_robust(
             with torch.no_grad():
                 feat_clean = X_batch.detach()  # use input as proxy if no encoder
                 feat_adv = feat_clean  # no attack in phase 0
-            loss_afd = torch.tensor(0.0, device=device)
+            loss_afd = torch.tensor(0.0, device=device, requires_grad=True)
             if afd_loss is not None:
                 try:
                     loss_afd = afd_loss(feat_clean, feat_adv, y_batch)
@@ -507,7 +507,7 @@ def train_epoch_robust(
                     pass
 
             # Feature Diversity loss
-            loss_div = torch.tensor(0.0, device=device)
+            loss_div = torch.tensor(0.0, device=device, requires_grad=True)
             try:
                 loss_div = feature_diversity_loss(model, X_batch, y_batch, top_k=5)
             except Exception:
@@ -568,7 +568,7 @@ def train_epoch_robust(
             with torch.no_grad():
                 feat_clean = X_batch
                 feat_adv_proxy = X_adv
-            loss_afd = torch.tensor(0.0, device=device)
+            loss_afd = torch.tensor(0.0, device=device, requires_grad=True)
             if afd_loss is not None:
                 try:
                     loss_afd = afd_loss(feat_clean, feat_adv_proxy, y_batch)
@@ -576,14 +576,14 @@ def train_epoch_robust(
                     pass
 
             # Feature Diversity loss
-            loss_div = torch.tensor(0.0, device=device)
+            loss_div = torch.tensor(0.0, device=device, requires_grad=True)
             try:
                 loss_div = feature_diversity_loss(model, X_batch, y_batch, top_k=5)
             except Exception:
                 pass
 
             # IBP certified loss (Phase 1+)
-            loss_ibp = torch.tensor(0.0, device=device)
+            loss_ibp = torch.tensor(0.0, device=device, requires_grad=True)
             if use_ibp and ibp_trainer is not None:
                 try:
                     loss_ibp, _ = ibp_trainer.compute_loss(X_batch, y_batch)
