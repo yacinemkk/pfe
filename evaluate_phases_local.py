@@ -28,6 +28,7 @@ from src.adversarial.attacks import (
     SensitivityAnalysis,
     AdversarialSearch,
 )
+from src.adversarial.robust_losses import InputDefenseLayer
 from train_adversarial import load_and_preprocess_data
 
 # Dossiers locaux
@@ -105,13 +106,15 @@ def get_metrics(y_true, y_pred):
     return {"accuracy": acc, "precision": prec, "recall": rec, "f1": f1}
 
 
-def evaluate_model(model, dataloader):
+def evaluate_model(model, dataloader, input_defense=None):
     model.eval()
     all_preds = []
     all_labels = []
     with torch.no_grad():
         for X_batch, y_batch in tqdm(dataloader, desc="Evaluating", leave=False):
             X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+            if input_defense is not None:
+                X_batch = input_defense(X_batch)
             outputs = model(X_batch)
             _, preds = torch.max(outputs, 1)
             all_preds.extend(preds.cpu().numpy())
@@ -542,7 +545,8 @@ def run_local_crash_test():
             adv_search_dataset, batch_size=128, shuffle=False
         )
 
-        phase_metrics = {}
+        # Initialisation de la défense
+        input_defense = InputDefenseLayer(clip_min=-3.5, clip_max=3.5, smooth_alpha=0.25).to(device)
 
         for p_file in phase_files:
             if p_file == "best_model.pt":
@@ -560,9 +564,9 @@ def run_local_crash_test():
                 model.load_state_dict(chk)
             model.eval()
 
-            norm_metrics = evaluate_model(model, eval_loader)
-            adv_metrics = evaluate_model(model, adv_loader)
-            search_metrics = evaluate_model(model, adv_search_loader)
+            norm_metrics = evaluate_model(model, eval_loader, input_defense=input_defense)
+            adv_metrics = evaluate_model(model, adv_loader, input_defense=input_defense)
+            search_metrics = evaluate_model(model, adv_search_loader, input_defense=input_defense)
 
             print(
                 f"  -> Normal:   Acc: {norm_metrics['accuracy']:.4f}, F1: {norm_metrics['f1']:.4f}"
@@ -577,7 +581,7 @@ def run_local_crash_test():
             phase_metrics[phase_name] = {
                 "Normal": norm_metrics,
                 "Adversarial": adv_metrics,
-                "Greedy Search": search_metrics,
+                "Seq Search": search_metrics,
             }
 
             del model

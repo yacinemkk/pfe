@@ -362,7 +362,7 @@ def create_model(model_type, input_size, num_classes):
 # =============================================================================
 
 def _crash_test(model, val_loader, device, epoch, pgd_attack,
-                active_attack, is_multi_attack, label=''):
+                active_attack, is_multi_attack, label='', input_defense=None):
     """Crash test rapide : clean + PGD + WoK sur ~10 batches."""
     model.eval()
     # 1. Clean accuracy
@@ -370,6 +370,8 @@ def _crash_test(model, val_loader, device, epoch, pgd_attack,
     with torch.no_grad():
         for X, y in val_loader:
             X, y = X.to(device), y.to(device)
+            if input_defense is not None:
+                X = input_defense(X)
             out = model(X)
             _, pred = out.max(1)
             total += y.size(0)
@@ -382,6 +384,8 @@ def _crash_test(model, val_loader, device, epoch, pgd_attack,
         if n >= 10:
             break
         X, y = X.to(device), y.to(device)
+        if input_defense is not None:
+            X = input_defense(X)
         with torch.no_grad():
             X_adv = pgd_attack.generate(model, X, y, device)
             out = model(X_adv)
@@ -399,6 +403,8 @@ def _crash_test(model, val_loader, device, epoch, pgd_attack,
             if n >= 10:
                 break
             X, y = X.to(device), y.to(device)
+            if input_defense is not None:
+                X = input_defense(X)
             with torch.no_grad():
                 result = active_attack.generate(model, X, y, device)
                 X_adv = result[0] if isinstance(result, tuple) else result
@@ -859,6 +865,8 @@ def train_model_with_countermeasures(
         with torch.no_grad():
             for X_b, y_b in val_loader:
                 X_b, y_b = X_b.to(device), y_b.to(device)
+                if input_defense is not None:
+                    X_b = input_defense(X_b)
                 val_loss += criterion_eval(model(X_b), y_b).item()
         val_loss /= max(len(val_loader), 1)
         scheduler.step()
@@ -891,7 +899,7 @@ def train_model_with_countermeasures(
             print(f"\n{'─'*60}")
             ct = _crash_test(model, val_loader, device, epoch,
                              crash_pgd, active_attack, is_multi_attack_flag,
-                             label=f'Phase{phase}')
+                             label=f'Phase{phase}', input_defense=input_defense)
             crash_test_results[f'epoch_{epoch}'] = ct
             model.train()
             print(f"{'─'*60}\n")
@@ -913,6 +921,8 @@ def train_model_with_countermeasures(
     with torch.no_grad():
         for X_batch, y_batch in test_loader:
             X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+            if input_defense is not None:
+                X_batch = input_defense(X_batch)
             outputs = model(X_batch)
             _, predicted = outputs.max(1)
             total += y_batch.size(0)
@@ -924,6 +934,8 @@ def train_model_with_countermeasures(
     total = 0
     for X_batch, y_batch in test_loader:
         X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+        if input_defense is not None:
+            X_batch = input_defense(X_batch)
         with torch.no_grad():
             result = active_attack.generate(model, X_batch, y_batch, device)
             if is_multi_attack:
