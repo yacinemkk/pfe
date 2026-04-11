@@ -78,30 +78,31 @@ class TRADESAttack:
         # PGD iterations require model in training mode for cuDNN RNN backward
         model.train()
 
-        for _ in range(self.num_steps):
-            x_adv.requires_grad_(True)
-
-            adv_logits = model(x_adv)
-            adv_log_probs = F.log_softmax(adv_logits, dim=1)
-
-            # KL divergence: KL(clean || adv) = sum(clean * log(clean/adv))
-            kl_loss = F.kl_div(adv_log_probs, clean_probs, reduction="batchmean")
-
-            # Maximize KL (minimize negative)
-            grad = torch.autograd.grad(-kl_loss, x_adv)[0]
-
-            # Take step in gradient direction
-            x_adv = x_adv.detach() + self.alpha * grad.sign()
-
-            # Project back to epsilon ball around x
-            delta = torch.clamp(x_adv - x, -self.epsilon, self.epsilon)
-            x_adv = x + delta
-
-            # Apply custom projection if provided (e.g., for feature constraints)
-            if self.projection_fn is not None:
-                x_adv_np = x_adv.cpu().numpy()
-                x_adv_np = self.projection_fn(x_adv_np)
-                x_adv = torch.FloatTensor(x_adv_np).to(device)
+        with torch.enable_grad():
+            for _ in range(self.num_steps):
+                x_adv.requires_grad_(True)
+    
+                adv_logits = model(x_adv)
+                adv_log_probs = F.log_softmax(adv_logits, dim=1)
+    
+                # KL divergence: KL(clean || adv) = sum(clean * log(clean/adv))
+                kl_loss = F.kl_div(adv_log_probs, clean_probs, reduction="batchmean")
+    
+                # Maximize KL (minimize negative)
+                grad = torch.autograd.grad(-kl_loss, x_adv)[0]
+    
+                # Take step in gradient direction
+                x_adv = x_adv.detach() + self.alpha * grad.sign()
+    
+                # Project back to epsilon ball around x
+                delta = torch.clamp(x_adv - x, -self.epsilon, self.epsilon)
+                x_adv = x + delta
+    
+                # Apply custom projection if provided (e.g., for feature constraints)
+                if self.projection_fn is not None:
+                    x_adv_np = x_adv.cpu().numpy()
+                    x_adv_np = self.projection_fn(x_adv_np)
+                    x_adv = torch.FloatTensor(x_adv_np).to(device)
 
         if not was_training:
             model.eval()
