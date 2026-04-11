@@ -607,7 +607,6 @@ def train_epoch_robust(
             del X_adv
 
         total_loss += loss.item()
-        _, predicted = model(X_batch).max(1) if True else (None, None)
         with torch.no_grad():
             _, predicted = model(X_batch).max(1)
         total_samples += y_batch.size(0)
@@ -975,9 +974,6 @@ def train_model_with_countermeasures(
         'clean_accuracy': clean_acc,
         'adversarial_accuracy': adv_acc,
         'robustness_ratio': robustness_ratio,
-        'lambda_trades': lambda_trades,
-        'epsilon': epsilon,
-        'label_smoothing': label_smoothing,
         'use_afd': use_afd,
         'use_multi_attack': use_multi_attack,
         'use_randomized_smoothing': use_randomized_smoothing,
@@ -985,9 +981,8 @@ def train_model_with_countermeasures(
         'ibp_epsilon': ibp_epsilon,
         'lambda_ibp': lambda_ibp,
         'ibp_method': ibp_method,
-        'epochs_phase1': epochs_phase1,
-        'epochs_phase2': epochs_phase2,
-        'use_input_transform': use_input_transform,
+        'total_epochs': total_epochs,
+        'use_input_defense': use_input_defense,
         'use_cutmix': use_cutmix,
     }
     if rs_results is not None:

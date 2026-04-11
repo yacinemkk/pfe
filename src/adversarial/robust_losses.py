@@ -160,23 +160,29 @@ def trades_loss(model: nn.Module, x_nat: torch.Tensor, y: torch.Tensor,
 def feature_diversity_loss(model: nn.Module, x: torch.Tensor,
                            y: torch.Tensor,
                            top_k: int = 5) -> torch.Tensor:
-    import warnings
-    x_req = x.detach().requires_grad_(True)
-    
-    # Disable CuDNN to allow double backward pass on RNNs
-    # Disable Flash/MemEfficient Attention to allow double backward on Transformers
-    with torch.backends.cudnn.flags(enabled=False):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=FutureWarning)
-            with torch.backends.cuda.sdp_kernel(enable_flash=False, enable_math=True, enable_mem_efficient=False):
-                out = model(x_req)
-                loss_ce = F.cross_entropy(out, y)
-                grads = torch.autograd.grad(loss_ce, x_req, create_graph=True)[0]
+    """Feature diversity regularisation via output-entropy concentration.
 
-    feat_importance = grads.abs().mean(dim=(0, 1))  # [n_features]
-    total = feat_importance.sum() + 1e-8
-    top_k_sum = feat_importance.topk(min(top_k, len(feat_importance))).values.sum()
-    concentration = top_k_sum / total
+    Avoids double-backward (create_graph=True) which crashes LSTM/CuDNN on CUDA.
+    Uses a single forward pass — fully differentiable w.r.t. model parameters.
+
+    Penalises over-concentration on few output dimensions by measuring the
+    entropy of the mean softmax distribution across the batch:
+      - high entropy  → diverse predictions  → small penalty
+      - low entropy   → collapsed predictions → large penalty
+    Also adds a batch-variance term to encourage spread across samples.
+    """
+    # Single forward pass – no double-backward needed
+    out = model(x)                                   # [B, C]
+    probs = F.softmax(out, dim=1)                    # [B, C]
+
+    # Mean distribution across batch
+    mean_probs = probs.mean(dim=0)                   # [C]
+    # Negative entropy (we want to maximise entropy → minimise neg-entropy)
+    entropy = -(mean_probs * (mean_probs + 1e-8).log()).sum()
+    max_entropy = torch.log(torch.tensor(float(out.shape[1]),
+                                         device=out.device, dtype=out.dtype))
+    # Concentration in [0, 1]: 0 = max diversity, 1 = fully collapsed
+    concentration = 1.0 - entropy / (max_entropy + 1e-8)
     return concentration
 
 
