@@ -991,6 +991,8 @@ def train_model_greedy(
 
     # Create & load normal model
     normal_model_path = f'{DRIVE_RESULTS_DIR}/models/{model_type}_{dataset_type}/best_val_model.pt'
+    if not os.path.exists(normal_model_path):
+        normal_model_path = phase_a_path
     normal_model = create_model(model_type, input_size, num_classes)
     if os.path.exists(normal_model_path):
         try:
