@@ -111,6 +111,9 @@ PHASE_B_MIX_RATIO = 0.30
 PHASE_C_MIX_RATIO = 0.70
 PHASE_B_K_MAX = 2
 PHASE_C_K_MAX = 4
+PHASE_D_EPOCHS = 65
+PHASE_D_MIX_RATIO = 0.95
+PHASE_D_K_MAX = 4
 
 GREEDY_STRATEGIES = ['Zero', 'Mimic_Mean', 'Mimic_95th', 'Padding_x10']
 
@@ -507,7 +510,7 @@ def train_greedy_phase(
     train_ds = TensorDataset(torch.FloatTensor(X_train), torch.LongTensor(y_train))
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
 
-    phase_names = {'A': 'Fondation (clean only)', 'B': 'Introduction (30% adv, k_max=2)', 'C': 'Principal (70% adv, k_max=4)'}
+    phase_names = {'A': 'Fondation (clean only)', 'B': 'Introduction (30% adv, k_max=2)', 'C': 'Principal (70% adv, k_max=4)', 'D': 'Consolidation (95% adv, k_max=4)'}
     print(f"\\n{'='*60}")
     print(f"  PHASE {phase} — epochs {start_epoch}-{end_epoch}")
     print(f"  {phase_names.get(phase, '')}")
@@ -961,7 +964,31 @@ def train_model_greedy(
     ct_c = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase C')
     all_crash_results['phase_c'] = ct_c
 
-    # ─── PHASE D: Discriminator ──────────────────────────────────────────
+    # ─── PHASE D (epochs 51-65): 95% adversarial, k_max=4 ─────────────────
+    phase_d_path = f'{save_dir}/phase_d_model.pt'
+
+    if os.path.exists(phase_d_path):
+        print(f"\\n  Phase D model found in Drive. Loading...")
+        ckpt = torch.load(phase_d_path, map_location=device)
+        model.load_state_dict(ckpt['model_state_dict'])
+        model = model.to(device)
+        print(f"  Loaded Phase D model (epoch {ckpt.get('epoch', '?')}, "
+              f"clean_acc={ckpt.get('val_clean_acc', 0):.4f}, "
+              f"adv_acc={ckpt.get('val_adv_acc', 0):.4f})")
+    else:
+        model = train_greedy_phase(
+            model, X_train, y_train, X_val, y_val,
+            phase='D', start_epoch=PHASE_C_EPOCHS + 1, end_epoch=PHASE_D_EPOCHS,
+            mix_ratio=PHASE_D_MIX_RATIO, k_max=PHASE_D_K_MAX,
+            p_drop=0.2, sigma_noise=0.01, afd_lambda=1.5,
+            simulator=simulator, device=device, lr=lr,
+            batch_size=batch_size, save_path=phase_d_path,
+        )
+
+    ct_d = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase D')
+    all_crash_results['phase_d'] = ct_d
+
+    # ─── PHASE E: Discriminator ──────────────────────────────────────────
     disc_path = f'{save_dir}/discriminator.pt'
     disc = Discriminator(input_size=input_size, seq_length=10, hidden_size=64)
     if os.path.exists(disc_path):
@@ -1098,6 +1125,7 @@ def train_model_greedy(
             'A': {'epochs': f'1-{PHASE_A_EPOCHS}', 'mix_ratio': PHASE_A_MIX_RATIO, 'k_max': 0},
             'B': {'epochs': f'{PHASE_A_EPOCHS+1}-{PHASE_B_EPOCHS}', 'mix_ratio': PHASE_B_MIX_RATIO, 'k_max': PHASE_B_K_MAX},
             'C': {'epochs': f'{PHASE_B_EPOCHS+1}-{PHASE_C_EPOCHS}', 'mix_ratio': PHASE_C_MIX_RATIO, 'k_max': PHASE_C_K_MAX},
+            'D': {'epochs': f'{PHASE_C_EPOCHS+1}-{PHASE_D_EPOCHS}', 'mix_ratio': PHASE_D_MIX_RATIO, 'k_max': PHASE_D_K_MAX},
         }
     }
 
@@ -1450,7 +1478,7 @@ notebook = {
     "cells": cells,
 }
 
-with open("/home/pc/Desktop/pfe/greedy.ipynb", "w") as f:
+with open("/home/pc/Desktop/pfe/greedy_new.ipynb", "w") as f:
     json.dump(notebook, f, indent=1)
 
 print(f"Notebook written with {len(cells)} cells.")
