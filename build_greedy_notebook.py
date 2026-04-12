@@ -501,6 +501,7 @@ def train_greedy_phase(
 
     if start_epoch > 1:
         for _ in range(start_epoch - 1):
+            optimizer.step()
             scheduler.step()
 
     train_ds = TensorDataset(torch.FloatTensor(X_train), torch.LongTensor(y_train))
