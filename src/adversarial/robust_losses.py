@@ -91,11 +91,19 @@ class AFDLoss(nn.Module):
         for c in range(self.num_classes):
             mask = (labels == c)
             if mask.sum() > 0:
-                self.centers[c] = (self.momentum * self.centers[c]
-                                   + (1 - self.momentum) * features[mask].mean(0))
+                feat_mean = features[mask].mean(0)
+                # First time initialization: if the center is at the origin
+                if (self.centers[c] == 0).all():
+                    self.centers[c] = feat_mean
+                else:
+                    self.centers[c] = (self.momentum * self.centers[c]
+                                       + (1 - self.momentum) * feat_mean)
 
     def forward(self, features: torch.Tensor, features_adv: torch.Tensor,
                 labels: torch.Tensor) -> torch.Tensor:
+        features = F.normalize(features, p=2, dim=1)
+        features_adv = F.normalize(features_adv, p=2, dim=1)
+        
         self.update_centers(features.detach(), labels)
         centers_batch = self.centers[labels]
         intra_clean = (features - centers_batch).norm(dim=1).mean()
