@@ -1141,7 +1141,7 @@ log_memory(f'before_{{MODEL}}_csv')
 if DATASETS in ['csv', 'both']:
     data = load_dataset_from_drive('csv')
     if data is not None:
-        results_{{MODEL}}_csv = train_model_greedy(
+        results = train_model_greedy(
             model_type=MODEL,
             dataset_type='csv',
             data_dict=data,
@@ -1212,7 +1212,7 @@ log_memory(f'before_{{MODEL}}_json')
 if DATASETS in ['json', 'both']:
     data = load_dataset_from_drive('json')
     if data is not None:
-        results_{{MODEL}}_json = train_model_greedy(
+        results = train_model_greedy(
             model_type=MODEL,
             dataset_type='json',
             data_dict=data,
