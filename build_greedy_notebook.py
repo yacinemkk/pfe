@@ -606,17 +606,33 @@ def train_greedy_phase(
 
         # Validation
         model.eval()
+        val_correct, val_total = 0, 0
         with torch.no_grad():
-            X_val_t = torch.FloatTensor(X_val).to(device)
-            y_val_t = torch.LongTensor(y_val).to(device)
-            val_clean_acc = (model(X_val_t).argmax(1) == y_val_t).float().mean().item()
+            for i in range(0, len(X_val), batch_size):
+                end = min(i + batch_size, len(X_val))
+                if is_nlp:
+                    X_val_t = torch.LongTensor(tokenizer.transform(X_val[i:end], features)).to(device)
+                else:
+                    X_val_t = torch.FloatTensor(X_val[i:end]).to(device)
+                y_val_t = torch.LongTensor(y_val[i:end]).to(device)
+                val_correct += (model(X_val_t).argmax(1) == y_val_t).sum().item()
+                val_total += len(y_val_t)
+            val_clean_acc = val_correct / val_total
 
             val_adv_acc = 0.0
             if simulator is not None and k_max > 0:
-                X_adv_np = simulator.generate_greedy(X_val[:EVAL_SUBSAMPLE], k=k_max)
-                X_adv_t = torch.FloatTensor(X_adv_np).to(device)
-                y_sub = torch.LongTensor(y_val[:EVAL_SUBSAMPLE]).to(device)
-                val_adv_acc = (model(X_adv_t).argmax(1) == y_sub).float().mean().item()
+                val_adv_correct = 0
+                n_eval = min(EVAL_SUBSAMPLE, len(X_val))
+                for i in range(0, n_eval, batch_size):
+                    end = min(i + batch_size, n_eval)
+                    X_adv_np = simulator.generate_greedy(X_val[i:end], k=k_max)
+                    if is_nlp:
+                        X_adv_t = torch.LongTensor(tokenizer.transform(X_adv_np, features)).to(device)
+                    else:
+                        X_adv_t = torch.FloatTensor(X_adv_np).to(device)
+                    y_sub = torch.LongTensor(y_val[i:end]).to(device)
+                    val_adv_correct += (model(X_adv_t).argmax(1) == y_sub).sum().item()
+                val_adv_acc = val_adv_correct / n_eval
 
         print(f"  Epoch {epoch:3d}/{end_epoch} [Ph{phase}] "
               f"Loss={train_loss:.4f} TrainAcc={train_acc:.4f} "
@@ -656,11 +672,14 @@ def crash_test_greedy(model, X_val, y_val, simulator, device=None,
     X_eval = X_val[:n_eval]
     y_eval = y_val[:n_eval]
 
-    X_t = torch.LongTensor(tokenizer.transform(X_eval, features)).to(device) if is_nlp else torch.FloatTensor(X_eval).to(device)
-    y_t = torch.LongTensor(y_eval).to(device)
-
+    clean_correct = 0
     with torch.no_grad():
-        clean_acc = (model(X_t).argmax(1) == y_t).float().mean().item()
+        for i in range(0, n_eval, 1024):
+            end = min(i + 1024, n_eval)
+            X_b = torch.LongTensor(tokenizer.transform(X_eval[i:end], features)).to(device) if is_nlp else torch.FloatTensor(X_eval[i:end]).to(device)
+            y_b = torch.LongTensor(y_eval[i:end]).to(device)
+            clean_correct += (model(X_b).argmax(1) == y_b).sum().item()
+    clean_acc = clean_correct / n_eval
 
     results = {'clean': clean_acc}
 
@@ -668,10 +687,16 @@ def crash_test_greedy(model, X_val, y_val, simulator, device=None,
 
     if simulator is not None:
         for k in k_values:
-            X_adv = simulator.generate_greedy(X_eval, k=k)
-            X_adv_t = torch.LongTensor(tokenizer.transform(X_adv, features)).to(device) if is_nlp else torch.FloatTensor(X_adv).to(device)
+            adv_correct = 0
             with torch.no_grad():
-                adv_acc = (model(X_adv_t).argmax(1) == y_t).float().mean().item()
+                for i in range(0, n_eval, 1024):
+                    end = min(i + 1024, n_eval)
+                    X_adv = simulator.generate_greedy(X_eval[i:end], k=k)
+                    X_adv_t = torch.LongTensor(tokenizer.transform(X_adv, features)).to(device) if is_nlp else torch.FloatTensor(X_adv).to(device)
+                    y_b = torch.LongTensor(y_eval[i:end]).to(device)
+                    adv_correct += (model(X_adv_t).argmax(1) == y_b).sum().item()
+            
+            adv_acc = adv_correct / n_eval
             results[f'adv_k{k}'] = adv_acc
             rr = adv_acc / max(clean_acc, 1e-8)
             print(f" | k={k}: {adv_acc:.4f}(RR={rr:.3f})", end='')
