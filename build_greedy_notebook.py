@@ -91,6 +91,7 @@ cells.append(
     code_cell(
         """# ─── Cell: Configuration ─────────────────────────────────────────────────
 import os
+os.environ['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'  # avoid VRAM fragmentation
 
 JSON_DATA_DIR = '/content/drive/MyDrive/PFE/IPFIX_Records'
 CSV_DATA_DIR = '/content/drive/MyDrive/PFE/IPFIX_ML_Instances'
@@ -99,8 +100,23 @@ DATASETS = 'both'
 
 SEQ_LENGTH = 10
 STRIDE = 10
-BATCH_SIZE = 64
+BATCH_SIZE = 32          # reduced from 64 to avoid OOM on L4 GPU
 LEARNING_RATE = 5e-4
+USE_AMP = True           # mixed-precision (fp16) — cuts VRAM ~50%
+
+# Lighter CNN-BiLSTM-Transformer to fit within 22 GB VRAM
+CNN_BILSTM_TRANSFORMER_OVERRIDE = {
+    'cnn_channels': 32,          # was 64
+    'bilstm_hidden': 64,         # was 128  → bilstm output = 128
+    'bilstm_layers': 2,
+    'bilstm_dropout': 0.3,
+    'transformer_d_model': 128,  # was 256
+    'transformer_nhead': 4,
+    'transformer_layers': 2,
+    'transformer_ff_dim': 256,   # was 512
+    'transformer_dropout': 0.2,
+    'fc_dropout': 0.4,
+}
 
 # Greedy adversarial training phases
 PHASE_A_EPOCHS = 15
@@ -478,7 +494,8 @@ def create_model(model_type, input_size, num_classes):
     elif model_type == 'transformer':
         return TransformerClassifier(input_size, num_classes)
     elif model_type == 'cnn_bilstm_transformer':
-        return CNNBiLSTMTransformerClassifier(input_size, num_classes, seq_length=SEQ_LENGTH)
+        return CNNBiLSTMTransformerClassifier(input_size, num_classes, seq_length=SEQ_LENGTH,
+                                              config=CNN_BILSTM_TRANSFORMER_OVERRIDE)
     elif model_type == 'nlp_transformer':
         return NLPTransformerClassifier(vocab_size=52000, num_classes=num_classes, max_seq_length=512, pad_token_id=2)
     else:
@@ -506,6 +523,8 @@ def train_greedy_phase(
     scheduler = torch.optim.lr_scheduler.MultiStepLR(
         optimizer, milestones=[15, 30], gamma=0.5
     )
+    use_amp = USE_AMP and device.type == 'cuda'
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     if start_epoch > 1:
         for _ in range(start_epoch - 1):
@@ -513,7 +532,8 @@ def train_greedy_phase(
             scheduler.step()
 
     train_ds = TensorDataset(torch.FloatTensor(X_train), torch.LongTensor(y_train))
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
+                              num_workers=0, pin_memory=False)
 
     phase_names = {'A': 'Fondation (clean only)', 'B': 'Introduction (30% adv, k_max=2)', 'C': 'Principal (70% adv, k_max=4)', 'D': 'Consolidation Extreme (100% adv, k_max=5)'}
     print(f"\\n{'='*60}")
@@ -541,36 +561,48 @@ def train_greedy_phase(
         for X_batch, y_batch in tqdm(train_loader, desc=f"Epoch {epoch}", leave=False):
             X_np = X_batch.numpy()
             y_input = y_batch.to(device)
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             
-            if mix_ratio > 0 and simulator is not None:
-                if afd_lambda > 0:
-                    X_clean_t = X_batch.to(device)
-                    X_adv_mixed, _ = simulator.generate_training_batch(X_np, k_max=k_max, mix_ratio=mix_ratio)
-                    X_adv_t = torch.FloatTensor(X_adv_mixed).to(device)
-                    
-                    if is_nlp:
-                        X_clean_t = torch.LongTensor(tokenizer.transform(X_batch.numpy(), features)).to(device)
-                        X_adv_t = torch.LongTensor(tokenizer.transform(X_adv_mixed, features)).to(device)
-                    # p_drop removed for simplicity on NLP in this branch or kept for non-nlp
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                if mix_ratio > 0 and simulator is not None:
+                    if afd_lambda > 0:
+                        X_clean_t = X_batch.to(device)
+                        X_adv_mixed, _ = simulator.generate_training_batch(X_np, k_max=k_max, mix_ratio=mix_ratio)
+                        X_adv_t = torch.FloatTensor(X_adv_mixed).to(device)
                         
-                    if sigma_noise > 0:
-                        X_clean_t = X_clean_t + torch.randn_like(X_clean_t) * sigma_noise
-                        X_adv_t = X_adv_t + torch.randn_like(X_adv_t) * sigma_noise
+                        if is_nlp:
+                            X_clean_t = torch.LongTensor(tokenizer.transform(X_batch.numpy(), features)).to(device)
+                            X_adv_t = torch.LongTensor(tokenizer.transform(X_adv_mixed, features)).to(device)
+                            
+                        if sigma_noise > 0:
+                            X_clean_t = X_clean_t + torch.randn_like(X_clean_t) * sigma_noise
+                            X_adv_t = X_adv_t + torch.randn_like(X_adv_t) * sigma_noise
+                            
+                        logits_clean = model(X_clean_t)
+                        logits_adv = model(X_adv_t)
                         
-                    logits_clean = model(X_clean_t)
-                    logits_adv = model(X_adv_t)
-                    
-                    loss_ce = criterion(logits_adv, y_input)
-                    loss_afd = afd_criterion(logits_clean, logits_adv, y_input)
-                    loss = loss_ce + afd_lambda * loss_afd
-                    logits = logits_adv
-                else:
-                    X_mixed, _ = simulator.generate_training_batch(X_np, k_max=k_max, mix_ratio=mix_ratio)
-                    if is_nlp:
-                        X_input = torch.LongTensor(tokenizer.transform(X_mixed, features)).to(device)
+                        loss_ce = criterion(logits_adv, y_input)
+                        loss_afd = afd_criterion(logits_clean, logits_adv, y_input)
+                        loss = loss_ce + afd_lambda * loss_afd
+                        logits = logits_adv
                     else:
-                        X_input = torch.FloatTensor(X_mixed).to(device)
+                        X_mixed, _ = simulator.generate_training_batch(X_np, k_max=k_max, mix_ratio=mix_ratio)
+                        if is_nlp:
+                            X_input = torch.LongTensor(tokenizer.transform(X_mixed, features)).to(device)
+                        else:
+                            X_input = torch.FloatTensor(X_mixed).to(device)
+                        if p_drop > 0 and not is_nlp:
+                            mask = (torch.rand(X_input.shape[0], 1, X_input.shape[2], device=device) > p_drop).float()
+                            X_input = X_input * mask / (1.0 - p_drop)
+                        if sigma_noise > 0:
+                            X_input = X_input + torch.randn_like(X_input) * sigma_noise
+                        logits = model(X_input)
+                        loss = criterion(logits, y_input)
+                else:
+                    if is_nlp:
+                        X_input = torch.LongTensor(tokenizer.transform(X_np, features)).to(device)
+                    else:
+                        X_input = X_batch.to(device)
                     if p_drop > 0 and not is_nlp:
                         mask = (torch.rand(X_input.shape[0], 1, X_input.shape[2], device=device) > p_drop).float()
                         X_input = X_input * mask / (1.0 - p_drop)
@@ -578,28 +610,20 @@ def train_greedy_phase(
                         X_input = X_input + torch.randn_like(X_input) * sigma_noise
                     logits = model(X_input)
                     loss = criterion(logits, y_input)
-            else:
-                if is_nlp:
-                    X_input = torch.LongTensor(tokenizer.transform(X_np, features)).to(device)
-                else:
-                    X_input = X_batch.to(device)
-                if p_drop > 0 and not is_nlp:
-                    mask = (torch.rand(X_input.shape[0], 1, X_input.shape[2], device=device) > p_drop).float()
-                    X_input = X_input * mask / (1.0 - p_drop)
-                if sigma_noise > 0:
-                    X_input = X_input + torch.randn_like(X_input) * sigma_noise
-                logits = model(X_input)
-                loss = criterion(logits, y_input)
 
-            loss.backward()
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
 
             total_loss += loss.item() * len(y_batch)
             total_correct += (logits.argmax(1) == y_input).sum().item()
             total_n += len(y_batch)
 
         scheduler.step()
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
 
         train_loss = total_loss / total_n
         train_acc = total_correct / total_n
