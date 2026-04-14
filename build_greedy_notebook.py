@@ -112,8 +112,8 @@ PHASE_C_MIX_RATIO = 0.70
 PHASE_B_K_MAX = 2
 PHASE_C_K_MAX = 4
 PHASE_D_EPOCHS = 65
-PHASE_D_MIX_RATIO = 0.95
-PHASE_D_K_MAX = 4
+PHASE_D_MIX_RATIO = 1.0
+PHASE_D_K_MAX = 5
 
 GREEDY_STRATEGIES = ['Zero', 'Mimic_Mean', 'Mimic_95th', 'Padding_x10']
 
@@ -515,7 +515,7 @@ def train_greedy_phase(
     train_ds = TensorDataset(torch.FloatTensor(X_train), torch.LongTensor(y_train))
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
 
-    phase_names = {'A': 'Fondation (clean only)', 'B': 'Introduction (30% adv, k_max=2)', 'C': 'Principal (70% adv, k_max=4)', 'D': 'Consolidation (95% adv, k_max=4)'}
+    phase_names = {'A': 'Fondation (clean only)', 'B': 'Introduction (30% adv, k_max=2)', 'C': 'Principal (70% adv, k_max=4)', 'D': 'Consolidation Extreme (100% adv, k_max=5)'}
     print(f"\\n{'='*60}")
     print(f"  PHASE {phase} — epochs {start_epoch}-{end_epoch}")
     print(f"  {phase_names.get(phase, '')}")
@@ -1006,7 +1006,7 @@ def train_model_greedy(
             model, X_train, y_train, X_val, y_val,
             phase='D', start_epoch=PHASE_C_EPOCHS + 1, end_epoch=PHASE_D_EPOCHS,
             mix_ratio=PHASE_D_MIX_RATIO, k_max=PHASE_D_K_MAX,
-            p_drop=0.2, sigma_noise=0.01, afd_lambda=1.5,
+            p_drop=0.2, sigma_noise=0.01, afd_lambda=0.0,
             simulator=simulator, device=device, lr=lr,
             batch_size=batch_size, save_path=phase_d_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
