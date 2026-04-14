@@ -386,6 +386,8 @@ from src.models.cnn_lstm import CNNLSTMClassifier
 from src.models.xgboost_lstm import XGBoostLSTMClassifier
 from src.models.transformer import TransformerClassifier
 from src.models.cnn_bilstm_transformer import CNNBiLSTMTransformerClassifier
+from src.models.transformer import NLPTransformerClassifier
+from src.data.tokenizer import create_tokenizer
 from src.training.trainer import IoTSequenceDataset\nfrom src.adversarial.robust_losses import AFDLoss
 
 
@@ -477,6 +479,8 @@ def create_model(model_type, input_size, num_classes):
         return TransformerClassifier(input_size, num_classes)
     elif model_type == 'cnn_bilstm_transformer':
         return CNNBiLSTMTransformerClassifier(input_size, num_classes, seq_length=SEQ_LENGTH)
+    elif model_type == 'nlp_transformer':
+        return NLPTransformerClassifier(vocab_size=52000, num_classes=num_classes, max_seq_length=512, pad_token_id=2)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
@@ -492,6 +496,7 @@ def train_greedy_phase(
     p_drop=0.0, sigma_noise=0.0, afd_lambda=0.0,
     simulator=None, device=None,
     lr=5e-4, batch_size=64, save_path=None,
+    is_nlp=False, tokenizer=None, features=None,
 ):
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -544,11 +549,10 @@ def train_greedy_phase(
                     X_adv_mixed, _ = simulator.generate_training_batch(X_np, k_max=k_max, mix_ratio=mix_ratio)
                     X_adv_t = torch.FloatTensor(X_adv_mixed).to(device)
                     
-                    if p_drop > 0:
-                        mask_c = (torch.rand(X_clean_t.shape[0], 1, X_clean_t.shape[2], device=device) > p_drop).float()
-                        X_clean_t = X_clean_t * mask_c / (1.0 - p_drop)
-                        mask_a = (torch.rand(X_adv_t.shape[0], 1, X_adv_t.shape[2], device=device) > p_drop).float()
-                        X_adv_t = X_adv_t * mask_a / (1.0 - p_drop)
+                    if is_nlp:
+                        X_clean_t = torch.LongTensor(tokenizer.transform(X_batch.numpy(), features)).to(device)
+                        X_adv_t = torch.LongTensor(tokenizer.transform(X_adv_mixed, features)).to(device)
+                    # p_drop removed for simplicity on NLP in this branch or kept for non-nlp
                         
                     if sigma_noise > 0:
                         X_clean_t = X_clean_t + torch.randn_like(X_clean_t) * sigma_noise
@@ -563,8 +567,11 @@ def train_greedy_phase(
                     logits = logits_adv
                 else:
                     X_mixed, _ = simulator.generate_training_batch(X_np, k_max=k_max, mix_ratio=mix_ratio)
-                    X_input = torch.FloatTensor(X_mixed).to(device)
-                    if p_drop > 0:
+                    if is_nlp:
+                        X_input = torch.LongTensor(tokenizer.transform(X_mixed, features)).to(device)
+                    else:
+                        X_input = torch.FloatTensor(X_mixed).to(device)
+                    if p_drop > 0 and not is_nlp:
                         mask = (torch.rand(X_input.shape[0], 1, X_input.shape[2], device=device) > p_drop).float()
                         X_input = X_input * mask / (1.0 - p_drop)
                     if sigma_noise > 0:
@@ -572,8 +579,11 @@ def train_greedy_phase(
                     logits = model(X_input)
                     loss = criterion(logits, y_input)
             else:
-                X_input = X_batch.to(device)
-                if p_drop > 0:
+                if is_nlp:
+                    X_input = torch.LongTensor(tokenizer.transform(X_np, features)).to(device)
+                else:
+                    X_input = X_batch.to(device)
+                if p_drop > 0 and not is_nlp:
                     mask = (torch.rand(X_input.shape[0], 1, X_input.shape[2], device=device) > p_drop).float()
                     X_input = X_input * mask / (1.0 - p_drop)
                 if sigma_noise > 0:
@@ -633,7 +643,7 @@ def train_greedy_phase(
 # =====================================================================
 
 def crash_test_greedy(model, X_val, y_val, simulator, device=None,
-                      k_values=None, label=''):
+                      k_values=None, label='', is_nlp=False, tokenizer=None, features=None):
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if k_values is None:
@@ -646,7 +656,7 @@ def crash_test_greedy(model, X_val, y_val, simulator, device=None,
     X_eval = X_val[:n_eval]
     y_eval = y_val[:n_eval]
 
-    X_t = torch.FloatTensor(X_eval).to(device)
+    X_t = torch.LongTensor(tokenizer.transform(X_eval, features)).to(device) if is_nlp else torch.FloatTensor(X_eval).to(device)
     y_t = torch.LongTensor(y_eval).to(device)
 
     with torch.no_grad():
@@ -659,7 +669,7 @@ def crash_test_greedy(model, X_val, y_val, simulator, device=None,
     if simulator is not None:
         for k in k_values:
             X_adv = simulator.generate_greedy(X_eval, k=k)
-            X_adv_t = torch.FloatTensor(X_adv).to(device)
+            X_adv_t = torch.LongTensor(tokenizer.transform(X_adv, features)).to(device) if is_nlp else torch.FloatTensor(X_adv).to(device)
             with torch.no_grad():
                 adv_acc = (model(X_adv_t).argmax(1) == y_t).float().mean().item()
             results[f'adv_k{k}'] = adv_acc
@@ -795,7 +805,10 @@ def train_discriminator(discriminator, X_train, simulator, device=None, epochs=2
     return discriminator, best_acc
 
 class IoTRouter(nn.Module):
-    def __init__(self, normal_model, adversarial_model, discriminator, threshold=0.5):
+    def __init__(self, normal_model, adversarial_model, discriminator, threshold=0.5, is_nlp=False, tokenizer=None, features=None):
+        self.is_nlp = is_nlp
+        self.tokenizer = tokenizer
+        self.features = features
         super().__init__()
         self.normal = normal_model
         self.adversarial = adversarial_model
@@ -810,7 +823,14 @@ class IoTRouter(nn.Module):
         attack_scores = self.discriminator.predict_proba(X)
         is_attacked = (attack_scores >= self.threshold)
         logits_normal = self.normal(X)
-        logits_adv = self.adversarial(X)
+        if hasattr(self, 'is_nlp') and self.is_nlp and self.tokenizer is not None:
+            # Need X as numpy for tokenizer
+            X_np = X.cpu().numpy()
+            X_ids = self.tokenizer.transform(X_np, self.features)
+            X_adj = torch.LongTensor(X_ids).to(X.device)
+            logits_adv = self.adversarial(X_adj)
+        else:
+            logits_adv = self.adversarial(X)
         pred_normal = logits_normal.argmax(1)
         pred_adv = logits_adv.argmax(1)
         predictions = torch.where(is_attacked, pred_adv, pred_normal)
@@ -864,6 +884,12 @@ def train_model_greedy(
 
     input_size = X_train.shape[2]
     num_classes = len(np.unique(y_train))
+    is_nlp = (model_type == 'nlp_transformer')
+    tokenizer = None
+    if is_nlp:
+        tokenizer = create_tokenizer()
+        print(f"\n  [TOKENIZER] Fitting BPE tokenizer on training data...")
+        tokenizer.fit(X_train, features, verbose=False)
 
     print(f"\\n{'#'*80}")
     print(f"  GREEDY ADVERSARIAL TRAINING — {model_type.upper()} on {dataset_type.upper()}")
@@ -894,10 +920,10 @@ def train_model_greedy(
             mix_ratio=PHASE_A_MIX_RATIO, k_max=0,
             p_drop=0.0, sigma_noise=0.0, afd_lambda=0.0,
             simulator=None, device=device, lr=lr,
-            batch_size=batch_size, save_path=phase_a_path,
+            batch_size=batch_size, save_path=phase_a_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
-    ct_a = crash_test_greedy(model, X_val, y_val, simulator=None, device=device, label='Phase A')
+    ct_a = crash_test_greedy(model, X_val, y_val, simulator=None, device=device, label='Phase A', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
     all_crash_results['phase_a'] = ct_a
 
     # ─── Sensitivity Analysis (after Phase A) ─────────────────────────────
@@ -934,10 +960,10 @@ def train_model_greedy(
             mix_ratio=PHASE_B_MIX_RATIO, k_max=PHASE_B_K_MAX,
             p_drop=0.1, sigma_noise=0.01, afd_lambda=0.5,
             simulator=simulator, device=device, lr=lr,
-            batch_size=batch_size, save_path=phase_b_path,
+            batch_size=batch_size, save_path=phase_b_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
-    ct_b = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase B')
+    ct_b = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase B', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
     all_crash_results['phase_b'] = ct_b
 
     # ─── PHASE C (epochs 31-50): 70% adversarial, k_max=4 ─────────────────
@@ -958,10 +984,10 @@ def train_model_greedy(
             mix_ratio=PHASE_C_MIX_RATIO, k_max=PHASE_C_K_MAX,
             p_drop=0.2, sigma_noise=0.01, afd_lambda=1.0,
             simulator=simulator, device=device, lr=lr,
-            batch_size=batch_size, save_path=phase_c_path,
+            batch_size=batch_size, save_path=phase_c_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
-    ct_c = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase C')
+    ct_c = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase C', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
     all_crash_results['phase_c'] = ct_c
 
     # ─── PHASE D (epochs 51-65): 95% adversarial, k_max=4 ─────────────────
@@ -982,10 +1008,10 @@ def train_model_greedy(
             mix_ratio=PHASE_D_MIX_RATIO, k_max=PHASE_D_K_MAX,
             p_drop=0.2, sigma_noise=0.01, afd_lambda=1.5,
             simulator=simulator, device=device, lr=lr,
-            batch_size=batch_size, save_path=phase_d_path,
+            batch_size=batch_size, save_path=phase_d_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
-    ct_d = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase D')
+    ct_d = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase D', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
     all_crash_results['phase_d'] = ct_d
 
     # ─── PHASE E: Discriminator ──────────────────────────────────────────
@@ -1036,7 +1062,7 @@ def train_model_greedy(
     normal_model = normal_model.to(device)
     normal_model.eval()
 
-    router = IoTRouter(normal_model, model, disc, threshold=0.5)
+    router = IoTRouter(normal_model, model, disc, threshold=0.5, is_nlp=is_nlp, tokenizer=tokenizer, features=features)
     
     # Calibrate router limit
     X_val_clean_sub = torch.FloatTensor(X_val[:min(len(X_val), 1000)]).to(device)
@@ -1080,7 +1106,7 @@ def train_model_greedy(
             y_sub = y_test[i:batch_end]
             
             X_adv = simulator.generate_greedy(X_sub, k=k)
-            X_adv_t = torch.FloatTensor(X_adv).to(device)
+            X_adv_t = torch.LongTensor(tokenizer.transform(X_adv, features)).to(device) if is_nlp else torch.FloatTensor(X_adv).to(device)
             y_sub_t = torch.LongTensor(y_sub).to(device)
             
             with torch.no_grad():
@@ -1097,7 +1123,7 @@ def train_model_greedy(
                 X_sub = X_test[i:batch_end]
                 y_sub = y_test[i:batch_end]
                 X_adv = simulator.generate_greedy(X_sub, k=4)
-                X_adv_t = torch.FloatTensor(X_adv).to(device)
+                X_adv_t = torch.LongTensor(tokenizer.transform(X_adv, features)).to(device) if is_nlp else torch.FloatTensor(X_adv).to(device)
                 y_sub_t = torch.LongTensor(y_sub).to(device)
                 with torch.no_grad():
                     pred_router, _, _ = router.predict(X_adv_t)
@@ -1155,6 +1181,7 @@ models_csv = [
     ("xgboost_lstm", "XGBoost-LSTM"),
     ("transformer", "Transformer"),
     ("cnn_bilstm_transformer", "CNN-BiLSTM-Transformer"),
+    ("nlp_transformer", "NLP-Transformer"),
 ]
 
 for model_key, model_label in models_csv:
