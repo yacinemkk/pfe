@@ -196,7 +196,9 @@ class CNNBiLSTMTransformerClassifier(nn.Module):
         fused = fused.permute(0, 2, 1).contiguous()            # (B, T, cnn_ch*2) for LSTM
 
         # ── BiLSTM ─────────────────────────────────────────────────────────
-        lstm_out, _ = self.bilstm(fused)          # (B, T, bilstm_h*2)
+        # Apply PyTorch CuDNN LSTM OOM bug workaround by forcing it to FP32
+        with torch.cuda.amp.autocast(enabled=False):
+            lstm_out, _ = self.bilstm(fused.float())          # (B, T, bilstm_h*2)
 
         # ── Projection + Positional Encoding ───────────────────────────────
         out = self.proj(lstm_out)                 # (B, T, d_model)
