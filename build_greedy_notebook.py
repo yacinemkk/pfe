@@ -789,18 +789,17 @@ def run_sensitivity_analysis(model, X_val, y_val, feature_names, num_classes,
         n_continuous_features=n_continuous,
     )
 
-    results = sa.analyze_all_features(model, device, X_val.shape[1])
+    results = sa.analyze(model, X_flat, y_flat, device=device)
 
     rows = []
-    for feat_name, strategies in results.items():
-        for strat, metrics in strategies.items():
-            rows.append({
-                'feature': feat_name,
-                'strategy': strat,
-                'drop': metrics.get('accuracy_drop', 0),
-                'original_acc': metrics.get('original_accuracy', 0),
-                'perturbed_acc': metrics.get('perturbed_accuracy', 0),
-            })
+    for entry in results:
+        rows.append({
+            'feature': entry['feature'],
+            'strategy': entry['strategy'],
+            'drop': entry['drop'],
+            'original_acc': entry.get('original_acc', 0) if 'original_acc' in entry else (entry['accuracy'] + entry['drop']),
+            'perturbed_acc': entry['accuracy'],
+        })
 
     df = pd.DataFrame(rows).sort_values('drop', ascending=False)
     os.makedirs(os.path.dirname(save_csv_path), exist_ok=True)
