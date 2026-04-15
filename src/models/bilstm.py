@@ -52,7 +52,7 @@ class BiLSTMClassifier(nn.Module):
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
-            dropout=dropout if num_layers > 1 else 0,
+            dropout=0.0,
             bidirectional=True,
         )
 

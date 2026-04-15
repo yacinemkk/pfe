@@ -96,7 +96,7 @@ class CNNLSTMClassifier(nn.Module):
         x = self.pool(x)
         x = self.batchnorm(x)
 
-        x = x.permute(0, 2, 1)
+        x = x.permute(0, 2, 1).contiguous()
 
         lstm_out, (hidden, cell) = self.lstm(x)
 

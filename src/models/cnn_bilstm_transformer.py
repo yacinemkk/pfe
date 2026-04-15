@@ -147,7 +147,7 @@ class CNNBiLSTMTransformerClassifier(nn.Module):
             num_layers=bilstm_lay,
             batch_first=True,
             bidirectional=True,
-            dropout=bilstm_drop if bilstm_lay > 1 else 0.0,
+            dropout=0.0,
         )
 
         bilstm_out = bilstm_h * 2  # bidirectional
@@ -193,7 +193,7 @@ class CNNBiLSTMTransformerClassifier(nn.Module):
         b2 = self.cnn_branch2(x_t)               # (B, cnn_ch, T)
 
         fused = torch.cat([b1, b2], dim=1)        # (B, cnn_ch*2, T)
-        fused = fused.permute(0, 2, 1)            # (B, T, cnn_ch*2) for LSTM
+        fused = fused.permute(0, 2, 1).contiguous()            # (B, T, cnn_ch*2) for LSTM
 
         # ── BiLSTM ─────────────────────────────────────────────────────────
         lstm_out, _ = self.bilstm(fused)          # (B, T, bilstm_h*2)

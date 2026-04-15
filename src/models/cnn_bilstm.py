@@ -32,7 +32,7 @@ class CNNBiLSTMClassifier(nn.Module):
             num_layers=lstm_layers,
             batch_first=True,
             bidirectional=True,
-            dropout=dropout if lstm_layers > 1 else 0.0
+            dropout=0.0
         )
         
         self.fc = nn.Sequential(
@@ -49,7 +49,7 @@ class CNNBiLSTMClassifier(nn.Module):
         x = self.cnn(x)
         
         # return to (batch, current_seq_len, features) for LSTM
-        x = x.permute(0, 2, 1)
+        x = x.permute(0, 2, 1).contiguous()
         
         out, _ = self.lstm(x)
         # Extract last output step from the sequence

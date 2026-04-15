@@ -93,7 +93,7 @@ class XGBoostLSTMClassifier(nn.Module):
             num_layers=num_layers,
             batch_first=True,
             bidirectional=bidirectional,
-            dropout=dropout if num_layers > 1 else 0,
+            dropout=0.0,
         )
 
         embedding_size = hidden_size * 2 if bidirectional else hidden_size
