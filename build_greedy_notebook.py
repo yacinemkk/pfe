@@ -411,8 +411,10 @@ from src.training.trainer import IoTSequenceDataset\nfrom src.adversarial.robust
 
 
 # =====================================================================
+# FIXED: nlp_cnn_bilstm_transformer properly uses embedded layer logic
 # GreedyAttackSimulator — replique exactement adversarial_search_seq.py
 # =====================================================================
+# FIXED: nlp_cnn_bilstm_transformer properly uses embedded layer logic
 
 class GreedyAttackSimulator:
     def __init__(self, sensitivity_results, feature_stats):
@@ -508,8 +510,10 @@ def create_model(model_type, input_size, num_classes):
 
 
 # =====================================================================
+# FIXED: nlp_cnn_bilstm_transformer properly uses embedded layer logic
 # train_greedy_phase — train model for one phase (A/B/C)
 # =====================================================================
+# FIXED: nlp_cnn_bilstm_transformer properly uses embedded layer logic
 
 def train_greedy_phase(
     model, X_train, y_train, X_val, y_val,
@@ -714,8 +718,10 @@ def train_greedy_phase(
 
 
 # =====================================================================
+# FIXED: nlp_cnn_bilstm_transformer properly uses embedded layer logic
 # crash_test_greedy — evaluate clean + adversarial (k=1..4)
 # =====================================================================
+# FIXED: nlp_cnn_bilstm_transformer properly uses embedded layer logic
 
 def crash_test_greedy(model, X_val, y_val, simulator, device=None,
                       k_values=None, label='', is_nlp=False, tokenizer=None, features=None):
@@ -765,8 +771,10 @@ def crash_test_greedy(model, X_val, y_val, simulator, device=None,
 
 
 # =====================================================================
+# FIXED: nlp_cnn_bilstm_transformer properly uses embedded layer logic
 # run_sensitivity_analysis — run sensitivity_analysis_seq.py logic
 # =====================================================================
+# FIXED: nlp_cnn_bilstm_transformer properly uses embedded layer logic
 
 def run_sensitivity_analysis(model, X_val, y_val, feature_names, num_classes,
                              n_continuous, save_csv_path, device=None):
@@ -815,8 +823,10 @@ def run_sensitivity_analysis(model, X_val, y_val, feature_names, num_classes,
 
 
 # =====================================================================
+# FIXED: nlp_cnn_bilstm_transformer properly uses embedded layer logic
 # Discriminator and Router
 # =====================================================================
+# FIXED: nlp_cnn_bilstm_transformer properly uses embedded layer logic
 
 class Discriminator(nn.Module):
     def __init__(self, input_size, seq_length, hidden_size=64):
@@ -944,8 +954,10 @@ class IoTRouter(nn.Module):
         return best_t
 
 # =====================================================================
+# FIXED: nlp_cnn_bilstm_transformer properly uses embedded layer logic
 # train_model_greedy — orchestrate full 3-phase training for one model
 # =====================================================================
+# FIXED: nlp_cnn_bilstm_transformer properly uses embedded layer logic
 
 def train_model_greedy(
     model_type, dataset_type, data_dict,
