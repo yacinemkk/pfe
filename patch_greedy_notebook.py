@@ -17,7 +17,7 @@ create_model_old = """    elif model_type == 'cnn_bilstm_transformer':
 create_model_new = """    elif model_type == 'cnn_bilstm_transformer':
         return CNNBiLSTMTransformerClassifier(input_size, num_classes, seq_length=SEQ_LENGTH)
     elif model_type == 'nlp_transformer':
-        return NLPTransformerClassifier(vocab_size=52000, num_classes=num_classes, max_seq_length=512, pad_token_id=2)
+        return NLPTransformerClassifier(vocab_size=52000, num_classes=num_classes, max_seq_length=576, pad_token_id=2)
     else:"""
 content = content.replace(create_model_old, create_model_new)
 

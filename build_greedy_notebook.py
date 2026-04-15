@@ -112,7 +112,7 @@ CNN_BILSTM_TRANSFORMER_OVERRIDE = {
     'transformer_d_model': 128,  # was 256
     'transformer_nhead': 4,
     'transformer_layers': 2,
-    'transformer_ff_dim': 256,   # was 512
+    'transformer_ff_dim': 512,   # reverted to 512
     'transformer_dropout': 0.2,
     'fc_dropout': 0.4,
 }
@@ -500,7 +500,7 @@ def create_model(model_type, input_size, num_classes):
         return CNNBiLSTMTransformerClassifier(input_size, num_classes, seq_length=SEQ_LENGTH,
                                               config=CNN_BILSTM_TRANSFORMER_OVERRIDE)
     elif model_type == 'nlp_transformer':
-        return NLPTransformerClassifier(vocab_size=52000, num_classes=num_classes, max_seq_length=512, pad_token_id=2)
+        return NLPTransformerClassifier(vocab_size=52000, num_classes=num_classes, max_seq_length=576, pad_token_id=2)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
