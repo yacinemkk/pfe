@@ -1001,21 +1001,30 @@ def train_model_greedy(
 
     model = create_model(model_type, input_size, num_classes)
 
-    if os.path.exists(phase_a_path):
+    needs_train_a = not os.path.exists(phase_a_path)
+    if not needs_train_a:
         print(f"\\n  Phase A model found in Drive. Loading...")
         ckpt = torch.load(phase_a_path, map_location=device)
-        model.load_state_dict(ckpt['model_state_dict'])
-        model = model.to(device)
-        print(f"  Loaded Phase A model (epoch {ckpt.get('epoch', '?')}, "
-              f"clean_acc={ckpt.get('val_clean_acc', 0):.4f})")
-    else:
+        try:
+            model.load_state_dict(ckpt['model_state_dict'])
+            model = model.to(device)
+            print(f"  Loaded Phase A model (epoch {ckpt.get('epoch', '?')}, "
+                  f"clean_acc={ckpt.get('val_clean_acc', 0):.4f})")
+        except RuntimeError as e:
+            if 'mismatch' in str(e):
+                print(f"  Size mismatch: IGNORING Phase A checkpoint. Retraining...")
+                needs_train_a = True
+            else:
+                raise e
+
+    if needs_train_a:
         model = train_greedy_phase(
             model, X_train, y_train, X_val, y_val,
             phase='A', start_epoch=1, end_epoch=PHASE_A_EPOCHS,
             mix_ratio=PHASE_A_MIX_RATIO, k_max=0,
             p_drop=0.0, sigma_noise=0.0, afd_lambda=0.0,
             simulator=None, device=device, lr=lr,
-            batch_size=batch_size, save_path=phase_a_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features
+            batch_size=batch_size, save_path=phase_a_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
     ct_a = crash_test_greedy(model, X_val, y_val, simulator=None, device=device, label='Phase A', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
@@ -1040,22 +1049,31 @@ def train_model_greedy(
     # ─── PHASE B (epochs 16-30): 30% adversarial, k_max=2 ─────────────────
     phase_b_path = f'{save_dir}/phase_b_model.pt'
 
-    if os.path.exists(phase_b_path):
+    needs_train_b = not os.path.exists(phase_b_path)
+    if not needs_train_b:
         print(f"\\n  Phase B model found in Drive. Loading...")
         ckpt = torch.load(phase_b_path, map_location=device)
-        model.load_state_dict(ckpt['model_state_dict'])
-        model = model.to(device)
-        print(f"  Loaded Phase B model (epoch {ckpt.get('epoch', '?')}, "
-              f"clean_acc={ckpt.get('val_clean_acc', 0):.4f}, "
-              f"adv_acc={ckpt.get('val_adv_acc', 0):.4f})")
-    else:
+        try:
+            model.load_state_dict(ckpt['model_state_dict'])
+            model = model.to(device)
+            print(f"  Loaded Phase B model (epoch {ckpt.get('epoch', '?')}, "
+                  f"clean_acc={ckpt.get('val_clean_acc', 0):.4f}, "
+                  f"adv_acc={ckpt.get('val_adv_acc', 0):.4f})")
+        except RuntimeError as e:
+            if 'mismatch' in str(e):
+                print(f"  Size mismatch: IGNORING Phase B checkpoint. Retraining...")
+                needs_train_b = True
+            else:
+                raise e
+
+    if needs_train_b:
         model = train_greedy_phase(
             model, X_train, y_train, X_val, y_val,
             phase='B', start_epoch=PHASE_A_EPOCHS + 1, end_epoch=PHASE_B_EPOCHS,
             mix_ratio=PHASE_B_MIX_RATIO, k_max=PHASE_B_K_MAX,
             p_drop=0.1, sigma_noise=0.01, afd_lambda=0.5,
             simulator=simulator, device=device, lr=lr,
-            batch_size=batch_size, save_path=phase_b_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features
+            batch_size=batch_size, save_path=phase_b_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
     ct_b = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase B', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
@@ -1064,22 +1082,31 @@ def train_model_greedy(
     # ─── PHASE C (epochs 31-50): 70% adversarial, k_max=4 ─────────────────
     phase_c_path = f'{save_dir}/phase_c_model.pt'
 
-    if os.path.exists(phase_c_path):
+    needs_train_c = not os.path.exists(phase_c_path)
+    if not needs_train_c:
         print(f"\\n  Phase C model found in Drive. Loading...")
         ckpt = torch.load(phase_c_path, map_location=device)
-        model.load_state_dict(ckpt['model_state_dict'])
-        model = model.to(device)
-        print(f"  Loaded Phase C model (epoch {ckpt.get('epoch', '?')}, "
-              f"clean_acc={ckpt.get('val_clean_acc', 0):.4f}, "
-              f"adv_acc={ckpt.get('val_adv_acc', 0):.4f})")
-    else:
+        try:
+            model.load_state_dict(ckpt['model_state_dict'])
+            model = model.to(device)
+            print(f"  Loaded Phase C model (epoch {ckpt.get('epoch', '?')}, "
+                  f"clean_acc={ckpt.get('val_clean_acc', 0):.4f}, "
+                  f"adv_acc={ckpt.get('val_adv_acc', 0):.4f})")
+        except RuntimeError as e:
+            if 'mismatch' in str(e):
+                print(f"  Size mismatch: IGNORING Phase C checkpoint. Retraining...")
+                needs_train_c = True
+            else:
+                raise e
+
+    if needs_train_c:
         model = train_greedy_phase(
             model, X_train, y_train, X_val, y_val,
             phase='C', start_epoch=PHASE_B_EPOCHS + 1, end_epoch=PHASE_C_EPOCHS,
             mix_ratio=PHASE_C_MIX_RATIO, k_max=PHASE_C_K_MAX,
             p_drop=0.2, sigma_noise=0.01, afd_lambda=1.0,
             simulator=simulator, device=device, lr=lr,
-            batch_size=batch_size, save_path=phase_c_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features
+            batch_size=batch_size, save_path=phase_c_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
     ct_c = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase C', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
@@ -1088,22 +1115,31 @@ def train_model_greedy(
     # ─── PHASE D (epochs 51-65): 95% adversarial, k_max=4 ─────────────────
     phase_d_path = f'{save_dir}/phase_d_model.pt'
 
-    if os.path.exists(phase_d_path):
+    needs_train_d = not os.path.exists(phase_d_path)
+    if not needs_train_d:
         print(f"\\n  Phase D model found in Drive. Loading...")
         ckpt = torch.load(phase_d_path, map_location=device)
-        model.load_state_dict(ckpt['model_state_dict'])
-        model = model.to(device)
-        print(f"  Loaded Phase D model (epoch {ckpt.get('epoch', '?')}, "
-              f"clean_acc={ckpt.get('val_clean_acc', 0):.4f}, "
-              f"adv_acc={ckpt.get('val_adv_acc', 0):.4f})")
-    else:
+        try:
+            model.load_state_dict(ckpt['model_state_dict'])
+            model = model.to(device)
+            print(f"  Loaded Phase D model (epoch {ckpt.get('epoch', '?')}, "
+                  f"clean_acc={ckpt.get('val_clean_acc', 0):.4f}, "
+                  f"adv_acc={ckpt.get('val_adv_acc', 0):.4f})")
+        except RuntimeError as e:
+            if 'mismatch' in str(e):
+                print(f"  Size mismatch: IGNORING Phase D checkpoint. Retraining...")
+                needs_train_d = True
+            else:
+                raise e
+
+    if needs_train_d:
         model = train_greedy_phase(
             model, X_train, y_train, X_val, y_val,
             phase='D', start_epoch=PHASE_C_EPOCHS + 1, end_epoch=PHASE_D_EPOCHS,
             mix_ratio=PHASE_D_MIX_RATIO, k_max=PHASE_D_K_MAX,
             p_drop=0.2, sigma_noise=0.01, afd_lambda=0.0,
             simulator=simulator, device=device, lr=lr,
-            batch_size=batch_size, save_path=phase_d_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features
+            batch_size=batch_size, save_path=phase_d_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
     ct_d = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase D', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
