@@ -589,7 +589,7 @@ def train_greedy_phase(
                             
                         if batch_idx == 0:
                             import sys
-                            print(f"\n  [VERBOSE] X_clean_t shape: {X_clean_t.shape}, dtype: {X_clean_t.dtype}", file=sys.stderr)
+                            print(f"\\n  [VERBOSE] X_clean_t shape: {X_clean_t.shape}, dtype: {X_clean_t.dtype}", file=sys.stderr)
                             print(f"  [VERBOSE] Model type: {type(model)}", file=sys.stderr)
                             sys.stderr.flush()
                         
@@ -614,7 +614,7 @@ def train_greedy_phase(
                         
                         if batch_idx == 0:
                             import sys
-                            print(f"\n  [VERBOSE] X_input shape: {X_input.shape}, dtype: {X_input.dtype}", file=sys.stderr)
+                            print(f"\\n  [VERBOSE] X_input shape: {X_input.shape}, dtype: {X_input.dtype}", file=sys.stderr)
                             sys.stderr.flush()
                         
                         logits = model(X_input)
@@ -632,7 +632,7 @@ def train_greedy_phase(
                     
                     if batch_idx == 0:
                         import sys
-                        print(f"\n  [VERBOSE] X_batch shape: {X_batch.shape}, X_input shape: {X_input.shape}, dtype: {X_input.dtype}", file=sys.stderr)
+                        print(f"\\n  [VERBOSE] X_batch shape: {X_batch.shape}, X_input shape: {X_input.shape}, dtype: {X_input.dtype}", file=sys.stderr)
                         try:
                             # In case it's CNNBiLSTMTransformerClassifier
                             if hasattr(model, 'cnn_branch1'):
