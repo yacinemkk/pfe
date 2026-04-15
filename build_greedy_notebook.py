@@ -561,7 +561,7 @@ def train_greedy_phase(
             num_classes = len(np.unique(y_train))
             afd_criterion = AFDLoss(num_classes, num_classes, lambda_intra=1.0, lambda_inter=0.5).to(device)
 
-        for X_batch, y_batch in tqdm(train_loader, desc=f"Epoch {epoch}", leave=False):
+        for batch_idx, (X_batch, y_batch) in enumerate(tqdm(train_loader, desc=f"Epoch {epoch}", leave=False)):
             X_np = X_batch.numpy()
             y_input = y_batch.to(device)
             optimizer.zero_grad(set_to_none=True)
@@ -581,6 +581,10 @@ def train_greedy_phase(
                             X_clean_t = X_clean_t + torch.randn_like(X_clean_t) * sigma_noise
                             X_adv_t = X_adv_t + torch.randn_like(X_adv_t) * sigma_noise
                             
+                        if batch_idx == 0:
+                            print(f"\n  [VERBOSE] X_clean_t shape: {X_clean_t.shape}, dtype: {X_clean_t.dtype}")
+                            print(f"  [VERBOSE] Model type: {type(model)}")
+                        
                         logits_clean = model(X_clean_t)
                         logits_adv = model(X_adv_t)
                         
@@ -599,6 +603,10 @@ def train_greedy_phase(
                             X_input = X_input * mask / (1.0 - p_drop)
                         if sigma_noise > 0:
                             X_input = X_input + torch.randn_like(X_input) * sigma_noise
+                        
+                        if batch_idx == 0:
+                            print(f"\n  [VERBOSE] X_input shape: {X_input.shape}, dtype: {X_input.dtype}")
+                        
                         logits = model(X_input)
                         loss = criterion(logits, y_input)
                 else:
@@ -611,6 +619,22 @@ def train_greedy_phase(
                         X_input = X_input * mask / (1.0 - p_drop)
                     if sigma_noise > 0:
                         X_input = X_input + torch.randn_like(X_input) * sigma_noise
+                    
+                    if batch_idx == 0:
+                        print(f"\n  [VERBOSE] X_batch shape: {X_batch.shape}, X_input shape: {X_input.shape}, dtype: {X_input.dtype}")
+                        try:
+                            # In case it's CNNBiLSTMTransformerClassifier
+                            if hasattr(model, 'cnn_branch1'):
+                                print(f"  [VERBOSE] cnn_ch: {model.cnn_branch1[0].out_channels}")
+                                xt = X_input.permute(0, 2, 1)
+                                b1 = model.cnn_branch1(xt)
+                                b2 = model.cnn_branch2(xt)
+                                fused = torch.cat([b1, b2], dim=1).permute(0, 2, 1).contiguous()
+                                print(f"  [VERBOSE] fused shape: {fused.shape}")
+                                print(f"  [VERBOSE] bilstm expects input_size: {model.bilstm.input_size}")
+                        except Exception as e:
+                            print("  [VERBOSE] Debug print exception:", e)
+                    
                     logits = model(X_input)
                     loss = criterion(logits, y_input)
 
