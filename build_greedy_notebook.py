@@ -91,7 +91,6 @@ cells.append(
     code_cell(
         """# ─── Cell: Configuration ─────────────────────────────────────────────────
 import os
-os.environ['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'  # avoid VRAM fragmentation
 
 JSON_DATA_DIR = '/content/drive/MyDrive/PFE/IPFIX_Records'
 CSV_DATA_DIR = '/content/drive/MyDrive/PFE/IPFIX_ML_Instances'
@@ -402,6 +401,10 @@ from src.models.cnn_lstm import CNNLSTMClassifier
 from src.models.xgboost_lstm import XGBoostLSTMClassifier
 from src.models.transformer import TransformerClassifier
 from src.models.cnn_bilstm_transformer import CNNBiLSTMTransformerClassifier
+from src.models.transformer import NLPTransformerClassifier
+from src.data.tokenizer import create_tokenizer
+from src.models.transformer import NLPTransformerClassifier
+from src.data.tokenizer import create_tokenizer
 from src.models.transformer import NLPTransformerClassifier
 from src.data.tokenizer import create_tokenizer
 from src.training.trainer import IoTSequenceDataset\nfrom src.adversarial.robust_losses import AFDLoss
@@ -939,6 +942,18 @@ def train_model_greedy(
         tokenizer = create_tokenizer()
         print(f"\n  [TOKENIZER] Fitting BPE tokenizer on training data...")
         tokenizer.fit(X_train, features, verbose=False)
+    is_nlp = (model_type == 'nlp_transformer')
+    tokenizer = None
+    if is_nlp:
+        tokenizer = create_tokenizer()
+        print(f"\n  [TOKENIZER] Fitting BPE tokenizer on training data...")
+        tokenizer.fit(X_train, features, verbose=False)
+    is_nlp = (model_type == 'nlp_transformer')
+    tokenizer = None
+    if is_nlp:
+        tokenizer = create_tokenizer()
+        print(f"\n  [TOKENIZER] Fitting BPE tokenizer on training data...")
+        tokenizer.fit(X_train, features, verbose=False)
 
     print(f"\\n{'#'*80}")
     print(f"  GREEDY ADVERSARIAL TRAINING — {model_type.upper()} on {dataset_type.upper()}")
@@ -969,7 +984,7 @@ def train_model_greedy(
             mix_ratio=PHASE_A_MIX_RATIO, k_max=0,
             p_drop=0.0, sigma_noise=0.0, afd_lambda=0.0,
             simulator=None, device=device, lr=lr,
-            batch_size=batch_size, save_path=phase_a_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
+            batch_size=batch_size, save_path=phase_a_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
     ct_a = crash_test_greedy(model, X_val, y_val, simulator=None, device=device, label='Phase A', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
@@ -1009,7 +1024,7 @@ def train_model_greedy(
             mix_ratio=PHASE_B_MIX_RATIO, k_max=PHASE_B_K_MAX,
             p_drop=0.1, sigma_noise=0.01, afd_lambda=0.5,
             simulator=simulator, device=device, lr=lr,
-            batch_size=batch_size, save_path=phase_b_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
+            batch_size=batch_size, save_path=phase_b_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
     ct_b = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase B', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
@@ -1033,7 +1048,7 @@ def train_model_greedy(
             mix_ratio=PHASE_C_MIX_RATIO, k_max=PHASE_C_K_MAX,
             p_drop=0.2, sigma_noise=0.01, afd_lambda=1.0,
             simulator=simulator, device=device, lr=lr,
-            batch_size=batch_size, save_path=phase_c_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
+            batch_size=batch_size, save_path=phase_c_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
     ct_c = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase C', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
@@ -1057,7 +1072,7 @@ def train_model_greedy(
             mix_ratio=PHASE_D_MIX_RATIO, k_max=PHASE_D_K_MAX,
             p_drop=0.2, sigma_noise=0.01, afd_lambda=0.0,
             simulator=simulator, device=device, lr=lr,
-            batch_size=batch_size, save_path=phase_d_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
+            batch_size=batch_size, save_path=phase_d_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
     ct_d = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase D', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
@@ -1255,6 +1270,11 @@ if DATASETS in ['csv', 'both']:
             lr=LEARNING_RATE,
         )
         log_memory(f'after_{{MODEL}}_csv')
+        del data  # release numpy arrays from RAM
+        try:
+            del results
+        except Exception:
+            pass
         aggressive_cleanup()
     else:
         print('Failed to load CSV data')
@@ -1326,6 +1346,11 @@ if DATASETS in ['json', 'both']:
             lr=LEARNING_RATE,
         )
         log_memory(f'after_{{MODEL}}_json')
+        del data  # release numpy arrays from RAM
+        try:
+            del results
+        except Exception:
+            pass
         aggressive_cleanup()
     else:
         print('Failed to load JSON data')
