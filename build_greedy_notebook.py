@@ -566,7 +566,7 @@ def train_greedy_phase(
             y_input = y_batch.to(device)
             optimizer.zero_grad(set_to_none=True)
             
-            with torch.cuda.amp.autocast(enabled=use_amp):
+            with torch.amp.autocast('cuda', enabled=use_amp):
                 if mix_ratio > 0 and simulator is not None:
                     if afd_lambda > 0:
                         X_clean_t = X_batch.to(device)
