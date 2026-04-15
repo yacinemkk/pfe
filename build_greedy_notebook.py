@@ -499,6 +499,8 @@ def create_model(model_type, input_size, num_classes):
     elif model_type == 'cnn_bilstm_transformer':
         return CNNBiLSTMTransformerClassifier(input_size, num_classes, seq_length=SEQ_LENGTH,
                                               config=CNN_BILSTM_TRANSFORMER_OVERRIDE)
+    elif model_type == 'nlp_cnn_bilstm_transformer':
+        return CNNBiLSTMTransformerClassifier(input_size=128, num_classes=num_classes, seq_length=576, vocab_size=52000, config=CNN_BILSTM_TRANSFORMER_OVERRIDE)
     elif model_type == 'nlp_transformer':
         return NLPTransformerClassifier(vocab_size=52000, num_classes=num_classes, max_seq_length=576, pad_token_id=2)
     else:
@@ -965,23 +967,11 @@ def train_model_greedy(
 
     input_size = X_train.shape[2]
     num_classes = len(np.unique(y_train))
-    is_nlp = (model_type == 'nlp_transformer')
+    is_nlp = ('nlp' in model_type)
     tokenizer = None
     if is_nlp:
         tokenizer = create_tokenizer()
-        print(f"\n  [TOKENIZER] Fitting BPE tokenizer on training data...")
-        tokenizer.fit(X_train, features, verbose=False)
-    is_nlp = (model_type == 'nlp_transformer')
-    tokenizer = None
-    if is_nlp:
-        tokenizer = create_tokenizer()
-        print(f"\n  [TOKENIZER] Fitting BPE tokenizer on training data...")
-        tokenizer.fit(X_train, features, verbose=False)
-    is_nlp = (model_type == 'nlp_transformer')
-    tokenizer = None
-    if is_nlp:
-        tokenizer = create_tokenizer()
-        print(f"\n  [TOKENIZER] Fitting BPE tokenizer on training data...")
+        print(f"\\n  [TOKENIZER] Fitting BPE tokenizer on training data...")
         tokenizer.fit(X_train, features, verbose=False)
 
     print(f"\\n{'#'*80}")
@@ -1274,6 +1264,7 @@ models_csv = [
     ("xgboost_lstm", "XGBoost-LSTM"),
     ("transformer", "Transformer"),
     ("cnn_bilstm_transformer", "CNN-BiLSTM-Transformer"),
+    ("nlp_cnn_bilstm_transformer", "NLP-CNN-BiLSTM-Transformer"),
     ("nlp_transformer", "NLP-Transformer"),
 ]
 
