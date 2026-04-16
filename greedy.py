@@ -1,68 +1,4 @@
-#!/usr/bin/env python3
-"""Build greedy.ipynb programmatically."""
-
-import json
-
-
-def md_cell(source, cell_id=None):
-    cell = {"cell_type": "markdown", "source": [source], "metadata": {}}
-    if cell_id:
-        cell["metadata"]["id"] = cell_id
-    return cell
-
-
-def code_cell(source, cell_id=None):
-    cell = {
-        "cell_type": "code",
-        "source": [source],
-        "metadata": {},
-        "execution_count": None,
-        "outputs": [],
-    }
-    if cell_id:
-        cell["metadata"]["id"] = cell_id
-    return cell
-
-
-cells = []
-
-# ═══════════════════════════════════════════════════════════════
-# CELL 1: Title markdown
-# ═══════════════════════════════════════════════════════════════
-cells.append(
-    md_cell(
-        """# Greedy Adversarial Training for IoT Device Identification
-
-This notebook trains 6 models on CSV + JSON datasets with a **3-phase greedy adversarial curriculum**:
-
-| Phase | Epochs | Adversarial Ratio | k_max | Purpose |
-|-------|--------|-------------------|-------|---------|
-| A | 1-15 | 0% | 0 | Learn the base task on clean data |
-| B | 16-30 | 30% | 2 | Gentle introduction of greedy attacks |
-| C | 31-50 | 70% | 4 | Full adversarial training against greedy search |
-
-**GreedyAttackSimulator** reads `sensitivity_results.csv` and applies the exact same
-perturbations (Zero, Mimic_Mean, Mimic_95th, Padding_x10) on the same vulnerable
-features as the attacker. No TRADES or IBP needed — we train against the known attack.
-
-**Models**: LSTM, BiLSTM, CNN-LSTM, XGBoost-LSTM, Transformer, CNN-BiLSTM-Transformer
-
-Each phase saves/loads from **Google Drive** so training can be resumed without re-running.""",
-        "GREEDY_TITLE",
-    )
-)
-
-# ═══════════════════════════════════════════════════════════════
-# CELL 2: Setup markdown
-# ═══════════════════════════════════════════════════════════════
-cells.append(md_cell("# Phase 1 : Setup", "SETUP_MD"))
-
-# ═══════════════════════════════════════════════════════════════
-# CELL 3: Setup code
-# ═══════════════════════════════════════════════════════════════
-cells.append(
-    code_cell(
-        """# ─── Cell: Setup ────────────────────────────────────────────────────────
+# ─── Cell: Setup ────────────────────────────────────────────────────────
 from google.colab import drive
 drive.mount('/content/drive')
 
@@ -74,22 +10,8 @@ else:
 
 %cd /content/pfe
 
-!pip install -q torch torchvision tqdm numpy pandas scikit-learn matplotlib xgboost psutil""",
-        "CELL_SETUP",
-    )
-)
-
-# ═══════════════════════════════════════════════════════════════
-# CELL 4: Config markdown
-# ═══════════════════════════════════════════════════════════════
-cells.append(md_cell("# Phase 2 : Configuration & Data Pipeline", "CONFIG_MD"))
-
-# ═══════════════════════════════════════════════════════════════
-# CELL 5: Config code
-# ═══════════════════════════════════════════════════════════════
-cells.append(
-    code_cell(
-        """# ─── Cell: Configuration ─────────────────────────────────────────────────
+!pip install -q torch torchvision tqdm numpy pandas scikit-learn matplotlib xgboost psutil
+# ─── Cell: Configuration ─────────────────────────────────────────────────
 import os
 
 JSON_DATA_DIR = '/content/drive/MyDrive/PFE/IPFIX_Records'
@@ -152,7 +74,7 @@ print(f'LR:           {LEARNING_RATE}')
 
 import glob
 csv_files = glob.glob(f'{CSV_DATA_DIR}/home*_labeled.csv')
-print(f'\\nFound {len(csv_files)} CSV file(s)')
+print(f'\nFound {len(csv_files)} CSV file(s)')
 for f in sorted(csv_files)[:5]:
     size_mb = os.path.getsize(f) / (1024**2)
     print(f'  {os.path.basename(f)} ({size_mb:.1f} MB)')
@@ -160,20 +82,11 @@ if len(csv_files) > 5:
     print(f'  ... and {len(csv_files) - 5} more')
 
 json_files = glob.glob(f'{JSON_DATA_DIR}/**/*.json', recursive=True)
-print(f'\\nFound {len(json_files)} JSON file(s)')
+print(f'\nFound {len(json_files)} JSON file(s)')
 for f in json_files:
     size_gb = os.path.getsize(f) / (1024**3)
-    print(f'  {os.path.basename(f)} ({size_gb:.1f} GB)')""",
-        "CELL_CONFIG",
-    )
-)
-
-# ═══════════════════════════════════════════════════════════════
-# CELL 6: RAM + Data Loading
-# ═══════════════════════════════════════════════════════════════
-cells.append(
-    code_cell(
-        """# ─── Cell: RAM Monitoring & Data Loading ─────────────────────────────────
+    print(f'  {os.path.basename(f)} ({size_gb:.1f} GB)')
+# ─── Cell: RAM Monitoring & Data Loading ─────────────────────────────────
 import gc
 import psutil
 import torch
@@ -212,7 +125,7 @@ def load_and_display_csv_dataset(csv_data_dir, seq_length=10, stride=10, save_di
     sys.path.insert(0, '/content/pfe')
     from src.data.preprocessor import IoTDataProcessor
 
-    print('\\n' + '=' * 70)
+    print('\n' + '=' * 70)
     print('  LOADING CSV DATASET')
     print('=' * 70)
 
@@ -265,7 +178,7 @@ def load_and_display_json_dataset(json_data_dir, seq_length=10, stride=10, max_r
     sys.path.insert(0, '/content/pfe')
     from src.data.json_preprocessor import JsonIoTDataProcessor
 
-    print('\\n' + '=' * 70)
+    print('\n' + '=' * 70)
     print('  LOADING JSON DATASET')
     print('=' * 70)
 
@@ -354,34 +267,14 @@ def load_dataset_from_drive(dataset_type):
 CSV_PREPROCESSED_DIR = f'{DRIVE_RESULTS_DIR}/preprocessed/csv'
 JSON_PREPROCESSED_DIR = f'{DRIVE_RESULTS_DIR}/preprocessed/json'
 
-print('Data loading functions ready.')""",
-        "CELL_DATA",
-    )
-)
-
-# ═══════════════════════════════════════════════════════════════
-# CELL 7: CSV Data Loading
-# ═══════════════════════════════════════════════════════════════
-cells.append(md_cell("## CSV Dataset Loading", "CSV_LOADING_MD"))
-cells.append(
-    code_cell(
-        """# ─── Cell: Load CSV Dataset ──────────────────────────────────────────────
+print('Data loading functions ready.')
+# ─── Cell: Load CSV Dataset ──────────────────────────────────────────────
 if DATASETS in ['csv', 'both']:
     csv_data = load_dataset_from_drive('csv')
 else:
     csv_data = None
-    print('Skipping CSV dataset')""",
-        "CELL_CSV_LOAD",
-    )
-)
-
-# ═══════════════════════════════════════════════════════════════
-# CELL 8: GreedyAttackSimulator + Training Functions (CORE)
-# ═══════════════════════════════════════════════════════════════
-cells.append(md_cell("# Phase 3 : Greedy Adversarial Training Core", "CORE_MD"))
-cells.append(
-    code_cell(
-        """# ─── Cell: GreedyAttackSimulator + Training Functions ─────────────────────
+    print('Skipping CSV dataset')
+# ─── Cell: GreedyAttackSimulator + Training Functions ─────────────────────
 import sys
 sys.path.insert(0, '/content/pfe')
 
@@ -407,7 +300,8 @@ from src.models.transformer import NLPTransformerClassifier
 from src.data.tokenizer import create_tokenizer
 from src.models.transformer import NLPTransformerClassifier
 from src.data.tokenizer import create_tokenizer
-from src.training.trainer import IoTSequenceDataset\nfrom src.adversarial.robust_losses import AFDLoss
+from src.training.trainer import IoTSequenceDataset
+from src.adversarial.robust_losses import AFDLoss
 
 
 # =====================================================================
@@ -545,7 +439,7 @@ def train_greedy_phase(
                               num_workers=0, pin_memory=False)
 
     phase_names = {'A': 'Fondation (clean only)', 'B': 'Introduction (30% adv, k_max=2)', 'C': 'Principal (70% adv, k_max=4)', 'D': 'Consolidation Extreme (100% adv, k_max=5)'}
-    print(f"\\n{'='*60}")
+    print(f"\n{'='*60}")
     print(f"  PHASE {phase} — epochs {start_epoch}-{end_epoch}")
     print(f"  {phase_names.get(phase, '')}")
     print(f"  mix_ratio={mix_ratio} | k_max={k_max}")
@@ -589,7 +483,8 @@ def train_greedy_phase(
                             
                         if batch_idx == 0:
                             import sys
-                            print(f"\\n  [VERBOSE] X_clean_t shape: {X_clean_t.shape}, dtype: {X_clean_t.dtype}", file=sys.stderr)
+                            print(f"
+  [VERBOSE] X_clean_t shape: {X_clean_t.shape}, dtype: {X_clean_t.dtype}", file=sys.stderr)
                             print(f"  [VERBOSE] Model type: {type(model)}", file=sys.stderr)
                             sys.stderr.flush()
                         
@@ -614,7 +509,8 @@ def train_greedy_phase(
                         
                         if batch_idx == 0:
                             import sys
-                            print(f"\\n  [VERBOSE] X_input shape: {X_input.shape}, dtype: {X_input.dtype}", file=sys.stderr)
+                            print(f"
+  [VERBOSE] X_input shape: {X_input.shape}, dtype: {X_input.dtype}", file=sys.stderr)
                             sys.stderr.flush()
                         
                         logits = model(X_input)
@@ -632,7 +528,8 @@ def train_greedy_phase(
                     
                     if batch_idx == 0:
                         import sys
-                        print(f"\\n  [VERBOSE] X_batch shape: {X_batch.shape}, X_input shape: {X_input.shape}, dtype: {X_input.dtype}", file=sys.stderr)
+                        print(f"
+  [VERBOSE] X_batch shape: {X_batch.shape}, X_input shape: {X_input.shape}, dtype: {X_input.dtype}", file=sys.stderr)
                         try:
                             # In case it's CNNBiLSTMTransformerClassifier
                             if hasattr(model, 'cnn_branch1'):
@@ -781,7 +678,7 @@ def run_sensitivity_analysis(model, X_val, y_val, feature_names, num_classes,
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    print(f"\\n  Running sensitivity analysis...")
+    print(f"\n  Running sensitivity analysis...")
     model.eval()
     model = model.to(device)
 
@@ -851,7 +748,7 @@ class Discriminator(nn.Module):
 def train_discriminator(discriminator, X_train, simulator, device=None, epochs=25, batch_size=64, lr=1e-3, save_path='discriminator.pt'):
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"\\n{'='*65}\\n  ENTRAÎNEMENT DU DISCRIMINATEUR\\n{'='*65}")
+    print(f"\n{'='*65}\n  ENTRAÎNEMENT DU DISCRIMINATEUR\n{'='*65}")
     discriminator = discriminator.to(device)
     optimizer = torch.optim.AdamW(discriminator.parameters(), lr=lr, weight_decay=1e-4)
     criterion = nn.BCEWithLogitsLoss()
@@ -892,7 +789,7 @@ def train_discriminator(discriminator, X_train, simulator, device=None, epochs=2
         if acc > best_acc:
             best_acc = acc
             torch.save({'model_state_dict': discriminator.state_dict(), 'accuracy': acc}, save_path)
-    print(f"\\n  Discriminateur — meilleure accuracy : {best_acc:.4f}\\n  Sauvegardé → {save_path}")
+    print(f"\n  Discriminateur — meilleure accuracy : {best_acc:.4f}\n  Sauvegardé → {save_path}")
     ckpt = torch.load(save_path, map_location=device)
     discriminator.load_state_dict(ckpt['model_state_dict'])
     return discriminator, best_acc
@@ -983,10 +880,10 @@ def train_model_greedy(
     tokenizer = None
     if is_nlp:
         tokenizer = create_tokenizer()
-        print(f"\\n  [TOKENIZER] Fitting BPE tokenizer on training data...")
+        print(f"\n  [TOKENIZER] Fitting BPE tokenizer on training data...")
         tokenizer.fit(X_train, features, verbose=False)
 
-    print(f"\\n{'#'*80}")
+    print(f"\n{'#'*80}")
     print(f"  GREEDY ADVERSARIAL TRAINING — {model_type.upper()} on {dataset_type.upper()}")
     print(f"{'#'*80}")
     print(f"  Input size: {input_size} | Classes: {num_classes}")
@@ -1001,30 +898,21 @@ def train_model_greedy(
 
     model = create_model(model_type, input_size, num_classes)
 
-    needs_train_a = not os.path.exists(phase_a_path)
-    if not needs_train_a:
-        print(f"\\n  Phase A model found in Drive. Loading...")
+    if os.path.exists(phase_a_path):
+        print(f"\n  Phase A model found in Drive. Loading...")
         ckpt = torch.load(phase_a_path, map_location=device)
-        try:
-            model.load_state_dict(ckpt['model_state_dict'])
-            model = model.to(device)
-            print(f"  Loaded Phase A model (epoch {ckpt.get('epoch', '?')}, "
-                  f"clean_acc={ckpt.get('val_clean_acc', 0):.4f})")
-        except RuntimeError as e:
-            if 'mismatch' in str(e):
-                print(f"  Size mismatch: IGNORING Phase A checkpoint. Retraining...")
-                needs_train_a = True
-            else:
-                raise e
-
-    if needs_train_a:
+        model.load_state_dict(ckpt['model_state_dict'])
+        model = model.to(device)
+        print(f"  Loaded Phase A model (epoch {ckpt.get('epoch', '?')}, "
+              f"clean_acc={ckpt.get('val_clean_acc', 0):.4f})")
+    else:
         model = train_greedy_phase(
             model, X_train, y_train, X_val, y_val,
             phase='A', start_epoch=1, end_epoch=PHASE_A_EPOCHS,
             mix_ratio=PHASE_A_MIX_RATIO, k_max=0,
             p_drop=0.0, sigma_noise=0.0, afd_lambda=0.0,
             simulator=None, device=device, lr=lr,
-            batch_size=batch_size, save_path=phase_a_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
+            batch_size=batch_size, save_path=phase_a_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
     ct_a = crash_test_greedy(model, X_val, y_val, simulator=None, device=device, label='Phase A', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
@@ -1034,7 +922,7 @@ def train_model_greedy(
     feature_names = features if features else [f'f{i}' for i in range(input_size)]
 
     if os.path.exists(sens_csv_path):
-        print(f"\\n  Sensitivity results found in Drive. Loading...")
+        print(f"\n  Sensitivity results found in Drive. Loading...")
         sensitivity = load_sensitivity_results(sens_csv_path, feature_names)
     else:
         run_sensitivity_analysis(
@@ -1049,31 +937,22 @@ def train_model_greedy(
     # ─── PHASE B (epochs 16-30): 30% adversarial, k_max=2 ─────────────────
     phase_b_path = f'{save_dir}/phase_b_model.pt'
 
-    needs_train_b = not os.path.exists(phase_b_path)
-    if not needs_train_b:
-        print(f"\\n  Phase B model found in Drive. Loading...")
+    if os.path.exists(phase_b_path):
+        print(f"\n  Phase B model found in Drive. Loading...")
         ckpt = torch.load(phase_b_path, map_location=device)
-        try:
-            model.load_state_dict(ckpt['model_state_dict'])
-            model = model.to(device)
-            print(f"  Loaded Phase B model (epoch {ckpt.get('epoch', '?')}, "
-                  f"clean_acc={ckpt.get('val_clean_acc', 0):.4f}, "
-                  f"adv_acc={ckpt.get('val_adv_acc', 0):.4f})")
-        except RuntimeError as e:
-            if 'mismatch' in str(e):
-                print(f"  Size mismatch: IGNORING Phase B checkpoint. Retraining...")
-                needs_train_b = True
-            else:
-                raise e
-
-    if needs_train_b:
+        model.load_state_dict(ckpt['model_state_dict'])
+        model = model.to(device)
+        print(f"  Loaded Phase B model (epoch {ckpt.get('epoch', '?')}, "
+              f"clean_acc={ckpt.get('val_clean_acc', 0):.4f}, "
+              f"adv_acc={ckpt.get('val_adv_acc', 0):.4f})")
+    else:
         model = train_greedy_phase(
             model, X_train, y_train, X_val, y_val,
             phase='B', start_epoch=PHASE_A_EPOCHS + 1, end_epoch=PHASE_B_EPOCHS,
             mix_ratio=PHASE_B_MIX_RATIO, k_max=PHASE_B_K_MAX,
             p_drop=0.1, sigma_noise=0.01, afd_lambda=0.5,
             simulator=simulator, device=device, lr=lr,
-            batch_size=batch_size, save_path=phase_b_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
+            batch_size=batch_size, save_path=phase_b_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
     ct_b = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase B', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
@@ -1082,31 +961,22 @@ def train_model_greedy(
     # ─── PHASE C (epochs 31-50): 70% adversarial, k_max=4 ─────────────────
     phase_c_path = f'{save_dir}/phase_c_model.pt'
 
-    needs_train_c = not os.path.exists(phase_c_path)
-    if not needs_train_c:
-        print(f"\\n  Phase C model found in Drive. Loading...")
+    if os.path.exists(phase_c_path):
+        print(f"\n  Phase C model found in Drive. Loading...")
         ckpt = torch.load(phase_c_path, map_location=device)
-        try:
-            model.load_state_dict(ckpt['model_state_dict'])
-            model = model.to(device)
-            print(f"  Loaded Phase C model (epoch {ckpt.get('epoch', '?')}, "
-                  f"clean_acc={ckpt.get('val_clean_acc', 0):.4f}, "
-                  f"adv_acc={ckpt.get('val_adv_acc', 0):.4f})")
-        except RuntimeError as e:
-            if 'mismatch' in str(e):
-                print(f"  Size mismatch: IGNORING Phase C checkpoint. Retraining...")
-                needs_train_c = True
-            else:
-                raise e
-
-    if needs_train_c:
+        model.load_state_dict(ckpt['model_state_dict'])
+        model = model.to(device)
+        print(f"  Loaded Phase C model (epoch {ckpt.get('epoch', '?')}, "
+              f"clean_acc={ckpt.get('val_clean_acc', 0):.4f}, "
+              f"adv_acc={ckpt.get('val_adv_acc', 0):.4f})")
+    else:
         model = train_greedy_phase(
             model, X_train, y_train, X_val, y_val,
             phase='C', start_epoch=PHASE_B_EPOCHS + 1, end_epoch=PHASE_C_EPOCHS,
             mix_ratio=PHASE_C_MIX_RATIO, k_max=PHASE_C_K_MAX,
             p_drop=0.2, sigma_noise=0.01, afd_lambda=1.0,
             simulator=simulator, device=device, lr=lr,
-            batch_size=batch_size, save_path=phase_c_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
+            batch_size=batch_size, save_path=phase_c_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
     ct_c = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase C', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
@@ -1115,31 +985,22 @@ def train_model_greedy(
     # ─── PHASE D (epochs 51-65): 95% adversarial, k_max=4 ─────────────────
     phase_d_path = f'{save_dir}/phase_d_model.pt'
 
-    needs_train_d = not os.path.exists(phase_d_path)
-    if not needs_train_d:
-        print(f"\\n  Phase D model found in Drive. Loading...")
+    if os.path.exists(phase_d_path):
+        print(f"\n  Phase D model found in Drive. Loading...")
         ckpt = torch.load(phase_d_path, map_location=device)
-        try:
-            model.load_state_dict(ckpt['model_state_dict'])
-            model = model.to(device)
-            print(f"  Loaded Phase D model (epoch {ckpt.get('epoch', '?')}, "
-                  f"clean_acc={ckpt.get('val_clean_acc', 0):.4f}, "
-                  f"adv_acc={ckpt.get('val_adv_acc', 0):.4f})")
-        except RuntimeError as e:
-            if 'mismatch' in str(e):
-                print(f"  Size mismatch: IGNORING Phase D checkpoint. Retraining...")
-                needs_train_d = True
-            else:
-                raise e
-
-    if needs_train_d:
+        model.load_state_dict(ckpt['model_state_dict'])
+        model = model.to(device)
+        print(f"  Loaded Phase D model (epoch {ckpt.get('epoch', '?')}, "
+              f"clean_acc={ckpt.get('val_clean_acc', 0):.4f}, "
+              f"adv_acc={ckpt.get('val_adv_acc', 0):.4f})")
+    else:
         model = train_greedy_phase(
             model, X_train, y_train, X_val, y_val,
             phase='D', start_epoch=PHASE_C_EPOCHS + 1, end_epoch=PHASE_D_EPOCHS,
             mix_ratio=PHASE_D_MIX_RATIO, k_max=PHASE_D_K_MAX,
             p_drop=0.2, sigma_noise=0.01, afd_lambda=0.0,
             simulator=simulator, device=device, lr=lr,
-            batch_size=batch_size, save_path=phase_d_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
+            batch_size=batch_size, save_path=phase_d_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
     ct_d = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase D', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
@@ -1149,7 +1010,7 @@ def train_model_greedy(
     disc_path = f'{save_dir}/discriminator.pt'
     disc = Discriminator(input_size=input_size, seq_length=10, hidden_size=64)
     if os.path.exists(disc_path):
-        print(f"\\n  Discriminator model found in Drive. Loading...")
+        print(f"\n  Discriminator model found in Drive. Loading...")
         ckpt = torch.load(disc_path, map_location=device)
         disc.load_state_dict(ckpt['model_state_dict'])
         disc_acc = ckpt.get('accuracy', 0.95)
@@ -1167,7 +1028,7 @@ def train_model_greedy(
         )
     
     # ─── Final evaluation on test set with Router ────────────────────────
-    print(f"\\n{'='*80}")
+    print(f"\n{'='*80}")
     print(f"  RÉSULTATS ATTENDUS APRÈS ENTRAÎNEMENT")
     print(f"{'='*80}")
     model.eval() # Adversarial model
@@ -1293,39 +1154,14 @@ def train_model_greedy(
     return results
 
 
-print('Greedy adversarial training functions loaded.')""",
-        "CELL_CORE",
-    )
-)
+print('Greedy adversarial training functions loaded.')
+# ─── MODEL: LSTM on CSV (Greedy Adversarial) ────────────────────────
+MODEL = 'lstm'
+print(f'\n{"#"*80}')
+print(f'  GREEDY ADVERSARIAL — LSTM on CSV')
+print(f'{"#"*80}\n')
 
-# ═══════════════════════════════════════════════════════════════
-# MODEL CELLS: 6 models on CSV
-# ═══════════════════════════════════════════════════════════════
-cells.append(
-    md_cell("# Phase 4 : Greedy Adversarial Training on CSV", "CSV_TRAINING_MD")
-)
-
-models_csv = [
-    ("lstm", "LSTM"),
-    ("bilstm", "BiLSTM"),
-    ("cnn_lstm", "CNN-LSTM"),
-    ("xgboost_lstm", "XGBoost-LSTM"),
-    ("transformer", "Transformer"),
-    ("cnn_bilstm_transformer", "CNN-BiLSTM-Transformer"),
-    ("nlp_cnn_bilstm_transformer", "NLP-CNN-BiLSTM-Transformer"),
-    ("nlp_transformer", "NLP-Transformer"),
-]
-
-for model_key, model_label in models_csv:
-    cells.append(
-        code_cell(
-            f"""# ─── MODEL: {model_label} on CSV (Greedy Adversarial) ────────────────────────
-MODEL = '{model_key}'
-print(f'\\n{{\"#\"*80}}')
-print(f'  GREEDY ADVERSARIAL — {model_label.upper()} on CSV')
-print(f'{{\"#\"*80}}\\n')
-
-log_memory(f'before_{{MODEL}}_csv')
+log_memory(f'before_{MODEL}_csv')
 
 if DATASETS in ['csv', 'both']:
     data = load_dataset_from_drive('csv')
@@ -1337,7 +1173,7 @@ if DATASETS in ['csv', 'both']:
             batch_size=BATCH_SIZE,
             lr=LEARNING_RATE,
         )
-        log_memory(f'after_{{MODEL}}_csv')
+        log_memory(f'after_{MODEL}_csv')
         del data  # release numpy arrays from RAM
         try:
             del results
@@ -1349,59 +1185,244 @@ if DATASETS in ['csv', 'both']:
 else:
     print('Skipping CSV dataset')
 
-print(f'\\n {model_label.upper()} on CSV DONE')""",
-            f"CELL_{model_key.upper()}_CSV",
-        )
-    )
+print(f'\n LSTM on CSV DONE')
+# ─── MODEL: BiLSTM on CSV (Greedy Adversarial) ────────────────────────
+MODEL = 'bilstm'
+print(f'\n{"#"*80}')
+print(f'  GREEDY ADVERSARIAL — BILSTM on CSV')
+print(f'{"#"*80}\n')
 
-# ═══════════════════════════════════════════════════════════════
-# CLEANUP
-# ═══════════════════════════════════════════════════════════════
-cells.append(md_cell("# RAM Cleanup Before JSON Phase", "CLEANUP_MD"))
-cells.append(
-    code_cell(
-        """# ─── CLEANUP RAM BEFORE JSON PHASE ──────────────────────────────────────
-print('\\n' + '='*80)
+log_memory(f'before_{MODEL}_csv')
+
+if DATASETS in ['csv', 'both']:
+    data = load_dataset_from_drive('csv')
+    if data is not None:
+        results = train_model_greedy(
+            model_type=MODEL,
+            dataset_type='csv',
+            data_dict=data,
+            batch_size=BATCH_SIZE,
+            lr=LEARNING_RATE,
+        )
+        log_memory(f'after_{MODEL}_csv')
+        del data  # release numpy arrays from RAM
+        try:
+            del results
+        except Exception:
+            pass
+        aggressive_cleanup()
+    else:
+        print('Failed to load CSV data')
+else:
+    print('Skipping CSV dataset')
+
+print(f'\n BILSTM on CSV DONE')
+# ─── MODEL: CNN-LSTM on CSV (Greedy Adversarial) ────────────────────────
+MODEL = 'cnn_lstm'
+print(f'\n{"#"*80}')
+print(f'  GREEDY ADVERSARIAL — CNN-LSTM on CSV')
+print(f'{"#"*80}\n')
+
+log_memory(f'before_{MODEL}_csv')
+
+if DATASETS in ['csv', 'both']:
+    data = load_dataset_from_drive('csv')
+    if data is not None:
+        results = train_model_greedy(
+            model_type=MODEL,
+            dataset_type='csv',
+            data_dict=data,
+            batch_size=BATCH_SIZE,
+            lr=LEARNING_RATE,
+        )
+        log_memory(f'after_{MODEL}_csv')
+        del data  # release numpy arrays from RAM
+        try:
+            del results
+        except Exception:
+            pass
+        aggressive_cleanup()
+    else:
+        print('Failed to load CSV data')
+else:
+    print('Skipping CSV dataset')
+
+print(f'\n CNN-LSTM on CSV DONE')
+# ─── MODEL: XGBoost-LSTM on CSV (Greedy Adversarial) ────────────────────────
+MODEL = 'xgboost_lstm'
+print(f'\n{"#"*80}')
+print(f'  GREEDY ADVERSARIAL — XGBOOST-LSTM on CSV')
+print(f'{"#"*80}\n')
+
+log_memory(f'before_{MODEL}_csv')
+
+if DATASETS in ['csv', 'both']:
+    data = load_dataset_from_drive('csv')
+    if data is not None:
+        results = train_model_greedy(
+            model_type=MODEL,
+            dataset_type='csv',
+            data_dict=data,
+            batch_size=BATCH_SIZE,
+            lr=LEARNING_RATE,
+        )
+        log_memory(f'after_{MODEL}_csv')
+        del data  # release numpy arrays from RAM
+        try:
+            del results
+        except Exception:
+            pass
+        aggressive_cleanup()
+    else:
+        print('Failed to load CSV data')
+else:
+    print('Skipping CSV dataset')
+
+print(f'\n XGBOOST-LSTM on CSV DONE')
+# ─── MODEL: Transformer on CSV (Greedy Adversarial) ────────────────────────
+MODEL = 'transformer'
+print(f'\n{"#"*80}')
+print(f'  GREEDY ADVERSARIAL — TRANSFORMER on CSV')
+print(f'{"#"*80}\n')
+
+log_memory(f'before_{MODEL}_csv')
+
+if DATASETS in ['csv', 'both']:
+    data = load_dataset_from_drive('csv')
+    if data is not None:
+        results = train_model_greedy(
+            model_type=MODEL,
+            dataset_type='csv',
+            data_dict=data,
+            batch_size=BATCH_SIZE,
+            lr=LEARNING_RATE,
+        )
+        log_memory(f'after_{MODEL}_csv')
+        del data  # release numpy arrays from RAM
+        try:
+            del results
+        except Exception:
+            pass
+        aggressive_cleanup()
+    else:
+        print('Failed to load CSV data')
+else:
+    print('Skipping CSV dataset')
+
+print(f'\n TRANSFORMER on CSV DONE')
+# ─── MODEL: CNN-BiLSTM-Transformer on CSV (Greedy Adversarial) ────────────────────────
+MODEL = 'cnn_bilstm_transformer'
+print(f'\n{"#"*80}')
+print(f'  GREEDY ADVERSARIAL — CNN-BILSTM-TRANSFORMER on CSV')
+print(f'{"#"*80}\n')
+
+log_memory(f'before_{MODEL}_csv')
+
+if DATASETS in ['csv', 'both']:
+    data = load_dataset_from_drive('csv')
+    if data is not None:
+        results = train_model_greedy(
+            model_type=MODEL,
+            dataset_type='csv',
+            data_dict=data,
+            batch_size=BATCH_SIZE,
+            lr=LEARNING_RATE,
+        )
+        log_memory(f'after_{MODEL}_csv')
+        del data  # release numpy arrays from RAM
+        try:
+            del results
+        except Exception:
+            pass
+        aggressive_cleanup()
+    else:
+        print('Failed to load CSV data')
+else:
+    print('Skipping CSV dataset')
+
+print(f'\n CNN-BILSTM-TRANSFORMER on CSV DONE')
+# ─── MODEL: NLP-CNN-BiLSTM-Transformer on CSV (Greedy Adversarial) ────────────────────────
+MODEL = 'nlp_cnn_bilstm_transformer'
+print(f'\n{"#"*80}')
+print(f'  GREEDY ADVERSARIAL — NLP-CNN-BILSTM-TRANSFORMER on CSV')
+print(f'{"#"*80}\n')
+
+log_memory(f'before_{MODEL}_csv')
+
+if DATASETS in ['csv', 'both']:
+    data = load_dataset_from_drive('csv')
+    if data is not None:
+        results = train_model_greedy(
+            model_type=MODEL,
+            dataset_type='csv',
+            data_dict=data,
+            batch_size=BATCH_SIZE,
+            lr=LEARNING_RATE,
+        )
+        log_memory(f'after_{MODEL}_csv')
+        del data  # release numpy arrays from RAM
+        try:
+            del results
+        except Exception:
+            pass
+        aggressive_cleanup()
+    else:
+        print('Failed to load CSV data')
+else:
+    print('Skipping CSV dataset')
+
+print(f'\n NLP-CNN-BILSTM-TRANSFORMER on CSV DONE')
+# ─── MODEL: NLP-Transformer on CSV (Greedy Adversarial) ────────────────────────
+MODEL = 'nlp_transformer'
+print(f'\n{"#"*80}')
+print(f'  GREEDY ADVERSARIAL — NLP-TRANSFORMER on CSV')
+print(f'{"#"*80}\n')
+
+log_memory(f'before_{MODEL}_csv')
+
+if DATASETS in ['csv', 'both']:
+    data = load_dataset_from_drive('csv')
+    if data is not None:
+        results = train_model_greedy(
+            model_type=MODEL,
+            dataset_type='csv',
+            data_dict=data,
+            batch_size=BATCH_SIZE,
+            lr=LEARNING_RATE,
+        )
+        log_memory(f'after_{MODEL}_csv')
+        del data  # release numpy arrays from RAM
+        try:
+            del results
+        except Exception:
+            pass
+        aggressive_cleanup()
+    else:
+        print('Failed to load CSV data')
+else:
+    print('Skipping CSV dataset')
+
+print(f'\n NLP-TRANSFORMER on CSV DONE')
+# ─── CLEANUP RAM BEFORE JSON PHASE ──────────────────────────────────────
+print('\n' + '='*80)
 print('  CLEANING RAM BEFORE JSON PHASE...')
-print('='*80 + '\\n')
+print('='*80 + '\n')
 
 aggressive_cleanup()
-print('\\n RAM cleaned. Ready for JSON phase.')""",
-        "CELL_CLEANUP",
-    )
-)
-
-# ═══════════════════════════════════════════════════════════════
-# JSON Data Loading
-# ═══════════════════════════════════════════════════════════════
-cells.append(
-    md_cell("# Phase 5 : Greedy Adversarial Training on JSON", "JSON_TRAINING_MD")
-)
-cells.append(
-    code_cell(
-        """# ─── Cell: Load JSON Dataset ─────────────────────────────────────────────
+print('\n RAM cleaned. Ready for JSON phase.')
+# ─── Cell: Load JSON Dataset ─────────────────────────────────────────────
 if DATASETS in ['json', 'both']:
     json_data = load_dataset_from_drive('json')
 else:
     json_data = None
-    print('Skipping JSON dataset')""",
-        "CELL_JSON_LOAD",
-    )
-)
+    print('Skipping JSON dataset')
+# ─── MODEL: LSTM on JSON (Greedy Adversarial) ────────────────────────
+MODEL = 'lstm'
+print(f'\n{"#"*80}')
+print(f'  GREEDY ADVERSARIAL — LSTM on JSON')
+print(f'{"#"*80}\n')
 
-# ═══════════════════════════════════════════════════════════════
-# MODEL CELLS: 6 models on JSON
-# ═══════════════════════════════════════════════════════════════
-for model_key, model_label in models_csv:
-    cells.append(
-        code_cell(
-            f"""# ─── MODEL: {model_label} on JSON (Greedy Adversarial) ────────────────────────
-MODEL = '{model_key}'
-print(f'\\n{{\"#\"*80}}')
-print(f'  GREEDY ADVERSARIAL — {model_label.upper()} on JSON')
-print(f'{{\"#\"*80}}\\n')
-
-log_memory(f'before_{{MODEL}}_json')
+log_memory(f'before_{MODEL}_json')
 
 if DATASETS in ['json', 'both']:
     data = load_dataset_from_drive('json')
@@ -1413,7 +1434,7 @@ if DATASETS in ['json', 'both']:
             batch_size=BATCH_SIZE,
             lr=LEARNING_RATE,
         )
-        log_memory(f'after_{{MODEL}}_json')
+        log_memory(f'after_{MODEL}_json')
         del data  # release numpy arrays from RAM
         try:
             del results
@@ -1425,19 +1446,225 @@ if DATASETS in ['json', 'both']:
 else:
     print('Skipping JSON dataset')
 
-print(f'\\n {model_label.upper()} on JSON DONE')""",
-            f"CELL_{model_key.upper()}_JSON",
+print(f'\n LSTM on JSON DONE')
+# ─── MODEL: BiLSTM on JSON (Greedy Adversarial) ────────────────────────
+MODEL = 'bilstm'
+print(f'\n{"#"*80}')
+print(f'  GREEDY ADVERSARIAL — BILSTM on JSON')
+print(f'{"#"*80}\n')
+
+log_memory(f'before_{MODEL}_json')
+
+if DATASETS in ['json', 'both']:
+    data = load_dataset_from_drive('json')
+    if data is not None:
+        results = train_model_greedy(
+            model_type=MODEL,
+            dataset_type='json',
+            data_dict=data,
+            batch_size=BATCH_SIZE,
+            lr=LEARNING_RATE,
         )
-    )
+        log_memory(f'after_{MODEL}_json')
+        del data  # release numpy arrays from RAM
+        try:
+            del results
+        except Exception:
+            pass
+        aggressive_cleanup()
+    else:
+        print('Failed to load JSON data')
+else:
+    print('Skipping JSON dataset')
 
-# ═══════════════════════════════════════════════════════════════
-# VISUALIZATION
-# ═══════════════════════════════════════════════════════════════
-cells.append(md_cell("# Phase 6 : Results Visualization & Comparison", "VIZ_MD"))
+print(f'\n BILSTM on JSON DONE')
+# ─── MODEL: CNN-LSTM on JSON (Greedy Adversarial) ────────────────────────
+MODEL = 'cnn_lstm'
+print(f'\n{"#"*80}')
+print(f'  GREEDY ADVERSARIAL — CNN-LSTM on JSON')
+print(f'{"#"*80}\n')
 
-cells.append(
-    code_cell(
-        """# ─── Cell: Visualize Results ─────────────────────────────────────────────
+log_memory(f'before_{MODEL}_json')
+
+if DATASETS in ['json', 'both']:
+    data = load_dataset_from_drive('json')
+    if data is not None:
+        results = train_model_greedy(
+            model_type=MODEL,
+            dataset_type='json',
+            data_dict=data,
+            batch_size=BATCH_SIZE,
+            lr=LEARNING_RATE,
+        )
+        log_memory(f'after_{MODEL}_json')
+        del data  # release numpy arrays from RAM
+        try:
+            del results
+        except Exception:
+            pass
+        aggressive_cleanup()
+    else:
+        print('Failed to load JSON data')
+else:
+    print('Skipping JSON dataset')
+
+print(f'\n CNN-LSTM on JSON DONE')
+# ─── MODEL: XGBoost-LSTM on JSON (Greedy Adversarial) ────────────────────────
+MODEL = 'xgboost_lstm'
+print(f'\n{"#"*80}')
+print(f'  GREEDY ADVERSARIAL — XGBOOST-LSTM on JSON')
+print(f'{"#"*80}\n')
+
+log_memory(f'before_{MODEL}_json')
+
+if DATASETS in ['json', 'both']:
+    data = load_dataset_from_drive('json')
+    if data is not None:
+        results = train_model_greedy(
+            model_type=MODEL,
+            dataset_type='json',
+            data_dict=data,
+            batch_size=BATCH_SIZE,
+            lr=LEARNING_RATE,
+        )
+        log_memory(f'after_{MODEL}_json')
+        del data  # release numpy arrays from RAM
+        try:
+            del results
+        except Exception:
+            pass
+        aggressive_cleanup()
+    else:
+        print('Failed to load JSON data')
+else:
+    print('Skipping JSON dataset')
+
+print(f'\n XGBOOST-LSTM on JSON DONE')
+# ─── MODEL: Transformer on JSON (Greedy Adversarial) ────────────────────────
+MODEL = 'transformer'
+print(f'\n{"#"*80}')
+print(f'  GREEDY ADVERSARIAL — TRANSFORMER on JSON')
+print(f'{"#"*80}\n')
+
+log_memory(f'before_{MODEL}_json')
+
+if DATASETS in ['json', 'both']:
+    data = load_dataset_from_drive('json')
+    if data is not None:
+        results = train_model_greedy(
+            model_type=MODEL,
+            dataset_type='json',
+            data_dict=data,
+            batch_size=BATCH_SIZE,
+            lr=LEARNING_RATE,
+        )
+        log_memory(f'after_{MODEL}_json')
+        del data  # release numpy arrays from RAM
+        try:
+            del results
+        except Exception:
+            pass
+        aggressive_cleanup()
+    else:
+        print('Failed to load JSON data')
+else:
+    print('Skipping JSON dataset')
+
+print(f'\n TRANSFORMER on JSON DONE')
+# ─── MODEL: CNN-BiLSTM-Transformer on JSON (Greedy Adversarial) ────────────────────────
+MODEL = 'cnn_bilstm_transformer'
+print(f'\n{"#"*80}')
+print(f'  GREEDY ADVERSARIAL — CNN-BILSTM-TRANSFORMER on JSON')
+print(f'{"#"*80}\n')
+
+log_memory(f'before_{MODEL}_json')
+
+if DATASETS in ['json', 'both']:
+    data = load_dataset_from_drive('json')
+    if data is not None:
+        results = train_model_greedy(
+            model_type=MODEL,
+            dataset_type='json',
+            data_dict=data,
+            batch_size=BATCH_SIZE,
+            lr=LEARNING_RATE,
+        )
+        log_memory(f'after_{MODEL}_json')
+        del data  # release numpy arrays from RAM
+        try:
+            del results
+        except Exception:
+            pass
+        aggressive_cleanup()
+    else:
+        print('Failed to load JSON data')
+else:
+    print('Skipping JSON dataset')
+
+print(f'\n CNN-BILSTM-TRANSFORMER on JSON DONE')
+# ─── MODEL: NLP-CNN-BiLSTM-Transformer on JSON (Greedy Adversarial) ────────────────────────
+MODEL = 'nlp_cnn_bilstm_transformer'
+print(f'\n{"#"*80}')
+print(f'  GREEDY ADVERSARIAL — NLP-CNN-BILSTM-TRANSFORMER on JSON')
+print(f'{"#"*80}\n')
+
+log_memory(f'before_{MODEL}_json')
+
+if DATASETS in ['json', 'both']:
+    data = load_dataset_from_drive('json')
+    if data is not None:
+        results = train_model_greedy(
+            model_type=MODEL,
+            dataset_type='json',
+            data_dict=data,
+            batch_size=BATCH_SIZE,
+            lr=LEARNING_RATE,
+        )
+        log_memory(f'after_{MODEL}_json')
+        del data  # release numpy arrays from RAM
+        try:
+            del results
+        except Exception:
+            pass
+        aggressive_cleanup()
+    else:
+        print('Failed to load JSON data')
+else:
+    print('Skipping JSON dataset')
+
+print(f'\n NLP-CNN-BILSTM-TRANSFORMER on JSON DONE')
+# ─── MODEL: NLP-Transformer on JSON (Greedy Adversarial) ────────────────────────
+MODEL = 'nlp_transformer'
+print(f'\n{"#"*80}')
+print(f'  GREEDY ADVERSARIAL — NLP-TRANSFORMER on JSON')
+print(f'{"#"*80}\n')
+
+log_memory(f'before_{MODEL}_json')
+
+if DATASETS in ['json', 'both']:
+    data = load_dataset_from_drive('json')
+    if data is not None:
+        results = train_model_greedy(
+            model_type=MODEL,
+            dataset_type='json',
+            data_dict=data,
+            batch_size=BATCH_SIZE,
+            lr=LEARNING_RATE,
+        )
+        log_memory(f'after_{MODEL}_json')
+        del data  # release numpy arrays from RAM
+        try:
+            del results
+        except Exception:
+            pass
+        aggressive_cleanup()
+    else:
+        print('Failed to load JSON data')
+else:
+    print('Skipping JSON dataset')
+
+print(f'\n NLP-TRANSFORMER on JSON DONE')
+# ─── Cell: Visualize Results ─────────────────────────────────────────────
 import json
 import matplotlib
 matplotlib.use('Agg')
@@ -1537,17 +1764,8 @@ else:
             ax.grid(alpha=0.3)
             ax.set_ylim(0, 1.05)
             plt.tight_layout()
-            plt.show()""",
-        "CELL_VIZ",
-    )
-)
-
-# ═══════════════════════════════════════════════════════════════
-# COMPARISON TABLE
-# ═══════════════════════════════════════════════════════════════
-cells.append(
-    code_cell(
-        """# ─── Cell: Comparative Summary Table ─────────────────────────────────────
+            plt.show()
+# ─── Cell: Comparative Summary Table ─────────────────────────────────────
 import json
 from pathlib import Path
 
@@ -1580,7 +1798,7 @@ else:
     print('-' * 80)
 
     # Crash test summary
-    print(f"\\n{'Model + Dataset':<40} {'Phase':>8} {'Clean':>8} {'k=1':>8} {'k=2':>8} {'k=3':>8} {'k=4':>8}")
+    print(f"\n{'Model + Dataset':<40} {'Phase':>8} {'Clean':>8} {'k=1':>8} {'k=2':>8} {'k=3':>8} {'k=4':>8}")
     print('-' * 100)
     for d in greedy_dirs:
         rf = d / 'greedy_results.json'
@@ -1600,17 +1818,8 @@ else:
             k4 = phase_data.get('adv_k4', 0)
             print(f"{name:<40} {phase_key:>8} {clean:>8.4f} {k1:>8.4f} {k2:>8.4f} {k3:>8.4f} {k4:>8.4f}")
     print('-' * 100)
-    print('\\n Comparison complete.')""",
-        "CELL_TABLE",
-    )
-)
-
-# ═══════════════════════════════════════════════════════════════
-# GIT PUSH
-# ═══════════════════════════════════════════════════════════════
-cells.append(
-    code_cell(
-        """# ─── Git Push ──────────────────────────────────────────────────────────────
+    print('\n Comparison complete.')
+# ─── Git Push ──────────────────────────────────────────────────────────────
 import subprocess
 
 print('Pushing to GitHub...')
@@ -1627,27 +1836,4 @@ result = subprocess.run(['git', 'push'], capture_output=True, text=True, cwd='/c
 if result.returncode == 0:
     print('  Push successful!')
 else:
-    print(f'  git push stderr: {result.stderr.strip()[:500]}')""",
-        "CELL_GIT",
-    )
-)
-
-# ═══════════════════════════════════════════════════════════════
-# BUILD NOTEBOOK
-# ═══════════════════════════════════════════════════════════════
-notebook = {
-    "nbformat": 4,
-    "nbformat_minor": 0,
-    "metadata": {
-        "colab": {"provenance": [], "gpuType": "L4", "machine_shape": "hm"},
-        "kernelspec": {"name": "python3", "display_name": "Python 3"},
-        "language_info": {"name": "python"},
-        "accelerator": "GPU",
-    },
-    "cells": cells,
-}
-
-with open("/home/pc/Desktop/pfe/greedy_new.ipynb", "w") as f:
-    json.dump(notebook, f, indent=1)
-
-print(f"Notebook written with {len(cells)} cells.")
+    print(f'  git push stderr: {result.stderr.strip()[:500]}')

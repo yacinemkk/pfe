@@ -101,9 +101,10 @@ class SensitivityAnalysis:
             mask = y_train == cls
             if np.sum(mask) > 0:
                 data = X_train[mask]
+                axes = (0, 1) if data.ndim == 3 else 0
                 stats[cls] = {
-                    "mean": np.mean(data, axis=0),
-                    "p95": np.percentile(data, 95, axis=0),
+                    "mean": np.mean(data, axis=axes),
+                    "p95": np.percentile(data, 95, axis=axes),
                 }
         return stats
 
