@@ -912,7 +912,7 @@ def train_model_greedy(
             mix_ratio=PHASE_A_MIX_RATIO, k_max=0,
             p_drop=0.0, sigma_noise=0.0, afd_lambda=0.0,
             simulator=None, device=device, lr=lr,
-            batch_size=batch_size, save_path=phase_a_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features
+            batch_size=batch_size, save_path=phase_a_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
     ct_a = crash_test_greedy(model, X_val, y_val, simulator=None, device=device, label='Phase A', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
@@ -952,7 +952,7 @@ def train_model_greedy(
             mix_ratio=PHASE_B_MIX_RATIO, k_max=PHASE_B_K_MAX,
             p_drop=0.1, sigma_noise=0.01, afd_lambda=0.5,
             simulator=simulator, device=device, lr=lr,
-            batch_size=batch_size, save_path=phase_b_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features
+            batch_size=batch_size, save_path=phase_b_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
     ct_b = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase B', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
@@ -976,7 +976,7 @@ def train_model_greedy(
             mix_ratio=PHASE_C_MIX_RATIO, k_max=PHASE_C_K_MAX,
             p_drop=0.2, sigma_noise=0.01, afd_lambda=1.0,
             simulator=simulator, device=device, lr=lr,
-            batch_size=batch_size, save_path=phase_c_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features
+            batch_size=batch_size, save_path=phase_c_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
     ct_c = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase C', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
@@ -1000,7 +1000,7 @@ def train_model_greedy(
             mix_ratio=PHASE_D_MIX_RATIO, k_max=PHASE_D_K_MAX,
             p_drop=0.2, sigma_noise=0.01, afd_lambda=0.0,
             simulator=simulator, device=device, lr=lr,
-            batch_size=batch_size, save_path=phase_d_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features is_nlp=is_nlp, tokenizer=tokenizer, features=features
+            batch_size=batch_size, save_path=phase_d_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
     ct_d = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase D', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
