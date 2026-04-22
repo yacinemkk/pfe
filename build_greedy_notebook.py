@@ -588,12 +588,6 @@ def train_greedy_phase(
                             X_clean_t = X_clean_t + torch.randn_like(X_clean_t) * sigma_noise
                             X_adv_t = X_adv_t + torch.randn_like(X_adv_t) * sigma_noise
                             
-                        if batch_idx == 0:
-                            import sys
-                            print(f"\\n  [VERBOSE] X_clean_t shape: {X_clean_t.shape}, dtype: {X_clean_t.dtype}", file=sys.stderr)
-                            print(f"  [VERBOSE] Model type: {type(model)}", file=sys.stderr)
-                            sys.stderr.flush()
-                        
                         logits_clean = model(X_clean_t)
                         logits_adv = model(X_adv_t)
                         
@@ -612,11 +606,6 @@ def train_greedy_phase(
                             X_input = X_input * mask / (1.0 - p_drop)
                         if sigma_noise > 0:
                             X_input = X_input + torch.randn_like(X_input) * sigma_noise
-                        
-                        if batch_idx == 0:
-                            import sys
-                            print(f"\\n  [VERBOSE] X_input shape: {X_input.shape}, dtype: {X_input.dtype}", file=sys.stderr)
-                            sys.stderr.flush()
                         
                         logits = model(X_input)
                         loss = criterion(logits, y_input)
