@@ -126,9 +126,9 @@ PHASE_B_MIX_RATIO = 0.30
 PHASE_C_MIX_RATIO = 0.70
 PHASE_B_K_MAX = 2
 PHASE_C_K_MAX = 4
-PHASE_D_EPOCHS = 65
-PHASE_D_MIX_RATIO = 1.0
-PHASE_D_K_MAX = 5
+PHASE_D_EPOCHS = 80           # +15 epochs vs avant (65→80)
+PHASE_D_MIX_RATIO = 0.85     # 85% adv (au lieu de 100%) — évite l'effondrement clean
+PHASE_D_K_MAX = 4             # k=4 comme Phase C — k=5 était contre-productif
 
 GREEDY_STRATEGIES = ['Zero', 'Mimic_Mean', 'Mimic_95th', 'Padding_x10']
 
@@ -552,6 +552,7 @@ def train_greedy_phase(
     print(f"{'='*60}")
 
     best_val_acc = 0.0
+    best_combined = 0.0   # score = 0.4*clean + 0.6*adv (phases adv seulement)
     best_epoch = start_epoch
 
     label_sm_map = {'A': 0.05, 'B': 0.08, 'C': 0.10}
@@ -701,8 +702,19 @@ def train_greedy_phase(
               f"Loss={train_loss:.4f} TrainAcc={train_acc:.4f} "
               f"CleanAcc={val_clean_acc:.4f} AdvAcc={val_adv_acc:.4f}")
 
-        if val_clean_acc > best_val_acc:
+        # Phase A : sélection sur clean seulement (pas encore d'attaques)
+        # Phases B/C/D : score combiné → favorise la robustesse adversariale
+        if phase == 'A':
+            selection_score = val_clean_acc
+            is_better = val_clean_acc > best_val_acc
+        else:
+            # 0.4 clean + 0.6 adv : on cherche ~85% adv sans effondrer le clean
+            selection_score = 0.4 * val_clean_acc + 0.6 * val_adv_acc
+            is_better = selection_score > best_combined
+
+        if is_better:
             best_val_acc = val_clean_acc
+            best_combined = selection_score
             best_epoch = epoch
             if save_path:
                 torch.save({
@@ -711,9 +723,14 @@ def train_greedy_phase(
                     'val_clean_acc': val_clean_acc,
                     'val_adv_acc': val_adv_acc,
                     'phase': phase,
+                    'combined_score': selection_score,
                 }, save_path)
 
-    print(f"  Best epoch: {best_epoch} | Best val clean acc: {best_val_acc:.4f}")
+    if phase == 'A':
+        print(f"  Best epoch: {best_epoch} | Best val clean acc: {best_val_acc:.4f}")
+    else:
+        print(f"  Best epoch: {best_epoch} | Best combined score: {best_combined:.4f} "
+              f"(clean={best_val_acc:.4f}, adv tracked per-epoch)")
     return model
 
 
