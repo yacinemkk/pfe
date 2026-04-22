@@ -438,7 +438,7 @@ def train_greedy_phase(
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
                               num_workers=0, pin_memory=False)
 
-    phase_names = {'A': 'Fondation (clean only)', 'B': 'Introduction (30% adv, k_max=2)', 'C': 'Principal (70% adv, k_max=4)', 'D': 'Consolidation Extreme (100% adv, k_max=5)'}
+    phase_names = {'A': 'Fondation (clean only)', 'B': 'Introduction (30% adv, k_max=2)', 'C': 'Principal (70% adv, k_max=4)', 'D': 'Consolidation (85% adv, k_max=4, epochs 51-80)'}
     print(f"\n{'='*60}")
     print(f"  PHASE {phase} — epochs {start_epoch}-{end_epoch}")
     print(f"  {phase_names.get(phase, '')}")
