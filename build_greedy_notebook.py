@@ -661,7 +661,6 @@ def train_greedy_phase(
             val_adv_acc_k = {}
             if simulator is not None and k_max > 0:
                 n_eval = min(EVAL_SUBSAMPLE, len(X_val))
-                import numpy as np
                 np.random.seed(42)
                 torch.manual_seed(42)
                 for k_val in range(1, k_max + 1):
