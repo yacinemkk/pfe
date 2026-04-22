@@ -127,7 +127,7 @@ PHASE_C_MIX_RATIO = 0.70
 PHASE_B_K_MAX = 2
 PHASE_C_K_MAX = 4
 PHASE_D_EPOCHS = 80           # +15 epochs vs avant (65→80)
-PHASE_D_MIX_RATIO = 0.85     # 85% adv (au lieu de 100%) — évite l'effondrement clean
+PHASE_D_MIX_RATIO = 0.80     # 80% adv avec ancrage afd_lambda
 PHASE_D_K_MAX = 4             # k=4 comme Phase C — k=5 était contre-productif
 
 GREEDY_STRATEGIES = ['Zero', 'Mimic_Mean', 'Mimic_95th', 'Padding_x10']
@@ -530,7 +530,7 @@ def train_greedy_phase(
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.MultiStepLR(
-        optimizer, milestones=[15, 30], gamma=0.5
+        optimizer, milestones=[15, 30, 50, 65], gamma=0.5
     )
     use_amp = USE_AMP and device.type == 'cuda'
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
@@ -631,22 +631,7 @@ def train_greedy_phase(
                     if sigma_noise > 0:
                         X_input = X_input + torch.randn_like(X_input) * sigma_noise
                     
-                    if batch_idx == 0:
-                        import sys
-                        print(f"\\n  [VERBOSE] X_batch shape: {X_batch.shape}, X_input shape: {X_input.shape}, dtype: {X_input.dtype}", file=sys.stderr)
-                        try:
-                            # In case it's CNNBiLSTMTransformerClassifier
-                            if hasattr(model, 'cnn_branch1'):
-                                print(f"  [VERBOSE] cnn_ch: {model.cnn_branch1[0].out_channels}", file=sys.stderr)
-                                xt = X_input.permute(0, 2, 1)
-                                b1 = model.cnn_branch1(xt)
-                                b2 = model.cnn_branch2(xt)
-                                fused = torch.cat([b1, b2], dim=1).permute(0, 2, 1).contiguous()
-                                print(f"  [VERBOSE] fused shape: {fused.shape}", file=sys.stderr)
-                                print(f"  [VERBOSE] bilstm expects input_size: {model.bilstm.input_size}", file=sys.stderr)
-                        except Exception as e:
-                            print("  [VERBOSE] Debug print exception:", e, file=sys.stderr)
-                        sys.stderr.flush()
+
                     
                     logits = model(X_input)
                     loss = criterion(logits, y_input)
@@ -684,23 +669,30 @@ def train_greedy_phase(
             val_clean_acc = val_correct / val_total
 
             val_adv_acc = 0.0
+            val_adv_acc_k = {}
             if simulator is not None and k_max > 0:
-                val_adv_correct = 0
                 n_eval = min(EVAL_SUBSAMPLE, len(X_val))
-                for i in range(0, n_eval, batch_size):
-                    end = min(i + batch_size, n_eval)
-                    X_adv_np = simulator.generate_greedy(X_val[i:end], k=k_max)
-                    if is_nlp:
-                        X_adv_t = torch.LongTensor(tokenizer.transform(X_adv_np, features)).to(device)
-                    else:
-                        X_adv_t = torch.FloatTensor(X_adv_np).to(device)
-                    y_sub = torch.LongTensor(y_val[i:end]).to(device)
-                    val_adv_correct += (model(X_adv_t).argmax(1) == y_sub).sum().item()
-                val_adv_acc = val_adv_correct / n_eval
+                import numpy as np
+                np.random.seed(42)
+                torch.manual_seed(42)
+                for k_val in range(1, k_max + 1):
+                    val_adv_correct = 0
+                    for i in range(0, n_eval, batch_size):
+                        end = min(i + batch_size, n_eval)
+                        X_adv_np = simulator.generate_greedy(X_val[i:end], k=k_val)
+                        if is_nlp:
+                            X_adv_t = torch.LongTensor(tokenizer.transform(X_adv_np, features)).to(device)
+                        else:
+                            X_adv_t = torch.FloatTensor(X_adv_np).to(device)
+                        y_sub = torch.LongTensor(y_val[i:end]).to(device)
+                        val_adv_correct += (model(X_adv_t).argmax(1) == y_sub).sum().item()
+                    val_adv_acc_k[k_val] = val_adv_correct / n_eval
+                val_adv_acc = val_adv_acc_k[k_max]
 
+        adv_str = " ".join([f"k{k}={acc:.4f}" for k, acc in val_adv_acc_k.items()]) if simulator else ""
         print(f"  Epoch {epoch:3d}/{end_epoch} [Ph{phase}] "
               f"Loss={train_loss:.4f} TrainAcc={train_acc:.4f} "
-              f"CleanAcc={val_clean_acc:.4f} AdvAcc={val_adv_acc:.4f}")
+              f"CleanAcc={val_clean_acc:.4f} AdvAcc={val_adv_acc:.4f}  {adv_str}")
 
         # Phase A : sélection sur clean seulement (pas encore d'attaques)
         # Phases B/C/D : score combiné → favorise la robustesse adversariale
@@ -1154,7 +1146,7 @@ def train_model_greedy(
             model, X_train, y_train, X_val, y_val,
             phase='D', start_epoch=PHASE_C_EPOCHS + 1, end_epoch=PHASE_D_EPOCHS,
             mix_ratio=PHASE_D_MIX_RATIO, k_max=PHASE_D_K_MAX,
-            p_drop=0.2, sigma_noise=0.01, afd_lambda=0.0,
+            p_drop=0.2, sigma_noise=0.01, afd_lambda=0.5,
             simulator=simulator, device=device, lr=lr,
             batch_size=batch_size, save_path=phase_d_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
