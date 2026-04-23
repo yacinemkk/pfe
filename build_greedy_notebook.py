@@ -584,6 +584,21 @@ def train_greedy_phase(
     best_val_acc = 0.0
     best_combined = 0.0   # score = 0.4*clean + 0.6*adv (phases adv seulement)
     best_epoch = start_epoch
+    
+    epoch_dir = save_path.replace('.pt', '_epochs') if save_path else None
+    if epoch_dir and os.path.exists(epoch_dir):
+        saved_files = [f for f in os.listdir(epoch_dir) if f.startswith('epoch_') and f.endswith('.pt')]
+        if saved_files:
+            epochs_present = [int(f.replace('epoch_', '').replace('.pt', '')) for f in saved_files]
+            last_saved = max(epochs_present)
+            if start_epoch <= last_saved < end_epoch:
+                print(f"  [Resumption] Reprise de l'entraînement à partir de l'époque {last_saved+1}...")
+                ckpt = torch.load(f"{epoch_dir}/epoch_{last_saved}.pt", map_location=device)
+                model.load_state_dict(ckpt['model_state_dict'])
+                best_val_acc = ckpt.get('best_val_acc', 0.0)
+                best_combined = ckpt.get('best_combined', 0.0)
+                best_epoch = ckpt.get('best_epoch', start_epoch)
+                start_epoch = last_saved + 1
 
     label_sm_map = {'A': 0.05, 'B': 0.08, 'C': 0.10}
     label_sm = label_sm_map.get(phase, 0.05)
@@ -744,6 +759,9 @@ def train_greedy_phase(
                 'model_state_dict': model.state_dict(),
                 'val_clean_acc': val_clean_acc,
                 'val_adv_acc': val_adv_acc,
+                'best_val_acc': best_val_acc,
+                'best_combined': best_combined,
+                'best_epoch': best_epoch,
             }, f"{epoch_dir}/epoch_{epoch}.pt")
 
     if phase == 'A':
@@ -1046,7 +1064,11 @@ def train_model_greedy(
 
     needs_train_a = not os.path.exists(phase_a_path)
     if not needs_train_a:
-        print(f"\\n  Phase A model found in Drive. Loading...")
+        if not os.path.exists(f"{phase_a_path.replace('.pt', '_epochs')}/epoch_{PHASE_A_EPOCHS}.pt"):
+            needs_train_a = True
+            
+    if not needs_train_a:
+        print(f"\n  Phase A model found in Drive. Loading...")
         ckpt = torch.load(phase_a_path, map_location=device)
         try:
             model.load_state_dict(ckpt['model_state_dict'])
@@ -1077,7 +1099,7 @@ def train_model_greedy(
     feature_names = features if features else [f'f{i}' for i in range(input_size)]
 
     if os.path.exists(sens_csv_path):
-        print(f"\\n  Sensitivity results found in Drive. Loading...")
+        print(f"\n  Sensitivity results found in Drive. Loading...")
         sensitivity = load_sensitivity_results(sens_csv_path, feature_names)
     else:
         run_sensitivity_analysis(
@@ -1094,7 +1116,11 @@ def train_model_greedy(
 
     needs_train_b = not os.path.exists(phase_b_path)
     if not needs_train_b:
-        print(f"\\n  Phase B model found in Drive. Loading...")
+        if not os.path.exists(f"{phase_b_path.replace('.pt', '_epochs')}/epoch_{PHASE_B_EPOCHS}.pt"):
+            needs_train_b = True
+            
+    if not needs_train_b:
+        print(f"\n  Phase B model found in Drive. Loading...")
         ckpt = torch.load(phase_b_path, map_location=device)
         try:
             model.load_state_dict(ckpt['model_state_dict'])
@@ -1142,7 +1168,11 @@ def train_model_greedy(
 
     needs_train_c = not os.path.exists(phase_c_path)
     if not needs_train_c:
-        print(f"\\n  Phase C model found in Drive. Loading...")
+        if not os.path.exists(f"{phase_c_path.replace('.pt', '_epochs')}/epoch_{PHASE_C_EPOCHS}.pt"):
+            needs_train_c = True
+            
+    if not needs_train_c:
+        print(f"\n  Phase C model found in Drive. Loading...")
         ckpt = torch.load(phase_c_path, map_location=device)
         try:
             model.load_state_dict(ckpt['model_state_dict'])
@@ -1189,7 +1219,11 @@ def train_model_greedy(
 
     needs_train_d = not os.path.exists(phase_d_path)
     if not needs_train_d:
-        print(f"\\n  Phase D model found in Drive. Loading...")
+        if not os.path.exists(f"{phase_d_path.replace('.pt', '_epochs')}/epoch_{PHASE_D_EPOCHS}.pt"):
+            needs_train_d = True
+            
+    if not needs_train_d:
+        print(f"\n  Phase D model found in Drive. Loading...")
         ckpt = torch.load(phase_d_path, map_location=device)
         try:
             model.load_state_dict(ckpt['model_state_dict'])
