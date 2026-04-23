@@ -118,16 +118,16 @@ CNN_BILSTM_TRANSFORMER_OVERRIDE = {
 }
 
 # Greedy adversarial training phases
-PHASE_A_EPOCHS = 8
-PHASE_B_EPOCHS = 15
-PHASE_C_EPOCHS = 25
+PHASE_A_EPOCHS = 15
+PHASE_B_EPOCHS = 25
+PHASE_C_EPOCHS = 35
 PHASE_A_MIX_RATIO = 0.0
 PHASE_B_MIX_RATIO = 0.3
 PHASE_C_MIX_RATIO = 0.7
 PHASE_B_K_MAX = 2
 PHASE_C_K_MAX = 4
 
-PHASE_D_EPOCHS = 40           # +15 epochs vs avant (25→40)
+PHASE_D_EPOCHS = 50           # Curriculum optimisé 50 époques
 PHASE_D_MIX_RATIO = 0.80     # 80% adv avec ancrage afd_lambda
 PHASE_D_K_MAX = 4             # k=4 comme Phase C — k=5 était contre-productif
 
@@ -561,7 +561,7 @@ def train_greedy_phase(
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.MultiStepLR(
-        optimizer, milestones=[8, 15, 25, 32], gamma=0.5
+        optimizer, milestones=[15, 25, 35, 42], gamma=0.5
     )
     use_amp = USE_AMP and device.type == 'cuda'
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
