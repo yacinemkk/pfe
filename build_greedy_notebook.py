@@ -420,7 +420,26 @@ class GreedyAttackSimulator:
     def __init__(self, sensitivity_results, feature_stats):
         self.results = sensitivity_results
         self.stats = feature_stats
-        self.top_pairs = [(fi, st) for fi, st, _ in sensitivity_results]
+        
+        self.feature_pool = {}
+        self.feature_weights = {}
+        
+        for fi, st, drop in sensitivity_results:
+            if drop > 0:
+                if fi not in self.feature_pool:
+                    self.feature_pool[fi] = []
+                    self.feature_weights[fi] = drop
+                self.feature_pool[fi].append(st)
+                
+        self.available_features = list(self.feature_pool.keys())
+        if len(self.available_features) > 0:
+            weights = np.array([self.feature_weights[f] for f in self.available_features])
+            if weights.sum() > 0:
+                self.sampling_probs = weights / weights.sum()
+            else:
+                self.sampling_probs = np.ones(len(weights)) / len(weights)
+        else:
+            self.sampling_probs = np.array([])
 
     @classmethod
     def compute_feature_stats(cls, X_train):
@@ -449,8 +468,17 @@ class GreedyAttackSimulator:
 
     def generate_greedy(self, X, k):
         X_adv = X.copy()
-        for feat_idx, strategy in self.top_pairs[:k]:
+        n_avail = len(self.available_features)
+        if n_avail == 0:
+            return X_adv
+            
+        k_actual = min(k, n_avail)
+        chosen_features = np.random.choice(self.available_features, size=k_actual, replace=False, p=self.sampling_probs)
+        
+        for feat_idx in chosen_features:
+            strategy = np.random.choice(self.feature_pool[feat_idx])
             X_adv = self.apply_strategy(X_adv, feat_idx, strategy)
+            
         return X_adv
 
     def generate_training_batch(self, X, k_max=4, mix_ratio=0.5):
@@ -1076,6 +1104,21 @@ def train_model_greedy(
     ct_b = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase B', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
     all_crash_results['phase_b'] = ct_b
 
+    # ─── Sensitivity Analysis (after Phase B) ─────────────────────────────
+    sens_csv_path_b = f'{save_dir}/sensitivity_results_phase_b.csv'
+    if os.path.exists(sens_csv_path_b):
+        print(f"\n  Sensitivity results (Phase B) found in Drive. Loading...")
+        sensitivity_b = load_sensitivity_results(sens_csv_path_b, feature_names)
+    else:
+        # Prevent "import numpy as np" shadow issues inside inner functions by running cleaner sa
+        run_sensitivity_analysis(
+            model, X_val, y_val, feature_names, num_classes,
+            n_continuous, sens_csv_path_b, device=device,
+        )
+        sensitivity_b = load_sensitivity_results(sens_csv_path_b, feature_names)
+
+    simulator_c = GreedyAttackSimulator(sensitivity_b, feature_stats)
+
     # ─── PHASE C (epochs 31-50): 70% adversarial, k_max=4 ─────────────────
     phase_c_path = f'{save_dir}/phase_c_model.pt'
 
@@ -1102,12 +1145,26 @@ def train_model_greedy(
             phase='C', start_epoch=PHASE_B_EPOCHS + 1, end_epoch=PHASE_C_EPOCHS,
             mix_ratio=PHASE_C_MIX_RATIO, k_max=PHASE_C_K_MAX,
             p_drop=0.2, sigma_noise=0.01, afd_lambda=1.0,
-            simulator=simulator, device=device, lr=lr,
+            simulator=simulator_c, device=device, lr=lr,
             batch_size=batch_size, save_path=phase_c_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
-    ct_c = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase C', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
+    ct_c = crash_test_greedy(model, X_val, y_val, simulator=simulator_c, device=device, label='Phase C', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
     all_crash_results['phase_c'] = ct_c
+
+    # ─── Sensitivity Analysis (after Phase C) ─────────────────────────────
+    sens_csv_path_c = f'{save_dir}/sensitivity_results_phase_c.csv'
+    if os.path.exists(sens_csv_path_c):
+        print(f"\n  Sensitivity results (Phase C) found in Drive. Loading...")
+        sensitivity_c = load_sensitivity_results(sens_csv_path_c, feature_names)
+    else:
+        run_sensitivity_analysis(
+            model, X_val, y_val, feature_names, num_classes,
+            n_continuous, sens_csv_path_c, device=device,
+        )
+        sensitivity_c = load_sensitivity_results(sens_csv_path_c, feature_names)
+
+    simulator_d = GreedyAttackSimulator(sensitivity_c, feature_stats)
 
     # ─── PHASE D (epochs 51-65): 95% adversarial, k_max=4 ─────────────────
     phase_d_path = f'{save_dir}/phase_d_model.pt'
@@ -1135,11 +1192,11 @@ def train_model_greedy(
             phase='D', start_epoch=PHASE_C_EPOCHS + 1, end_epoch=PHASE_D_EPOCHS,
             mix_ratio=PHASE_D_MIX_RATIO, k_max=PHASE_D_K_MAX,
             p_drop=0.2, sigma_noise=0.01, afd_lambda=0.5,
-            simulator=simulator, device=device, lr=lr,
+            simulator=simulator_d, device=device, lr=lr,
             batch_size=batch_size, save_path=phase_d_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
-    ct_d = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase D', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
+    ct_d = crash_test_greedy(model, X_val, y_val, simulator=simulator_d, device=device, label='Phase D', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
     all_crash_results['phase_d'] = ct_d
 
     # ─── PHASE E: Discriminator ──────────────────────────────────────────
