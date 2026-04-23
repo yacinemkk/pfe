@@ -735,12 +735,28 @@ def train_greedy_phase(
                     'phase': phase,
                     'combined_score': selection_score,
                 }, save_path)
+            
+        if save_path:
+            epoch_dir = save_path.replace('.pt', '_epochs')
+            os.makedirs(epoch_dir, exist_ok=True)
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'val_clean_acc': val_clean_acc,
+                'val_adv_acc': val_adv_acc,
+            }, f"{epoch_dir}/epoch_{epoch}.pt")
 
     if phase == 'A':
         print(f"  Best epoch: {best_epoch} | Best val clean acc: {best_val_acc:.4f}")
     else:
         print(f"  Best epoch: {best_epoch} | Best combined score: {best_combined:.4f} "
               f"(clean={best_val_acc:.4f}, adv tracked per-epoch)")
+              
+    if save_path and os.path.exists(save_path):
+        print(f"  Reloading best weights from epoch {best_epoch} to pass to next phase...")
+        ckpt = torch.load(save_path, map_location=device)
+        model.load_state_dict(ckpt['model_state_dict'])
+        
     return model
 
 
