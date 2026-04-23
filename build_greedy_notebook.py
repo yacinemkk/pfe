@@ -423,13 +423,15 @@ class GreedyAttackSimulator:
         
         self.feature_pool = {}
         self.feature_weights = {}
+        epsilon = 0.05  # Exploratory minimum probability
         
         for fi, st, drop in sensitivity_results:
-            if drop > 0:
-                if fi not in self.feature_pool:
-                    self.feature_pool[fi] = []
-                    self.feature_weights[fi] = drop
-                self.feature_pool[fi].append(st)
+            if fi not in self.feature_pool:
+                self.feature_pool[fi] = []
+                self.feature_weights[fi] = max(0.0, drop) + epsilon
+            
+            # Maintain a pool of valid strategies even if drop <= 0, we keep them for exploratory testing
+            self.feature_pool[fi].append(st)
                 
         self.available_features = list(self.feature_pool.keys())
         if len(self.available_features) > 0:
