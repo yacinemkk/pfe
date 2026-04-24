@@ -294,12 +294,6 @@ from src.models.cnn_lstm import CNNLSTMClassifier
 from src.models.xgboost_lstm import XGBoostLSTMClassifier
 from src.models.transformer import TransformerClassifier
 from src.models.cnn_bilstm_transformer import CNNBiLSTMTransformerClassifier
-from src.models.transformer import NLPTransformerClassifier
-from src.data.tokenizer import create_tokenizer
-from src.models.transformer import NLPTransformerClassifier
-from src.data.tokenizer import create_tokenizer
-from src.models.transformer import NLPTransformerClassifier
-from src.data.tokenizer import create_tokenizer
 from src.training.trainer import IoTSequenceDataset
 from src.adversarial.robust_losses import AFDLoss
 
@@ -433,8 +427,6 @@ def create_model(model_type, input_size, num_classes):
                                               config=CNN_BILSTM_TRANSFORMER_OVERRIDE)
     elif model_type == 'nlp_cnn_bilstm_transformer':
         return CNNBiLSTMTransformerClassifier(input_size=128, num_classes=num_classes, seq_length=576, vocab_size=52000, config=CNN_BILSTM_TRANSFORMER_OVERRIDE)
-    elif model_type == 'nlp_transformer':
-        return NLPTransformerClassifier(vocab_size=52000, num_classes=num_classes, max_seq_length=576, pad_token_id=2)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
