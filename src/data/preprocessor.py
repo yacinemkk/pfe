@@ -20,10 +20,8 @@ Etape 3: Selection hybride des caracteristiques
   - Test du Chi-carre (Chi2) pour pertinence statistique
   - Information Mutuelle pour dependances non lineaires
 
-Etape 4: Normalisation (Min-Max uniquement)
-  - Min-Max Scaling (0-1)
-  - NOTE: Pas de standardisation après Min-Max (redondant)
-
+Etape 4: Normalisation (StandardScaler)
+  - StandardScaler (moyenne=0, ecart-type=1)
 Anti-Leakage Temporal Split (docs/general):
   1. Group flows by device label
   2. Sort each group chronologically by 'start' timestamp
@@ -35,7 +33,7 @@ Anti-Leakage Temporal Split (docs/general):
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from sklearn.preprocessing import StandardScaler, MinMaxScaler, LabelEncoder
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.feature_selection import chi2, mutual_info_classif
 from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
@@ -85,7 +83,7 @@ class IoTDataProcessor:
     """
 
     def __init__(self):
-        self.minmax_scaler = MinMaxScaler(feature_range=(0, 1))
+        self.standard_scaler = StandardScaler()
         self.scaler = None
         self.label_encoder = LabelEncoder()
         self.feature_names = None
@@ -596,24 +594,24 @@ class IoTDataProcessor:
             X_val_cont_selected = X_val_cont_raw
             X_test_cont_selected = X_test_cont_raw
 
-        # ─── Etape 4: Normalisation (Min-Max uniquement) ───────────────────────
+        # ─── Etape 4: Normalisation (StandardScaler) ───────────────────────
         # IMPORTANT: Categorical features (ipProto) are NOT scaled.
         # They remain as raw integers for the BPE tokenizer to convert to
         # human-readable labels (tcp, udp, icmp, etc.).
         print(
-            "\n[ETAPE 4] Normalisation Min-Max (fit sur train only, continuous only)..."
+            "\n[ETAPE 4] Normalisation StandardScaler (fit sur train only, continuous only)..."
         )
-        print("  4.1 Min-Max Scaling (0-1) — continuous features only...")
-        X_train_cont_scaled = self.minmax_scaler.fit_transform(
+        print("  4.1 Standardisation (moyenne=0, variance=1) — continuous features only...")
+        X_train_cont_scaled = self.standard_scaler.fit_transform(
             X_train_cont_selected
         ).astype(np.float32)
-        self.scaler = self.minmax_scaler
+        self.scaler = self.standard_scaler
         X_val_cont_scaled = (
-            self.minmax_scaler.transform(X_val_cont_selected).astype(np.float32)
+            self.standard_scaler.transform(X_val_cont_selected).astype(np.float32)
             if X_val_cont_selected is not None
             else None
         )
-        X_test_cont_scaled = self.minmax_scaler.transform(X_test_cont_selected).astype(
+        X_test_cont_scaled = self.standard_scaler.transform(X_test_cont_selected).astype(
             np.float32
         )
 
@@ -669,7 +667,7 @@ class IoTDataProcessor:
             with open(save_path / "preprocessor.pkl", "wb") as f:
                 pickle.dump(
                     {
-                        "minmax_scaler": self.minmax_scaler,
+                        "standard_scaler": self.standard_scaler,
                         "scaler": self.scaler,
                         "label_encoder": self.label_encoder,
                         "feature_names": self.feature_names,

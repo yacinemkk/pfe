@@ -92,15 +92,8 @@ class CNNBiLSTMTransformerClassifier(nn.Module):
         input_size: int,
         num_classes: int,
         seq_length: int = 10,
-        vocab_size: int = None,
-        padding_idx: int = 2,
-        config: dict = None,
     ):
         super().__init__()
-        
-        self.vocab_size = vocab_size
-        if vocab_size is not None and vocab_size > 0:
-            self.embedding = nn.Embedding(vocab_size, input_size, padding_idx=padding_idx)
 
         cfg = {**DEFAULT_CONFIG, **(CNN_BILSTM_TRANSFORMER_CONFIG or {}), **(config or {})}
 
@@ -188,13 +181,10 @@ class CNNBiLSTMTransformerClassifier(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x: (batch, seq_len, input_size) OR (batch, seq_len) if vocab_size > 0
+            x: (batch, seq_len, input_size)
         Returns:
             logits: (batch, num_classes)
         """
-        if self.vocab_size is not None and self.vocab_size > 0:
-            if x.dtype in [torch.long, torch.int, torch.int32, torch.int64]:
-                x = self.embedding(x)
 
         # ── CNN: permute to (B, input_size, seq_len) ──────────────────────
         x_t = x.permute(0, 2, 1)                 # (B, C_in, T)
@@ -242,12 +232,7 @@ if __name__ == "__main__":
     print(f"JSON → input {x_json.shape}  output {out_json.shape}")
     assert out_json.shape == (4, 17), f"Expected (4,17), got {out_json.shape}"
 
-    # NLP test: BPE tokens
-    model_nlp = CNNBiLSTMTransformerClassifier(input_size=128, num_classes=17, seq_length=10, vocab_size=52000)
-    x_nlp = torch.randint(0, 1000, (4, 10))
-    out_nlp = model_nlp(x_nlp)
-    print(f"NLP  → input {x_nlp.shape}  output {out_nlp.shape}")
-    assert out_nlp.shape == (4, 17), f"Expected (4,17), got {out_nlp.shape}"
+
 
     total = sum(p.numel() for p in model_json.parameters())
     print(f"Parameters: {total:,}")

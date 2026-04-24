@@ -13,7 +13,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from typing import Optional, List, Tuple
-from sklearn.preprocessing import StandardScaler, MinMaxScaler, LabelEncoder
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
 from imblearn.over_sampling import BorderlineSMOTE
@@ -30,7 +30,6 @@ class Preprocessor:
         with open(config_path, "r") as f:
             self.config = yaml.safe_load(f)
 
-        self.minmax_scaler = MinMaxScaler(feature_range=(0, 1))
         self.scaler = StandardScaler()
         self.label_encoder = LabelEncoder()
         self.feature_names: Optional[List[str]] = None
@@ -255,21 +254,19 @@ class Preprocessor:
         verbose: bool = True,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Etape 1.5: Normalisation Min-Max uniquement.
+        Etape 1.5: Normalisation StandardScaler.
 
         IMPORTANT: Calculer les paramètres UNIQUEMENT sur train,
         appliquer sur train ET test.
-
-        NOTE: Pas de standardisation après Min-Max (redondant).
         """
         if verbose:
-            print("  Min-Max Scaling (0-1)...")
+            print("  StandardScaler (moyenne=0, variance=1)...")
 
         if fit:
-            X_train_scaled = self.minmax_scaler.fit_transform(X_train)
+            X_train_scaled = self.scaler.fit_transform(X_train)
         else:
-            X_train_scaled = self.minmax_scaler.transform(X_train)
-        X_test_scaled = self.minmax_scaler.transform(X_test)
+            X_train_scaled = self.scaler.transform(X_train)
+        X_test_scaled = self.scaler.transform(X_test)
 
         return X_train_scaled.astype(np.float32), X_test_scaled.astype(np.float32)
 

@@ -20,9 +20,8 @@ Etape 3: Selection hybride des caracteristiques
   - Test du Chi-carre (Chi2) pour pertinence statistique
   - Information Mutuelle pour dependances non lineaires
 
-Etape 4: Normalisation et standardisation
-  - Min-Max Scaling (0-1)
-  - Standardisation (moyenne=0, ecart-type=1)
+Etape 4: Normalisation (StandardScaler)
+  - StandardScaler (moyenne=0, ecart-type=1)
 
 17 classes cibles (IPFIX Records):
   Qrio Hub, Philips Hue Light Bulb, Planex Pan–Tilt Camera 1, JVC Kenwood Camera,
@@ -36,7 +35,7 @@ import json
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from sklearn.preprocessing import StandardScaler, MinMaxScaler, LabelEncoder
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.feature_selection import chi2, mutual_info_classif
 from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
@@ -298,13 +297,13 @@ class JsonIoTDataProcessor:
     Etape 1: Filtrage SDN - supprimer IP/ports, garder caracteristiques statistiques
     Etape 2: Equilibrage (Borderline-SMOTE) + Filtrage bruit (Isolation Forest, LOF)
     Etape 3: Selection hybride des caracteristiques (XGBoost, Chi2, MI)
-    Etape 4: Normalisation (MinMax ONLY per docs/pretraitement)
+    Etape 4: Normalisation (StandardScaler per docs/pretraitement)
 
     17 classes cibles pour IPFIX Records.
     """
 
     def __init__(self):
-        self.minmax_scaler = MinMaxScaler(feature_range=(0, 1))
+        self.standard_scaler = StandardScaler()
         self.label_encoder = LabelEncoder()
         self.feature_names = None
         self.selected_feature_indices = None
@@ -711,7 +710,7 @@ class JsonIoTDataProcessor:
         Etape 1: Filtrage SDN (supprimer IP/ports, garder caracteristiques statistiques)
         Etape 2: Equilibrage (Borderline-SMOTE) + Filtrage bruit (Isolation Forest, LOF)
         Etape 3: Selection hybride des caracteristiques (XGBoost, Chi2, MI)
-        Etape 4: Normalisation (MinMax) puis Standardisation
+        Etape 4: Normalisation Standardisation
 
         Anti-leakage:
         - Per-device temporal 80/20 split
@@ -863,21 +862,20 @@ class JsonIoTDataProcessor:
         del X_train_combined, X_val_combined, X_test_combined, X_train_balanced
         gc.collect()
 
-        # ─── Etape 4: Normalisation (Min-Max ONLY per docs/pretraitement) ─────
+        # ─── Etape 4: Normalisation (StandardScaler per docs/pretraitement) ─────
         # IMPORTANT: Categorical features (protocolIdentifier) are NOT scaled.
         # They remain as raw integers for the BPE tokenizer to convert to
         # human-readable labels (tcp, udp, icmp, etc.).
-        # Per docs/pretraitement: Min-Max ONLY. NO StandardScaler after Min-Max.
         print(
-            "\n[ETAPE 4] Min-Max Scaling (0-1) — continuous features only (fit sur train only)..."
+            "\n[ETAPE 4] StandardScaler (moyenne=0, variance=1) — continuous features only (fit sur train only)..."
         )
-        X_train_cont_scaled = self.minmax_scaler.fit_transform(X_train_selected).astype(
+        X_train_cont_scaled = self.standard_scaler.fit_transform(X_train_selected).astype(
             np.float32
         )
-        X_val_cont_scaled = self.minmax_scaler.transform(X_val_selected).astype(
+        X_val_cont_scaled = self.standard_scaler.transform(X_val_selected).astype(
             np.float32
         )
-        X_test_cont_scaled = self.minmax_scaler.transform(X_test_selected).astype(
+        X_test_cont_scaled = self.standard_scaler.transform(X_test_selected).astype(
             np.float32
         )
 
@@ -949,7 +947,7 @@ class JsonIoTDataProcessor:
             with open(save_path / "preprocessor.pkl", "wb") as f:
                 pickle.dump(
                     {
-                        "minmax_scaler": self.minmax_scaler,
+                        "standard_scaler": self.standard_scaler,
                         "label_encoder": self.label_encoder,
                         "feature_names": self.feature_names,
                         "selected_feature_indices": self.selected_feature_indices,
@@ -967,7 +965,7 @@ class JsonIoTDataProcessor:
             y_val_seq,
             y_test_seq,
             self.feature_names,
-            self.minmax_scaler,
+            self.standard_scaler,
             self.label_encoder,
         )
 
