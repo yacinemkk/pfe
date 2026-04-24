@@ -92,6 +92,7 @@ class CNNBiLSTMTransformerClassifier(nn.Module):
         input_size: int,
         num_classes: int,
         seq_length: int = 10,
+        config: dict = None,
     ):
         super().__init__()
 
