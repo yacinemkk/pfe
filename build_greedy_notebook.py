@@ -418,7 +418,7 @@ from src.training.trainer import IoTSequenceDataset\nfrom src.adversarial.robust
 # FIXED: nlp_cnn_bilstm_transformer properly uses embedded layer logic
 
 class GreedyAttackSimulator:
-    def __init__(self, sensitivity_results, feature_stats):
+    def __init__(self, sensitivity_results, feature_stats, verbose=True):
         self.results = sensitivity_results
         self.stats = feature_stats
         
@@ -443,6 +443,12 @@ class GreedyAttackSimulator:
                 self.sampling_probs = np.ones(len(weights)) / len(weights)
         else:
             self.sampling_probs = np.array([])
+            
+        if verbose:
+            print(f"  [Simulator] Vulnerability Dictionary created with {len(self.available_features)} distinct features.")
+            print(f"  [Simulator] Top 3 features logic overview:")
+            for idx, feat in enumerate(self.available_features[:3]):
+                print(f"     -> Feature {feat} mapped to {len(self.feature_pool[feat])} strategies (prob={self.sampling_probs[idx]:.3f})")
 
     @classmethod
     def compute_feature_stats(cls, X_train):
