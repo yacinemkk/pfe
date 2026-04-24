@@ -314,7 +314,28 @@ class GreedyAttackSimulator:
     def __init__(self, sensitivity_results, feature_stats):
         self.results = sensitivity_results
         self.stats = feature_stats
-        self.top_pairs = [(fi, st) for fi, st, _ in sensitivity_results]
+        
+        self.feature_pool = {}
+        self.feature_weights = {}
+        epsilon = 0.05  # Exploratory minimum probability
+        
+        for fi, st, drop in sensitivity_results:
+            if fi not in self.feature_pool:
+                self.feature_pool[fi] = []
+                self.feature_weights[fi] = max(0.0, drop) + epsilon
+            
+            # Maintain a pool of valid strategies even if drop <= 0, we keep them for exploratory testing
+            self.feature_pool[fi].append(st)
+                
+        self.available_features = list(self.feature_pool.keys())
+        if len(self.available_features) > 0:
+            weights = np.array([self.feature_weights[f] for f in self.available_features])
+            if weights.sum() > 0:
+                self.sampling_probs = weights / weights.sum()
+            else:
+                self.sampling_probs = np.ones(len(weights)) / len(weights)
+        else:
+            self.sampling_probs = np.array([])
 
     @classmethod
     def compute_feature_stats(cls, X_train):
@@ -343,8 +364,17 @@ class GreedyAttackSimulator:
 
     def generate_greedy(self, X, k):
         X_adv = X.copy()
-        for feat_idx, strategy in self.top_pairs[:k]:
+        n_avail = len(self.available_features)
+        if n_avail == 0:
+            return X_adv
+            
+        k_actual = min(k, n_avail)
+        chosen_features = np.random.choice(self.available_features, size=k_actual, replace=False, p=self.sampling_probs)
+        
+        for feat_idx in chosen_features:
+            strategy = np.random.choice(self.feature_pool[feat_idx])
             X_adv = self.apply_strategy(X_adv, feat_idx, strategy)
+            
         return X_adv
 
     def generate_training_batch(self, X, k_max=4, mix_ratio=0.5):
