@@ -14,9 +14,16 @@ Les premières méthodes d'identification des dispositifs IoT reposaient sur des
 
 Face aux limites des signatures statiques, des méthodes d'apprentissage automatique ont été proposées. Les travaux précurseurs de Sivanathan et al. (2019), Miettinen et al. (2017) et d'Ortiz et al. ont établi que des modèles comme les forêts aléatoires (*Random Forest*), les SVM ou XGBoost, entraînés sur des statistiques de flux réseau (débit moyen, durée de flow, taille des paquets, inter-arrivées), pouvaient atteindre des taux d'identification supérieurs à 90% sur des datasets contrôlés.
 
-Cependant, ces approches traitent chaque **flux individuellement** et ne capturent pas les **dynamiques temporelles** du comportement IoT. Or, un appareil IoT présente des motifs temporels caractéristiques — par exemple, une caméra de surveillance envoie des rafales de paquets suivies de périodes de silence, ou un thermostat contacte un serveur cloud à intervalles réguliers. Ces informations séquentielles sont perdues lorsqu'on analyse les flux de manière isolée.
+Cependant, ces approches traitent chaque **flux individuellement** et ne capturent pas les **dynamiques temporelles** du comportement IoT. Or, un appareil IoT présente des motifs temporels caractéristiques — par exemple, une caméra de surveillance envoie des rafales de paquets suivies de périodes de silence, ou un thermostat contacte un serveur cloud à intervalles réguliers. Ces informations séquentielles sont perdues lorsqu'on analyse les flux de manière isolée. 
 
----
+--------------------------------------------------------------
+1. Quel est le problème des approches Machine Learning Classique (XGBoost, Random Forest...) ?
+Le problème principal réside dans la perte de l'information séquentielle. Les modèles classiques de ML nécessitent qu'on transforme un flux réseau dynamique en une ligne statique de statistiques (ex: moyenne de la taille des paquets, écart-type des temps d'inter-arrivées).
+
+Incapacité à voir le contexte : Ils regardent une image "figée" d'un flux. Par exemple, une caméra IoT peut avoir le même débit moyen qu'un téléchargement de fichier, mais l'ordre temporel des paquets est très différent (rafales vs continu). Le ML classique ne fait pas la différence.
+Généralisation et Dataset : Comme ces modèles s'appuient sur des statistiques globales, ils ont tendance à "mémoriser" les conditions de trafic spécifiques de ton dataset de capture. Ils sur-apprennent sur le réseau d'entraînement et se trompent dès qu'ils sont placés sur un nouveau réseau (d'où le manque de généralisation). Les approches Deep Learning (BiLSTM/Transformer) analysent la suite d'événements (comme on lit une phrase), ce qui est une signature comportementale bien plus robuste.
+
+---=======================================================================
 
 ## 2.2 Réseaux de Neurones pour la Classification de Trafic
 

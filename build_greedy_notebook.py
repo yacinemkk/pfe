@@ -444,6 +444,24 @@ class GreedyAttackSimulator:
             for idx, feat in enumerate(self.available_features[:3]):
                 print(f"     -> Feature {feat} mapped to {len(self.feature_pool[feat])} strategies (prob={self.sampling_probs[idx]:.3f})")
 
+    def save_dictionary(self, save_path, feature_names):
+        dict_data = {
+            "num_features": len(self.available_features),
+            "features": {}
+        }
+        for feat_idx in self.available_features:
+            feat_name = feature_names[feat_idx] if feat_idx < len(feature_names) else f"f{feat_idx}"
+            dict_data["features"][feat_name] = {
+                "strategies": self.feature_pool[feat_idx],
+                "weight": float(self.feature_weights[feat_idx])
+            }
+        import os
+        import json
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        with open(save_path, 'w') as f:
+            json.dump(dict_data, f, indent=2)
+        print(f"  [Simulator] Vulnerability Dictionary saved to {save_path}")
+
     @classmethod
     def compute_feature_stats(cls, X_train):
         X_flat = X_train.reshape(-1, X_train.shape[-1])
@@ -1109,6 +1127,7 @@ def train_model_greedy(
 
     feature_stats = GreedyAttackSimulator.compute_feature_stats(X_train)
     simulator = GreedyAttackSimulator(sensitivity, feature_stats)
+    simulator.save_dictionary(f'{save_dir}/vulnerability_dictionary.json', feature_names)
 
     # ─── PHASE B (epochs 16-30): 30% adversarial, k_max=2 ─────────────────
     phase_b_path = f'{save_dir}/phase_b_model.pt'
@@ -1161,6 +1180,7 @@ def train_model_greedy(
         sensitivity_b = load_sensitivity_results(sens_csv_path_b, feature_names)
 
     simulator_c = GreedyAttackSimulator(sensitivity_b, feature_stats)
+    simulator_c.save_dictionary(f'{save_dir}/vulnerability_dictionary_phase_b.json', feature_names)
 
     # ─── PHASE C (epochs 31-50): 70% adversarial, k_max=4 ─────────────────
     phase_c_path = f'{save_dir}/phase_c_model.pt'
@@ -1212,6 +1232,7 @@ def train_model_greedy(
         sensitivity_c = load_sensitivity_results(sens_csv_path_c, feature_names)
 
     simulator_d = GreedyAttackSimulator(sensitivity_c, feature_stats)
+    simulator_d.save_dictionary(f'{save_dir}/vulnerability_dictionary_phase_c.json', feature_names)
 
     # ─── PHASE D (epochs 51-65): 95% adversarial, k_max=4 ─────────────────
     phase_d_path = f'{save_dir}/phase_d_model.pt'
