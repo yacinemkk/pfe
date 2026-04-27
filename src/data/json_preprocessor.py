@@ -327,6 +327,8 @@ class JsonIoTDataProcessor:
         """
         if data_dir is None:
             data_dir = JSON_DATA_DIR
+        else:
+            data_dir = Path(data_dir)
 
         # Find all JSON files
         json_files = sorted(data_dir.rglob("*.json"))
