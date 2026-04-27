@@ -91,7 +91,7 @@ MAC_TO_DEVICE_FALLBACK = {
     "00:17:88:47:20:f2": "Philips Hue Light Bulb",
     "e0:b9:4d:b9:eb:e9": "Planex Pan–Tilt Camera 1",
     "e0:b9:4d:5c:cf:c5": "JVC Kenwood Camera",
-    "e0:b9:4d:5c:cf:c6": "Planex Pan–Tilt Camera 2",
+    "ec:3d:fd:39:6f:98": "Planex Pan–Tilt Camera 2",
     "d8:6c:63:47:54:dc": "Google Home",
     "d4:90:9c:da:0d:f0": "Apple HomePod",
     "04:5d:4b:a4:d0:2e": "Sony Bravia TV",
@@ -463,19 +463,8 @@ class JsonIoTDataProcessor:
         """
         print(f"  Avant equilibrage: {len(X):,} echantillons")
 
-        # 2.1 Borderline-SMOTE pour equilibrer les classes
-        print("  Application de Borderline-SMOTE...")
-        try:
-            smote = BorderlineSMOTE(
-                kind="borderline-1",
-                random_state=RANDOM_STATE,
-                k_neighbors=min(5, min(pd.Series(y).value_counts()) - 1),
-            )
-            X_resampled, y_resampled = smote.fit_resample(X, y)
-            print(f"  Apres SMOTE: {len(X_resampled):,} echantillons")
-        except Exception as e:
-            print(f"  SMOTE echoue ({e}), conservation des donnees originales")
-            X_resampled, y_resampled = X, y
+        # Borderline-SMOTE has been removed as per user request
+        X_resampled, y_resampled = X, y
 
         # 2.2 Isolation Forest pour detecter les anomalies
         print("  Application d'Isolation Forest...")
