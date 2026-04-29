@@ -327,8 +327,6 @@ class JsonIoTDataProcessor:
         """
         if data_dir is None:
             data_dir = JSON_DATA_DIR
-        else:
-            data_dir = Path(data_dir)
 
         # Find all JSON files
         json_files = sorted(data_dir.rglob("*.json"))
@@ -463,8 +461,19 @@ class JsonIoTDataProcessor:
         """
         print(f"  Avant equilibrage: {len(X):,} echantillons")
 
-        # Borderline-SMOTE has been removed as per user request
-        X_resampled, y_resampled = X, y
+        # 2.1 Borderline-SMOTE pour equilibrer les classes
+        print("  Application de Borderline-SMOTE...")
+        try:
+            smote = BorderlineSMOTE(
+                kind="borderline-1",
+                random_state=RANDOM_STATE,
+                k_neighbors=min(5, min(pd.Series(y).value_counts()) - 1),
+            )
+            X_resampled, y_resampled = smote.fit_resample(X, y)
+            print(f"  Apres SMOTE: {len(X_resampled):,} echantillons")
+        except Exception as e:
+            print(f"  SMOTE echoue ({e}), conservation des donnees originales")
+            X_resampled, y_resampled = X, y
 
         # 2.2 Isolation Forest pour detecter les anomalies
         print("  Application d'Isolation Forest...")

@@ -37,7 +37,11 @@ from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.feature_selection import chi2, mutual_info_classif
 from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
-from imblearn.over_sampling import BorderlineSMOTE
+try:
+    from imblearn.over_sampling import BorderlineSMOTE
+    IMBLEARN_AVAILABLE = True
+except ImportError:
+    IMBLEARN_AVAILABLE = False
 import xgboost as xgb
 import pickle
 import warnings
@@ -183,6 +187,8 @@ class IoTDataProcessor:
         # 2.1 Borderline-SMOTE pour equilibrer les classes
         print("  Application de Borderline-SMOTE...")
         try:
+            if not IMBLEARN_AVAILABLE:
+                raise ImportError("imblearn not installed")
             smote = BorderlineSMOTE(
                 kind="borderline-1", random_state=RANDOM_STATE, k_neighbors=5
             )

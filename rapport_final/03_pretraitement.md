@@ -81,7 +81,7 @@ durée du flux, compteurs de paquets entrants/sortants, compteurs d'octets entra
 
 Cette étape est composée de trois sous-étapes appliquées **uniquement sur les données d'entraînement** :
 
-#### 3.3.2.1 Gestion du Déséquilibre (Class Imbalance)
+#### 3.3.2.1 Gestion du Déséquilibre (Class Imbalance).............????????????????????????????????????
 
 Initialement, des techniques d'oversampling comme **Borderline-SMOTE** étaient envisagées pour pallier le déséquilibre inhérent aux datasets IoT (un téléviseur génère plus de flux qu'un thermostat). Cependant, elles ont été **écartées** dans la version finale. En effet, la génération de données synthétiques (interpolation entre points) perturbe la structure *temporelle* naturelle et introduit du bruit indésirable, déstabilisant les modèles séquentiels.
 Le déséquilibre est désormais géré **intrinsèquement** au niveau de l'entraînement par les modèles (architectures avancées) et par l'utilisation de fonctions de Loss pondérées ainsi que par la dynamique de la boucle de formation antagoniste (GreedyAttackSimulator), qui obligent le modèle à généraliser.
@@ -241,7 +241,14 @@ X_test_scaled = standard_scaler.transform(X_test_continuous)
 
 Le pipeline JSON (`src/data/json_preprocessor.py`, classe `JsonIoTDataProcessor`) suit les mêmes 4 étapes que le pipeline CSV mais avec les adaptations suivantes :
 
-### 3.4.1 Lecture et Parsing du JSON
+### 3.4.1 Application de l'Architecture "Zéro Data Leakage"
+
+Toute l'architecture visant à empêcher la fuite de données (détaillée en 3.2) est également strictement appliquée au dataset JSON, autant dans l'exécution locale que dans la version Colab/Kaggle :
+1. **Split Temporel par Appareil (Anti-Leakage) :** Avant même la normalisation et la génération de séquences, les flux de chaque adresse MAC identifiée sont triés par `flowStartMilliseconds`. Un split temporel strict (e.g. 70(Train)/10(Val)/20(Test)) est opéré garantissant qu'aucune donnée future ne contamine le passé de l'apprentissage.
+2. **StandardScaler sur le Train Uniquement :** L'ajustement du StandardScaler ne s'effectue qu'au travers des séquences du sous-ensemble d'entraînement JSON.
+3. **Séquences Cloisonnées :** Les séries temporelles de 10 flux (`SEQ_LENGTH=10`) sont découpées indépendamment entre Train, Val et Test. Personne ne franchit de frontière temporelle.
+
+### 3.4.2 Lecture et Parsing du JSON
 
 Le fichier JSON unique est parsé de manière **streaming** (par chunks) pour éviter de charger les > 1 Go en mémoire RAM. Chaque enregistrement IPFIX est converti en ligne DataFrame.
 
