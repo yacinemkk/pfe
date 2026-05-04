@@ -1,22 +1,11 @@
 # ─── Cell: Setup ────────────────────────────────────────────────────────
-from google.colab import drive
-drive.mount('/content/drive')
 
-import os
-if os.path.exists('/content/pfe'):
-    !cd /content/pfe && git pull
-else:
-    !git clone https://github.com/yacinemkk/pfe.git /content/pfe
-
-%cd /content/pfe
-
-!pip install -q torch torchvision tqdm numpy pandas scikit-learn matplotlib xgboost psutil
 # ─── Cell: Configuration ─────────────────────────────────────────────────
 import os
 
-JSON_DATA_DIR = '/content/drive/MyDrive/PFE/IPFIX_Records'
-CSV_DATA_DIR = '/content/drive/MyDrive/PFE/IPFIX_ML_Instances'
-DRIVE_RESULTS_DIR = '/content/drive/MyDrive/PFE/results'
+JSON_DATA_DIR = './data/IPFIX_Records'
+CSV_DATA_DIR = './data/IPFIX_ML_Instances'
+DRIVE_RESULTS_DIR = './results'
 DATASETS = 'both'
 
 SEQ_LENGTH = 10
@@ -41,15 +30,16 @@ CNN_BILSTM_TRANSFORMER_OVERRIDE = {
 
 # Greedy adversarial training phases
 PHASE_A_EPOCHS = 15
-PHASE_B_EPOCHS = 30
-PHASE_C_EPOCHS = 50
+PHASE_B_EPOCHS = 25
+PHASE_C_EPOCHS = 35
 PHASE_A_MIX_RATIO = 0.0
-PHASE_B_MIX_RATIO = 0.30
-PHASE_C_MIX_RATIO = 0.70
+PHASE_B_MIX_RATIO = 0.3
+PHASE_C_MIX_RATIO = 0.7
 PHASE_B_K_MAX = 2
 PHASE_C_K_MAX = 4
-PHASE_D_EPOCHS = 80           # +15 epochs vs avant (65→80)
-PHASE_D_MIX_RATIO = 0.85     # 85% adv (au lieu de 100%) — évite l'effondrement clean
+
+PHASE_D_EPOCHS = 50           # Curriculum optimisé 50 époques
+PHASE_D_MIX_RATIO = 0.80     # 80% adv avec ancrage afd_lambda
 PHASE_D_K_MAX = 4             # k=4 comme Phase C — k=5 était contre-productif
 
 GREEDY_STRATEGIES = ['Zero', 'Mimic_Mean', 'Mimic_95th', 'Padding_x10']
@@ -122,7 +112,7 @@ log_memory('startup')
 
 def load_and_display_csv_dataset(csv_data_dir, seq_length=10, stride=10, save_dir=None):
     import sys
-    sys.path.insert(0, '/content/pfe')
+    sys.path.insert(0, '.')
     from src.data.preprocessor import IoTDataProcessor
 
     print('\n' + '=' * 70)
@@ -175,7 +165,7 @@ def load_and_display_csv_dataset(csv_data_dir, seq_length=10, stride=10, save_di
 
 def load_and_display_json_dataset(json_data_dir, seq_length=10, stride=10, max_records=None, save_dir=None):
     import sys
-    sys.path.insert(0, '/content/pfe')
+    sys.path.insert(0, '.')
     from src.data.json_preprocessor import JsonIoTDataProcessor
 
     print('\n' + '=' * 70)
@@ -276,7 +266,7 @@ else:
     print('Skipping CSV dataset')
 # ─── Cell: GreedyAttackSimulator + Training Functions ─────────────────────
 import sys
-sys.path.insert(0, '/content/pfe')
+sys.path.insert(0, '.')
 
 import torch
 import torch.nn as nn
@@ -540,7 +530,7 @@ def train_greedy_phase(
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.MultiStepLR(
-        optimizer, milestones=[15, 30], gamma=0.5
+        optimizer, milestones=[15, 25, 35, 42], gamma=0.5
     )
     use_amp = USE_AMP and device.type == 'cuda'
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
@@ -564,6 +554,21 @@ def train_greedy_phase(
     best_val_acc = 0.0
     best_combined = 0.0   # score = 0.4*clean + 0.6*adv (phases adv seulement)
     best_epoch = start_epoch
+    
+    epoch_dir = save_path.replace('.pt', '_epochs') if save_path else None
+    if epoch_dir and os.path.exists(epoch_dir):
+        saved_files = [f for f in os.listdir(epoch_dir) if f.startswith('epoch_') and f.endswith('.pt')]
+        if saved_files:
+            epochs_present = [int(f.replace('epoch_', '').replace('.pt', '')) for f in saved_files]
+            last_saved = max(epochs_present)
+            if start_epoch <= last_saved < end_epoch:
+                print(f"  [Resumption] Reprise de l'entraînement à partir de l'époque {last_saved+1}...")
+                ckpt = torch.load(f"{epoch_dir}/epoch_{last_saved}.pt", map_location=device)
+                model.load_state_dict(ckpt['model_state_dict'])
+                best_val_acc = ckpt.get('best_val_acc', 0.0)
+                best_combined = ckpt.get('best_combined', 0.0)
+                best_epoch = ckpt.get('best_epoch', start_epoch)
+                start_epoch = last_saved + 1
 
     label_sm_map = {'A': 0.05, 'B': 0.08, 'C': 0.10}
     label_sm = label_sm_map.get(phase, 0.05)
@@ -598,13 +603,6 @@ def train_greedy_phase(
                             X_clean_t = X_clean_t + torch.randn_like(X_clean_t) * sigma_noise
                             X_adv_t = X_adv_t + torch.randn_like(X_adv_t) * sigma_noise
                             
-                        if batch_idx == 0:
-                            import sys
-                            print(f"
-  [VERBOSE] X_clean_t shape: {X_clean_t.shape}, dtype: {X_clean_t.dtype}", file=sys.stderr)
-                            print(f"  [VERBOSE] Model type: {type(model)}", file=sys.stderr)
-                            sys.stderr.flush()
-                        
                         logits_clean = model(X_clean_t)
                         logits_adv = model(X_adv_t)
                         
@@ -624,12 +622,6 @@ def train_greedy_phase(
                         if sigma_noise > 0:
                             X_input = X_input + torch.randn_like(X_input) * sigma_noise
                         
-                        if batch_idx == 0:
-                            import sys
-                            print(f"
-  [VERBOSE] X_input shape: {X_input.shape}, dtype: {X_input.dtype}", file=sys.stderr)
-                            sys.stderr.flush()
-                        
                         logits = model(X_input)
                         loss = criterion(logits, y_input)
                 else:
@@ -643,23 +635,7 @@ def train_greedy_phase(
                     if sigma_noise > 0:
                         X_input = X_input + torch.randn_like(X_input) * sigma_noise
                     
-                    if batch_idx == 0:
-                        import sys
-                        print(f"
-  [VERBOSE] X_batch shape: {X_batch.shape}, X_input shape: {X_input.shape}, dtype: {X_input.dtype}", file=sys.stderr)
-                        try:
-                            # In case it's CNNBiLSTMTransformerClassifier
-                            if hasattr(model, 'cnn_branch1'):
-                                print(f"  [VERBOSE] cnn_ch: {model.cnn_branch1[0].out_channels}", file=sys.stderr)
-                                xt = X_input.permute(0, 2, 1)
-                                b1 = model.cnn_branch1(xt)
-                                b2 = model.cnn_branch2(xt)
-                                fused = torch.cat([b1, b2], dim=1).permute(0, 2, 1).contiguous()
-                                print(f"  [VERBOSE] fused shape: {fused.shape}", file=sys.stderr)
-                                print(f"  [VERBOSE] bilstm expects input_size: {model.bilstm.input_size}", file=sys.stderr)
-                        except Exception as e:
-                            print("  [VERBOSE] Debug print exception:", e, file=sys.stderr)
-                        sys.stderr.flush()
+
                     
                     logits = model(X_input)
                     loss = criterion(logits, y_input)
@@ -697,23 +673,29 @@ def train_greedy_phase(
             val_clean_acc = val_correct / val_total
 
             val_adv_acc = 0.0
+            val_adv_acc_k = {}
             if simulator is not None and k_max > 0:
-                val_adv_correct = 0
                 n_eval = min(EVAL_SUBSAMPLE, len(X_val))
-                for i in range(0, n_eval, batch_size):
-                    end = min(i + batch_size, n_eval)
-                    X_adv_np = simulator.generate_greedy(X_val[i:end], k=k_max)
-                    if is_nlp:
-                        X_adv_t = torch.LongTensor(tokenizer.transform(X_adv_np, features)).to(device)
-                    else:
-                        X_adv_t = torch.FloatTensor(X_adv_np).to(device)
-                    y_sub = torch.LongTensor(y_val[i:end]).to(device)
-                    val_adv_correct += (model(X_adv_t).argmax(1) == y_sub).sum().item()
-                val_adv_acc = val_adv_correct / n_eval
+                np.random.seed(42)
+                torch.manual_seed(42)
+                for k_val in range(1, k_max + 1):
+                    val_adv_correct = 0
+                    for i in range(0, n_eval, batch_size):
+                        end = min(i + batch_size, n_eval)
+                        X_adv_np = simulator.generate_greedy(X_val[i:end], k=k_val)
+                        if is_nlp:
+                            X_adv_t = torch.LongTensor(tokenizer.transform(X_adv_np, features)).to(device)
+                        else:
+                            X_adv_t = torch.FloatTensor(X_adv_np).to(device)
+                        y_sub = torch.LongTensor(y_val[i:end]).to(device)
+                        val_adv_correct += (model(X_adv_t).argmax(1) == y_sub).sum().item()
+                    val_adv_acc_k[k_val] = val_adv_correct / n_eval
+                val_adv_acc = val_adv_acc_k[k_max]
 
+        adv_str = " ".join([f"k{k}={acc:.4f}" for k, acc in val_adv_acc_k.items()]) if simulator else ""
         print(f"  Epoch {epoch:3d}/{end_epoch} [Ph{phase}] "
               f"Loss={train_loss:.4f} TrainAcc={train_acc:.4f} "
-              f"CleanAcc={val_clean_acc:.4f} AdvAcc={val_adv_acc:.4f}")
+              f"CleanAcc={val_clean_acc:.4f} AdvAcc={val_adv_acc:.4f}  {adv_str}")
 
         # Phase A : sélection sur clean seulement (pas encore d'attaques)
         # Phases B/C/D : score combiné → favorise la robustesse adversariale
@@ -738,12 +720,31 @@ def train_greedy_phase(
                     'phase': phase,
                     'combined_score': selection_score,
                 }, save_path)
+            
+        if save_path:
+            epoch_dir = save_path.replace('.pt', '_epochs')
+            os.makedirs(epoch_dir, exist_ok=True)
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'val_clean_acc': val_clean_acc,
+                'val_adv_acc': val_adv_acc,
+                'best_val_acc': best_val_acc,
+                'best_combined': best_combined,
+                'best_epoch': best_epoch,
+            }, f"{epoch_dir}/epoch_{epoch}.pt")
 
     if phase == 'A':
         print(f"  Best epoch: {best_epoch} | Best val clean acc: {best_val_acc:.4f}")
     else:
         print(f"  Best epoch: {best_epoch} | Best combined score: {best_combined:.4f} "
               f"(clean={best_val_acc:.4f}, adv tracked per-epoch)")
+              
+    if save_path and os.path.exists(save_path):
+        print(f"  Reloading best weights from epoch {best_epoch} to pass to next phase...")
+        ckpt = torch.load(save_path, map_location=device)
+        model.load_state_dict(ckpt['model_state_dict'])
+        
     return model
 
 
@@ -1031,14 +1032,27 @@ def train_model_greedy(
 
     model = create_model(model_type, input_size, num_classes)
 
-    if os.path.exists(phase_a_path):
+    needs_train_a = not os.path.exists(phase_a_path)
+    if not needs_train_a:
+        if not os.path.exists(f"{phase_a_path.replace('.pt', '_epochs')}/epoch_{PHASE_A_EPOCHS}.pt"):
+            needs_train_a = True
+            
+    if not needs_train_a:
         print(f"\n  Phase A model found in Drive. Loading...")
         ckpt = torch.load(phase_a_path, map_location=device)
-        model.load_state_dict(ckpt['model_state_dict'])
-        model = model.to(device)
-        print(f"  Loaded Phase A model (epoch {ckpt.get('epoch', '?')}, "
-              f"clean_acc={ckpt.get('val_clean_acc', 0):.4f})")
-    else:
+        try:
+            model.load_state_dict(ckpt['model_state_dict'])
+            model = model.to(device)
+            print(f"  Loaded Phase A model (epoch {ckpt.get('epoch', '?')}, "
+                  f"clean_acc={ckpt.get('val_clean_acc', 0):.4f})")
+        except RuntimeError as e:
+            if 'mismatch' in str(e):
+                print(f"  Size mismatch: IGNORING Phase A checkpoint. Retraining...")
+                needs_train_a = True
+            else:
+                raise e
+
+    if needs_train_a:
         model = train_greedy_phase(
             model, X_train, y_train, X_val, y_val,
             phase='A', start_epoch=1, end_epoch=PHASE_A_EPOCHS,
@@ -1072,15 +1086,28 @@ def train_model_greedy(
     # ─── PHASE B (epochs 16-30): 30% adversarial, k_max=2 ─────────────────
     phase_b_path = f'{save_dir}/phase_b_model.pt'
 
-    if os.path.exists(phase_b_path):
+    needs_train_b = not os.path.exists(phase_b_path)
+    if not needs_train_b:
+        if not os.path.exists(f"{phase_b_path.replace('.pt', '_epochs')}/epoch_{PHASE_B_EPOCHS}.pt"):
+            needs_train_b = True
+            
+    if not needs_train_b:
         print(f"\n  Phase B model found in Drive. Loading...")
         ckpt = torch.load(phase_b_path, map_location=device)
-        model.load_state_dict(ckpt['model_state_dict'])
-        model = model.to(device)
-        print(f"  Loaded Phase B model (epoch {ckpt.get('epoch', '?')}, "
-              f"clean_acc={ckpt.get('val_clean_acc', 0):.4f}, "
-              f"adv_acc={ckpt.get('val_adv_acc', 0):.4f})")
-    else:
+        try:
+            model.load_state_dict(ckpt['model_state_dict'])
+            model = model.to(device)
+            print(f"  Loaded Phase B model (epoch {ckpt.get('epoch', '?')}, "
+                  f"clean_acc={ckpt.get('val_clean_acc', 0):.4f}, "
+                  f"adv_acc={ckpt.get('val_adv_acc', 0):.4f})")
+        except RuntimeError as e:
+            if 'mismatch' in str(e):
+                print(f"  Size mismatch: IGNORING Phase B checkpoint. Retraining...")
+                needs_train_b = True
+            else:
+                raise e
+
+    if needs_train_b:
         model = train_greedy_phase(
             model, X_train, y_train, X_val, y_val,
             phase='B', start_epoch=PHASE_A_EPOCHS + 1, end_epoch=PHASE_B_EPOCHS,
@@ -1093,52 +1120,111 @@ def train_model_greedy(
     ct_b = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase B', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
     all_crash_results['phase_b'] = ct_b
 
+    # ─── Sensitivity Analysis (after Phase B) ─────────────────────────────
+    sens_csv_path_b = f'{save_dir}/sensitivity_results_phase_b.csv'
+    if os.path.exists(sens_csv_path_b):
+        print(f"\n  Sensitivity results (Phase B) found in Drive. Loading...")
+        sensitivity_b = load_sensitivity_results(sens_csv_path_b, feature_names)
+    else:
+        # Prevent "import numpy as np" shadow issues inside inner functions by running cleaner sa
+        run_sensitivity_analysis(
+            model, X_val, y_val, feature_names, num_classes,
+            n_continuous, sens_csv_path_b, device=device,
+        )
+        sensitivity_b = load_sensitivity_results(sens_csv_path_b, feature_names)
+
+    simulator_c = GreedyAttackSimulator(sensitivity_b, feature_stats,
+                                         feature_names=feature_names, n_continuous=n_continuous)
+    simulator_c.save_dictionary(f'{save_dir}/vulnerability_dictionary_phase_b.json', feature_names)
+
     # ─── PHASE C (epochs 31-50): 70% adversarial, k_max=4 ─────────────────
     phase_c_path = f'{save_dir}/phase_c_model.pt'
 
-    if os.path.exists(phase_c_path):
+    needs_train_c = not os.path.exists(phase_c_path)
+    if not needs_train_c:
+        if not os.path.exists(f"{phase_c_path.replace('.pt', '_epochs')}/epoch_{PHASE_C_EPOCHS}.pt"):
+            needs_train_c = True
+            
+    if not needs_train_c:
         print(f"\n  Phase C model found in Drive. Loading...")
         ckpt = torch.load(phase_c_path, map_location=device)
-        model.load_state_dict(ckpt['model_state_dict'])
-        model = model.to(device)
-        print(f"  Loaded Phase C model (epoch {ckpt.get('epoch', '?')}, "
-              f"clean_acc={ckpt.get('val_clean_acc', 0):.4f}, "
-              f"adv_acc={ckpt.get('val_adv_acc', 0):.4f})")
-    else:
+        try:
+            model.load_state_dict(ckpt['model_state_dict'])
+            model = model.to(device)
+            print(f"  Loaded Phase C model (epoch {ckpt.get('epoch', '?')}, "
+                  f"clean_acc={ckpt.get('val_clean_acc', 0):.4f}, "
+                  f"adv_acc={ckpt.get('val_adv_acc', 0):.4f})")
+        except RuntimeError as e:
+            if 'mismatch' in str(e):
+                print(f"  Size mismatch: IGNORING Phase C checkpoint. Retraining...")
+                needs_train_c = True
+            else:
+                raise e
+
+    if needs_train_c:
         model = train_greedy_phase(
             model, X_train, y_train, X_val, y_val,
             phase='C', start_epoch=PHASE_B_EPOCHS + 1, end_epoch=PHASE_C_EPOCHS,
             mix_ratio=PHASE_C_MIX_RATIO, k_max=PHASE_C_K_MAX,
             p_drop=0.2, sigma_noise=0.01, afd_lambda=1.0,
-            simulator=simulator, device=device, lr=lr,
+            simulator=simulator_c, device=device, lr=lr,
             batch_size=batch_size, save_path=phase_c_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
-    ct_c = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase C', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
+    ct_c = crash_test_greedy(model, X_val, y_val, simulator=simulator_c, device=device, label='Phase C', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
     all_crash_results['phase_c'] = ct_c
+
+    # ─── Sensitivity Analysis (after Phase C) ─────────────────────────────
+    sens_csv_path_c = f'{save_dir}/sensitivity_results_phase_c.csv'
+    if os.path.exists(sens_csv_path_c):
+        print(f"\n  Sensitivity results (Phase C) found in Drive. Loading...")
+        sensitivity_c = load_sensitivity_results(sens_csv_path_c, feature_names)
+    else:
+        run_sensitivity_analysis(
+            model, X_val, y_val, feature_names, num_classes,
+            n_continuous, sens_csv_path_c, device=device,
+        )
+        sensitivity_c = load_sensitivity_results(sens_csv_path_c, feature_names)
+
+    simulator_d = GreedyAttackSimulator(sensitivity_c, feature_stats,
+                                         feature_names=feature_names, n_continuous=n_continuous)
+    simulator_d.save_dictionary(f'{save_dir}/vulnerability_dictionary_phase_c.json', feature_names)
 
     # ─── PHASE D (epochs 51-65): 95% adversarial, k_max=4 ─────────────────
     phase_d_path = f'{save_dir}/phase_d_model.pt'
 
-    if os.path.exists(phase_d_path):
+    needs_train_d = not os.path.exists(phase_d_path)
+    if not needs_train_d:
+        if not os.path.exists(f"{phase_d_path.replace('.pt', '_epochs')}/epoch_{PHASE_D_EPOCHS}.pt"):
+            needs_train_d = True
+            
+    if not needs_train_d:
         print(f"\n  Phase D model found in Drive. Loading...")
         ckpt = torch.load(phase_d_path, map_location=device)
-        model.load_state_dict(ckpt['model_state_dict'])
-        model = model.to(device)
-        print(f"  Loaded Phase D model (epoch {ckpt.get('epoch', '?')}, "
-              f"clean_acc={ckpt.get('val_clean_acc', 0):.4f}, "
-              f"adv_acc={ckpt.get('val_adv_acc', 0):.4f})")
-    else:
+        try:
+            model.load_state_dict(ckpt['model_state_dict'])
+            model = model.to(device)
+            print(f"  Loaded Phase D model (epoch {ckpt.get('epoch', '?')}, "
+                  f"clean_acc={ckpt.get('val_clean_acc', 0):.4f}, "
+                  f"adv_acc={ckpt.get('val_adv_acc', 0):.4f})")
+        except RuntimeError as e:
+            if 'mismatch' in str(e):
+                print(f"  Size mismatch: IGNORING Phase D checkpoint. Retraining...")
+                needs_train_d = True
+            else:
+                raise e
+
+    if needs_train_d:
         model = train_greedy_phase(
             model, X_train, y_train, X_val, y_val,
             phase='D', start_epoch=PHASE_C_EPOCHS + 1, end_epoch=PHASE_D_EPOCHS,
             mix_ratio=PHASE_D_MIX_RATIO, k_max=PHASE_D_K_MAX,
-            p_drop=0.2, sigma_noise=0.01, afd_lambda=0.0,
-            simulator=simulator, device=device, lr=lr,
+            p_drop=0.2, sigma_noise=0.01, afd_lambda=0.5,
+            simulator=simulator_d, device=device, lr=lr,
             batch_size=batch_size, save_path=phase_d_path, is_nlp=is_nlp, tokenizer=tokenizer, features=features
         )
 
-    ct_d = crash_test_greedy(model, X_val, y_val, simulator=simulator, device=device, label='Phase D', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
+    ct_d = crash_test_greedy(model, X_val, y_val, simulator=simulator_d, device=device, label='Phase D', is_nlp=is_nlp, tokenizer=tokenizer, features=features)
     all_crash_results['phase_d'] = ct_d
 
     # ─── PHASE E: Discriminator ──────────────────────────────────────────
