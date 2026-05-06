@@ -456,18 +456,43 @@ class GreedyAttackSimulator:
         return X_adv
 
     def generate_training_batch(self, X, k_max=4, mix_ratio=0.5):
+        """
+        Génère un batch mixte clean + adversarial avec échantillonnage stratifié.
+
+        Méthode stochastique stratifiée :
+        - Chaque niveau k (1..k_max) reçoit exactement n_adv // k_max exemples.
+        - Pour les restes, on complète avec des k tirés aléatoirement.
+        - La sélection des features reste stochastique et pondérée (sampling_probs).
+        - La sélection de la stratégie reste stochastique (feature_pool[feat_idx]).
+        Cela garantit que chaque batch expose le modèle uniformément
+        aux attaques faibles (k=1) ET fortes (k=k_max), évitant le biais
+        vers les attaques faciles qui fait chuter l'AdvAcc sur k élevés.
+        """
         n = len(X)
         n_adv = int(n * mix_ratio)
         n_cln = n - n_adv
 
         idx_adv = np.random.choice(n, n_adv, replace=False)
-        idx_cln = np.setdiff1d(np.arange(n), idx_adv)[:n_cln]
 
         X_out = X.copy()
         flags = np.zeros(n, dtype=np.float32)
 
-        for i in idx_adv:
-            k = np.random.randint(1, k_max + 1)
+        # ── Stratified k assignment ──────────────────────────────────────────
+        # Distribute adversarial indices evenly across k=1..k_max
+        k_values = list(range(1, k_max + 1))
+        base_per_k = n_adv // k_max
+        remainder  = n_adv % k_max
+
+        # Build the k assignment array: [base_per_k copies of each k] + remainder
+        k_assignments = np.array(
+            [k for k in k_values for _ in range(base_per_k)]
+            + [k_values[i] for i in range(remainder)]  # remainder gets k=1..remainder
+        )
+        # Shuffle so the assignment order is random (not sorted by k)
+        np.random.shuffle(k_assignments)
+
+        # Apply adversarial perturbation to each selected index
+        for i, k in zip(idx_adv, k_assignments):
             X_out[[i]] = self.generate_greedy(X[[i]], k)
             flags[i] = 1.0
 
