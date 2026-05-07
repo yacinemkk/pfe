@@ -69,7 +69,7 @@ def patch_notebook():
 
             # Patch DataLoader num_workers
             if "num_workers=0" in line:
-                source[i] = line.replace("num_workers=0", "num_workers=2").replace("pin_memory=False", "pin_memory=True")
+                source[i] = line.replace("num_workers=0", "num_workers=2").replace("pin_memory=False", "pin_memory=True, persistent_workers=True, multiprocessing_context='fork'")
                 modifications['dataloader'] = True
 
             # Patch generate_worst_case_k (on cherche la signature)
