@@ -515,8 +515,9 @@ class IoTDataProcessor:
         df = self.sdn_filter(df)
 
         # ─── Split temporel ANTI-LEAKAGE (train/val/test) ─────────────────────
-        val_ratio_for_split = VAL_SIZE  # e.g. 0.1
-        print("\n[PRE-SPLIT] Application du split temporel 72/18/10 par appareil...")
+        val_ratio_for_split = VAL_SIZE  # e.g. 0.17
+        train_ratio_for_split = 1.0 - TEST_SIZE - val_ratio_for_split
+        print(f"\n[PRE-SPLIT] Application du split temporel {train_ratio_for_split*100:.0f}/{val_ratio_for_split*100:.0f}/{TEST_SIZE*100:.0f} par appareil...")
         df_train_raw, df_val_raw, df_test_raw = self.temporal_split_per_device(
             df,
             train_ratio=1.0 - TEST_SIZE - val_ratio_for_split,

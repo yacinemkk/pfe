@@ -79,12 +79,32 @@ durée du flux, compteurs de paquets entrants/sortants, compteurs d'octets entra
 
 **Contexte :** les datasets IoT sont notoirement déséquilibrés. Un réseau domestique génère beaucoup plus de trafic pour la télévision connectée (Netflix en streaming) que pour le thermostat intelligent (quelques paquets par heure). Sans correction, le modèle apprend à maximiser l'accuracy en se spécialisant sur les classes majoritaires.
 
-Cette étape est composée de trois sous-étapes appliquées **uniquement sur les données d'entraînement** :
+Cette étape est appliquée **uniquement sur les données d'entraînement** :
 
-#### 3.3.2.1 Gestion du Déséquilibre (Class Imbalance).............????????????????????????????????????
+#### 3.3.2.1 Équilibrage par SMOTE Capped Class-wise — Motivations et Conception
 
-Initialement, des techniques d'oversampling comme **Borderline-SMOTE** étaient envisagées pour pallier le déséquilibre inhérent aux datasets IoT (un téléviseur génère plus de flux qu'un thermostat). Cependant, elles ont été **écartées** dans la version finale. En effet, la génération de données synthétiques (interpolation entre points) perturbe la structure *temporelle* naturelle et introduit du bruit indésirable, déstabilisant les modèles séquentiels.
-Le déséquilibre est désormais géré **intrinsèquement** au niveau de l'entraînement par les modèles (architectures avancées) et par l'utilisation de fonctions de Loss pondérées ainsi que par la dynamique de la boucle de formation antagoniste (GreedyAttackSimulator), qui obligent le modèle à généraliser.
+Les datasets IoT présentent un déséquilibre sévère intrinsèque : un téléviseur connecté (Sony Bravia) génère 101 000 séquences tandis qu'un hub domotique (Qrio Hub) n'en produit que 4 000. Sans correction, le modèle maximise l'accuracy en se spécialisant sur les classes majoritaires, ignorant les appareils minoritaires.
+
+**Ratio d'imbalance mesuré :**
+- **Dataset CSV :** ratio max/min ≈ 4–8× (imbalance modéré) — score de balance Shannon ≈ 0.85
+- **Dataset JSON :** ratio max/min ≈ **24.9×** (imbalance sévère) — score de balance Shannon ≈ 0.798
+
+Face à ces constats, une approche d'équilibrage unifiée a été implémentée via `apply_smote_to_preprocessed_dataset()` pour les deux formats (CSV et JSON). Cette approche applique un **SMOTE adaptatif par classe cappé** (Capped Class-wise SMOTE). L'approche est appliquée **exclusivement sur le split d'entraînement** pour ne pas contaminer les jeux de validation et de test.
+
+**Pourquoi SMOTE et pas pondération de loss ?** La pondération de loss ne résout pas le sous-apprentissage structurel : avec 24.9× de déséquilibre, les exemples minoritaires sont trop rares pour que le modèle construise des représentations stables, même avec des poids élevés. SMOTE génère de nouvelles séquences synthétiques plausibles par interpolation entre voisins proches dans l'espace des features.
+
+**Adaptation séquentielle et limitation mémoire :**
+- Les séquences générées sont des tenseurs 3D `(N, 10, F)`. L'interpolation SMOTE est appliquée itérativement classe par classe avec des nettoyages de la mémoire RAM (`aggressive_cleanup()`) pour éviter les "Out Of Memory" (OOM) lors du suréchantillonnage de gros datasets.
+- On définit un **plafond (capping)** : chaque classe minoritaire est augmentée jusqu'à atteindre un quantile de distribution spécifique (ex: `target_quantile=0.85` pour le CSV, et `0.65` pour le JSON), limitant l'explosion combinatoire.
+- **Clipping catégoriel** : sur les features binaires (bits de direction `pkt_dir_0`…`pkt_dir_7` du JSON), les valeurs synthétiques sont clippées et arrondies pour rester dans {0, 1} :
+
+```python
+# Arrondi + clip des features catégorielles (bits de direction JSON)
+if n_continuous is not None and n_continuous < X_synthetic.shape[-1]:
+    X_synthetic[:, :, n_continuous:] = np.clip(
+        np.rint(X_synthetic[:, :, n_continuous:]), 0, 1
+    )
+```
 
 #### 3.3.2.2 Isolation Forest (Détection d'Anomalies)
 

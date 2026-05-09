@@ -303,24 +303,24 @@ self.classifier = nn.Sequential(
 
 Le **MeanPooling** avant la tête de classification agrège toutes les positions de la séquence (plutôt que de prendre uniquement le dernier hidden state comme le ferait un LSTM pur), ce qui donne une représentation plus robuste de l'ensemble de la séquence.
 
-### 4.7.6 Hyperparamètres Finaux (Version Optimisée pour GPU L4)
+### 4.7.6 Hyperparamètres Finaux
 
 ```python
-CNN_BILSTM_TRANSFORMER_OVERRIDE = {
-    'cnn_channels': 32,          # Réduit de 64 à 32 pour économiser la VRAM
-    'bilstm_hidden': 64,         # Réduit de 128 à 64 → sortie BiLSTM = 128
-    'bilstm_layers': 2,
-    'bilstm_dropout': 0.3,
-    'transformer_d_model': 128,  # Réduit de 256 à 128
-    'transformer_nhead': 4,
-    'transformer_layers': 2,
-    'transformer_ff_dim': 512,
-    'transformer_dropout': 0.2,
-    'fc_dropout': 0.4,
+DEFAULT_CONFIG = {
+    "cnn_channels": 64,          # channels per branch
+    "bilstm_hidden": 128,        # hidden units per direction
+    "bilstm_layers": 2,
+    "bilstm_dropout": 0.3,
+    "transformer_d_model": 256,  # d_model (must equal bilstm output dim = hidden*2)
+    "transformer_nhead": 4,
+    "transformer_layers": 2,
+    "transformer_ff_dim": 512,
+    "transformer_dropout": 0.2,
+    "fc_dropout": 0.4,
 }
 ```
 
-Ces hyperparamètres ont été calibrés pour tenir dans les 22 GB de VRAM d'un GPU NVIDIA L4 avec un batch size de 32 et la précision mixte (AMP).
+Ces hyperparamètres de base constituent une architecture large et très performante. Toutefois, en cas de contraintes de VRAM sur des GPU L4 (24 GB) avec un batch size de 32 et la précision mixte (AMP), une configuration allégée (canaux réduits à 32, BiLSTM à 64, d_model à 128) peut être fournie via le dictionnaire d'écrasement `CNN_BILSTM_TRANSFORMER_OVERRIDE`.
 
 ---
 
