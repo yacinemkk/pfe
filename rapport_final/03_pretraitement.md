@@ -123,11 +123,41 @@ X_filtered = X_resampled[outliers_if == 1]
 
 **Pourquoi Isolation Forest ?** Contrairement aux méthodes basées sur la distance (LOF, k-NN), Isolation Forest est efficient en O(n log n) et fonctionne bien en haute dimension (caractéristique importante avec 20-30 features).
 
-#### 3.3.2.3 Local Outlier Factor (Filtrage Résiduel)
+#### 3.3.2.3 Paramètres SMOTE Actuels (greedy_new_optimized.ipynb v3)
 
-Après Isolation Forest, **LOF** (Breunig et al., 2000) applique un second filtre basé sur la densité locale. LOF calcule le ratio entre la densité locale d'un point et la densité locale de ses voisins : un point dans une région peu dense par rapport à ses voisins est probablement anormal.
+Depuis la version actuelle du curriculum, les paramètres SMOTE suivants s'appliquent aux deux datasets :
 
 ```python
+# Configuration CSV
+CSV_SMOTE_CONFIG = {
+    'cache_version': 'v2-stronger-balance',
+    'target_quantile': 0.65,           # Augmente les minoritaires jusqu'au 65ème percentile
+    'max_multiplier': 128.0,           # Max ×128 samples par classe
+    'max_new_samples': 500000,         # Plafond global de samples synthétiques
+    'context_multiplier': 1.25,        # Ajuste le contexte SMOTE (radius de voisins)
+    'k_neighbors': 5,                  # k-NN pour chercher les voisins SMOTE
+    'random_state': 42,                # Reproductibilité
+}
+
+# Configuration JSON (valeurs identiques)
+JSON_SMOTE_CONFIG = CSV_SMOTE_CONFIG  # Même config, appliquée indépendamment à JSON
+```
+
+**Justifications des valeurs :**
+- **target_quantile=0.65** : amène chaque classe minoritaire à 65% de la distribution mediane, équilibre acceptable sans explosion combinatoire.
+- **max_multiplier=128.0** : limitation du facteur d'amplification pour éviter des séquences synthétiques aberrantes après 128× interpolation.
+- **max_new_samples=500000** : plafond global pour les deux datasets, limite la croissance mémoire totale.
+- **context_multiplier=1.25** : légère augmentation du rayon d'interpolation pour davantage de stabilité sur des données de petite taille.
+- **k_neighbors=5** : nombre réduit de voisins (vs standard 5-20) adapté aux séquences courtes (longueur=10).
+
+**Application :** SMOTE est appliqué **uniquement sur le split d'entraînement** (jamais sur val/test) pour éviter la contamination.
+
+#### 3.3.2.4 Local Outlier Factor (Filtrage Résiduel — Optionnel)
+
+Après Isolation Forest, **LOF** (Breunig et al., 2000) peut appliquer un second filtre basé sur la densité locale, pour détecter des anomalies locales manquées par la perspective globale d'Isolation Forest. Cependant, dans le curriculum v3 actuel, ce filtre est **optionnel et désactivé par défaut** pour réduire le temps de prétraitement.
+
+```python
+# Optionnel :
 lof = LocalOutlierFactor(
     n_neighbors=20,        # Comparaison avec les 20 plus proches voisins
     contamination=0.05,
@@ -137,7 +167,7 @@ outliers_lof = lof.fit_predict(X_filtered)
 X_final = X_filtered[outliers_lof == 1]
 ```
 
-**Complémentarité avec Isolation Forest :** LOF est plus précis pour détecter des anomalies locales que Isolation Forest qui a une perspective globale. Les deux filtres combinés assurent une nettoyage robuste.
+**Note :** avec SMOTE v2-stronger-balance et target_quantile=0.65, le filtrage par LOF devient moins critique car le déséquilibre a déjà été réduit.
 
 ---
 

@@ -357,11 +357,28 @@ router.calibrate_threshold(X_val_clean, X_val_adv, target_recall=0.95)
 
 ---
 
+## 5.4 Intégration dans le Curriculum Adversarial v3 — k_max Adaptatif
 
+Le GreedyAttackSimulator s'intègre dans le curriculum d'entraînement via un **k_max adaptatif** qui croît progressivement :
+
+| Phase | Epochs | k_max | Mix Ratio | Objectif |
+|-------|--------|-------|-----------|----------|
+| **0** | 1-15 | 0 | 0.0 | Clean baseline (0 perturbations) |
+| **B1** | 16-25 | 2 | 0.4 | Introduction avec 2 features perturbées max |
+| **B2** | 26-30 | 2 | 0.5 | Intensification légère à k=2 |
+| **C** | 31-50 | 4 | 0.7 | Full adversarial avec 4 features perturbées |
+| **D1** | 51-60 | 4 | 0.85 | Intensité maximale à k=4 |
+| **D2** | 61+ | 4 | 0.95 | Consolidation avec 95% adversaires |
+
+**Mécanisme :**
+- À chaque epoch `e` d'une phase, le simulateur génère des adversaires avec k_max fixé pour cette phase.
+- Pendant l'entraînement, chaque batch contient `(1 - mix_ratio) × batch_size` exemples propres et `mix_ratio × batch_size` adversaires générés par le GreedyAttackSimulator avec le k_max courant.
+- Transition de phase : basée sur `K_THRESHOLD = 0.85` — si `accuracy_k >= 0.85` sur validation, la phase est réussie et le modèle peut progresser.
+- **Backstep automatique** : si `accuracy_k < K_BACKSTEP (0.80)`, le modèle retourne à la phase précédente pour stabilisation.
 
 ---
 
-## 5.6 Crash Test — Démonstration de la Vulnérabilité
+## 5.5 Comparaison avec Autres Attaques (FGSM, PGD, TRADES)
 
 Le Crash Test est le protocole de validation de la vulnérabilité des modèles. Il consiste à évaluer un modèle entraîné normalement (Phuse A) face aux attaques greedy avec k = 1, 2, 3, 4 features perturbées.
 

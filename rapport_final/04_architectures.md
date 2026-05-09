@@ -328,12 +328,48 @@ Ces hyperparamètres de base constituent une architecture large et très perform
 
 Tous les modèles partagent la même configuration d'entraînement :
 
-| Paramètre | Valeur | Justification |
-|-----------|--------|---------------|
+| Paramètre | Valeur (Actuelle) | Justification |
+|-----------|---------|---------------|
 | **Optimiseur** | AdamW | Intègre la décroissance de poids (weight decay=1e-4) |
-| **Learning Rate** | 5e-4 | Conservateur pour la stabilité de l'AMP |
-| **Scheduler** | MultiStepLR (milestones=[15,30], γ=0.5) | Diminution du LR aux epochs clés |
-| **Gradient Clipping** | max_norm=1.0 | Prévient les explosions de gradient (important pour BiLSTM) |
+| **Learning Rate** | 5e-4 | Conservateur pour la stabilité de l'AMP et curriculum progressif |
+| **Scheduler** | MultiStepLR adaptatif par phase | Ajusté en fonction de K_THRESHOLD et progression du curriculum |
+| **Gradient Clipping** | max_norm=1.0 | Prévient les explosions de gradient (critique pour BiLSTM + adversarial) |
 | **Mixed Precision** | AMP (FP16) | Réduit la VRAM d'environ 50% sur GPU compatible |
-| **Batch Size** | 32 | Réduit de 64 pour éviter les OOM sur L4 GPU |
-| **Label Smoothing** | Phase A: 0.05, Phase B: 0.08, Phase C: 0.10 | Régularisation progressive |
+| **Batch Size** | 2048 | Augmenté pour accélérer l'entraînement du curriculum multi-phase |
+| **Label Smoothing** | Adaptatif par phase | Dépend de la phase du curriculum |
+
+---
+
+## 4.9 Configuration Actuelle du CNN-BiLSTM-Transformer (Overrides v3)
+
+Depuis greedy_new_optimized.ipynb, le CNN-BiLSTM-Transformer utilise une configuration allégée pour tenir dans les contraintes VRAM :
+
+```python
+CNN_BILSTM_TRANSFORMER_OVERRIDE = {
+    'cnn_channels': 32,            # Réduit de 64 → 32
+    'bilstm_hidden': 64,           # Réduit de 128 → 64 (bilstm output = 128)
+    'bilstm_layers': 2,
+    'bilstm_dropout': 0.3,
+    'transformer_d_model': 128,    # Réduit de 256 → 128
+    'transformer_nhead': 4,
+    'transformer_layers': 2,
+    'transformer_ff_dim': 512,
+    'transformer_dropout': 0.2,
+    'fc_dropout': 0.4,
+}
+```
+
+**Justification :** cette configuration "lite" réduit les paramètres d'environ 60% tout en maintenant l'architecture générale, permettant l'entraînement multi-phase (6 phases × 20 epochs) sur un GPU L4 (24 GB) avec batch_size=2048 et AMP enabled.
+
+---
+
+## 4.10 Intégration avec le Curriculum Adversarial
+
+Les 6 modèles (LSTM, BiLSTM, CNN-LSTM, XGBoost-LSTM, Transformer, CNN-BiLSTM-Transformer) partagent tous le même **curriculum d'entraînement progressif** défini dans `greedy_new_optimized.ipynb` :
+
+- **Phase 0** (epochs 1-15) : 100% données propres, k_max=0
+- **Phases B1-B2** (epochs 16-30) : mix ratio croissant (40%→50%), k_max=2
+- **Phase C** (epochs 31-50) : 70% adversaires, k_max=4
+- **Phases D1-D2** (epochs 51+) : intensité maximale (85%-95%), k_max=4
+
+La distinction par modèle se fait uniquement au niveau de l'architecture interne, pas au niveau du curriculum. Tous reçoivent le même type et la même intensité d'entraînement adversarial.
