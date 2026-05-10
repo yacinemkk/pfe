@@ -85,17 +85,35 @@ Ces deux datasets sont traités de manière **entièrement indépendante** (deux
 
 Les principales contributions de ce travail sont :
 
-- **Un pipeline de prétraitement anti-leakage complet**, incluant filtrage SDN, sélection hybride de features (XGBoost + Chi² + Information Mutuelle + méthode du coude), et normalisation StandardScaler avec split temporel strict par appareil.
+- **Un pipeline de prétraitement anti-leakage complet**, incluant filtrage SDN, sélection adversariale de features (exclusion des 5 features les plus vulnérables : octetTotalCount, bytesPerPacket, firstNonEmptyPacketSize, smallPacketCount, reverseFirstNonEmptyPacketSize), et normalisation StandardScaler avec split temporel strict par appareil.
 
-- **Un GreedyAttackSimulator** guidé par l'analyse de sensibilité des features, qui identifie dynamiquement les features les plus vulnérables après la Phase A et construit des attaques ciblées (Zero, Mimic_Mean, Mimic_95th, Padding_x10) en respectant les contraintes sémantiques du domaine IoT.
+- **Un GreedyAttackSimulator** orienté par l'analyse de sensibilité des features, qui construit des attaques ciblées (Zero, Mimic_Mean, Mimic_95th, Padding_x10) en respectant les contraintes sémantiques du domaine IoT, appliquées sur un nombre contrôlé de features (k_max : 0 → 2 → 4).
 
-- **Un curriculum d'entraînement antagoniste en 4 phases** avec des mécanismes de défense complémentaires : AFDLoss (décorrélation des features), Feature Dropout, ajout de bruit gaussien, et une stratégie de checkpointing pondérée (score = 0.4 × clean_acc + 0.6 × adv_acc) favorisant la robustesse sans sacrifier les performances propres.
+- **Un curriculum d'entraînement adversarial en 6 phases adaptatives** (Phase 0, B1, B2, C, D1, D2) avec contrôle par seuils de robustesse : 
+  - Mix ratio progression : 0% → 40% → 50% → 70% → 85% → 95%
+  - k_max progression : 0 → 2 → 2 → 4 → 4 → 4
+  - Transitions automatiques basées sur K_THRESHOLD=0.85 et mécanismes de backstep (K_BACKSTEP=0.80)
 
-- **Un système de discrimination et de routage** combinant un Discriminateur BiLSTM (détection binaire : flux propre vs adversarial) avec un routeur IoTRouter qui dirige chaque flux vers le modèle approprié selon un seuil calibré automatiquement.
+- **Un système d'évaluation complet** mesurant la robustesse progressive (k=1,2,3,4) sur validation, avec métriques de Recuperation Rate et accuracy pour chaque k.
 
 ---
 
-## 1.6 Organisation du Rapport
+## 1.6 Entry Point et Code Principal
+
+**L'entry point principal du projet est le notebook Jupyter :** `greedy_new_optimized.ipynb`
+
+Ce notebook orchestre l'ensemble du pipeline :
+1. **Configuration centralisée** : tous les paramètres du projet (BATCH_SIZE=2048, LEARNING_RATE=5e-4, seuils K_THRESHOLD=0.85, mix ratios, k_max progression)
+2. **Gestion des données** : chargement et prétraitement des datasets CSV et JSON avec caching SMOTE sur Google Drive
+3. **Gestion de la mémoire** : monitoring RAM/GPU en temps réel, adaptive cleanup
+4. **Entraînement** : implémentation complète du curriculum 6-phases avec transition automatique par seuils de robustesse
+5. **Évaluation** : protocole de crash test avec métrics pour k=1,2,3,4 perturbations
+
+Tous les modèles (LSTM, BiLSTM, CNN-LSTM, XGBoost-LSTM, Transformer, CNN-BiLSTM-Transformer) sont entraînés séquentiellement via ce notebook, avec sauvegardes intermédiaires sur Google Drive permettant la reprise en cas d'interruption réseau.
+
+---
+
+## 1.7 Organisation du Rapport
 
 Le reste du rapport est structuré comme suit :
 - **Chapitre 2** présente l'état de l'art en identification IoT et en robustesse adversariale.

@@ -118,10 +118,12 @@ Ces contraintes guident la conception des attaques adversariales réalistes dans
 
 Par rapport à l'état de l'art, ce projet se distingue par :
 
-1. **L'utilisation d'un GreedyAttackSimulator guidé par analyse de sensibilité**, qui identifie dynamiquement (post-Phase A) quelles features sont les plus vulnérables pour chaque modèle specific, puis construit des attaques ciblées. C'est plus réaliste que des perturbations génériques L∞.
+1. **L'utilisation d'un GreedyAttackSimulator** appliquant 4 stratégies (Zero, Mimic_Mean, Mimic_95th, Padding_x10) sur un nombre contrôlé de features (k_max : 0 → 2 → 4) avec progression adaptative basée sur la sensibilité mesurée en validation.
 
-2. **Un curriculum d'entraînement en 4 phases progressives** (A→B→C→D) avec des hyperparamètres finement calibrés pour éviter le problème classique d'effondrement de l'accuracy propre lors de l'entraînement antagoniste.
+2. **Un curriculum d'entraînement en 6 phases progressives** (0 → B1 → B2 → C → D1 → D2) implémenté dans `greedy_new_optimized.ipynb` avec :
+   - Mix ratio croissant : 0% → 40% → 50% → 70% → 85% → 95% d'exemples adversariaux
+   - k_max progressif : 0 → 2 → 2 → 4 → 4 → 4
+   - Transitions automatiques basées sur seuils de robustesse (K_THRESHOLD=0.85, K_BACKSTEP=0.80)
+   - Hysteresis et mécanisme de backstep pour éviter l'effondrement d'accuracy propre
 
-3. **Un mécanisme de discrimination** orthogonal au classifieur principal : un Discriminateur BiLSTM entraîné séparément pour détecter si un flux a été perturbé, combiné avec un routeur qui choisit dynamiquement le modèle le plus approprié.
-
-4. **L'AFDLoss (Adversarial Feature Defense Loss)** — une fonction de perte custom qui découple les représentations internes des exemples propres et adversariaux, forçant le modèle à maintenir des centres de classes distincts pour les deux types d'entrées.
+3. **Un système complet de monitoring et d'évaluation** en temps réel avec métriques de Recuperation Rate pour k=1,2,3,4 perturbations, permettant le contrôle adaptatif des transitions de phase.

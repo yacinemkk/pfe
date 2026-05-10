@@ -14,25 +14,35 @@ La **sélection hybride par méthode du coude** combinant XGBoost (0.4), Chi² (
 
 Le modèle **CNN-BiLSTM-Transformer hybride** — deux branches CNN parallèles (k=3, k=5) → BiLSTM bidirectionnel 2 couches → Transformer Encoder 2 couches → MeanPooling → FC — atteint des performances de référence de ~92-94% d'accuracy sur les données propres, surpassant les architectures individuelles (LSTM, BiLSTM, CNN-LSTM, Transformer). Cette architecture tire profit de la complémentarité entre extraction multi-échelle locale (CNN), modélisation séquentielle bidirectionnelle (BiLSTM), et attention globale (Transformer).
 
-### 8.1.3 Contribution 3 — GreedyAttackSimulator Guidé par Sensibilité
+### 8.1.3 Contribution 3 — GreedyAttackSimulator avec 4 Stratégies
 
-Le **GreedyAttackSimulator**, construit à partir d'une analyse de sensibilité post-Phase A, constitue un modèle d'attaque réaliste pour le domaine IoT/réseau. En ciblant spécifiquement les features les plus vulnérables pour chaque modèle avec des stratégies sémantiquement valides (Zero, Mimic_Mean, Mimic_95th, Padding_x10), et en respectant les contraintes physiques du protocole (features non modifiables), ce simulateur offre une évaluation de robustesse plus pertinente que les perturbations L∞ génériques comme FGSM ou PGD.
+Le **GreedyAttackSimulator** applique 4 stratégies d'attaque sémantiquement valides (Zero, Mimic_Mean, Mimic_95th, Padding_x10) sur un nombre contrôlé de features (k_max progressif : 0 → 2 → 4). Contrairement aux perturbations L∞ génériques, ce simulateur respecte les contraintes physiques du protocole réseau et les contraintes du domaine IoT, offrant une évaluation de robustesse plus pertinente et réaliste.
 
-### 8.1.4 Contribution 4 — Curriculum d'Entraînement Antagoniste en 4 Phases
+### 8.1.4 Contribution 4 — Curriculum d'Entraînement Adversarial en 6 Phases
 
-Le curriculum **A→B→C→D** avec escalade progressive de la difficulté (de 0% à 85% adversarial, de k=0 à k=4 features) et des mécanismes de défense complémentaires est la contribution centrale de ce projet :
+Le curriculum **Phase 0 → B1 → B2 → C → D1 → D2** implémenté dans `greedy_new_optimized.ipynb` constitue la contribution centrale de ce projet :
 
-- **AFDLoss** (Phases B et C) — force une structure géométrique robuste des représentations
-- **Feature Dropout** (Phases B, C, D) — empêche la sur-dépendance aux features vulnérables
-- **Bruit Gaussien** (Phases B, C, D) — améliore la robustesse générale
-- **Label Smoothing progressif** (5% → 8% → 10%) — régularisation adaptative
-- **Checkpointing pondéré** (0.4×clean + 0.6×adv) — sélection orientée robustesse
+- **Phase 0** : Bootstrap propre (100% clean, k_max=0) — établit une base solide
+- **Phase B1-B2** : Introduction progressive (40-50% adversarial, k_max=2) — adaptation douce à la robustesse
+- **Phase C** : Robustesse forte (70% adversarial, k_max=4) — apprentissage contre attaques multiples
+- **Phase D1-D2** : Consolidation maximale (85-95% adversarial, k_max=4) — fine-tuning pour robustesse extrême
 
-Ce curriculum transforme un modèle avec RR≈0.17 (Phase A, k=4) en un modèle avec RR≈0.76 (Phase D, k=4), représentant une **amélioration de ×4.5 du Taux de Robustesse**.
+Avec transitions automatiques basées sur des seuils de robustesse adaptatifs :
+- `K_THRESHOLD = 0.85` : cible de robustesse pour progression
+- `K_BACKSTEP = 0.80` : déclenchement du backstep automatique
+- `K_RESUME_D2 = 0.83` : reprise après backstep avec hysteresis
 
-### 8.1.5 Contribution 5 — Système de Discrimination et Routage
+Ce curriculum transforme un modèle avec RR(k=4)≈0.17 (Phase 0) en un modèle avec RR(k=4)≈0.75 (Phase D2), représentant une **amélioration de ×4.4 du Taux de Robustesse**.
 
-Le **Discriminateur BiLSTM** (~92% d'accuracy de détection) combiné avec le **Routeur IoT** (calibrage automatique à ≥95% recall d'attaque) constitue une première ligne de défense orthogonale au classifieur principal. Ce système two-path — Modèle Normal pour le trafic propre, Modèle Robuste pour le trafic adversarial — maximise la performance dans les deux scénarios et peut fonctionner en déploiement réel sans connaissance a priori du type de trafic entrant.
+### 8.1.5 Contribution 5 — Évaluation Complète avec Métriques de Robustesse
+
+Le système d'évaluation complet mesure la robustesse progressive sous attaques de croissante intensité (k=1,2,3,4), avec :
+- **Accuracy propre** : performance sur données non perturbées
+- **Accuracy adversariale** : performance sous attaque pour chaque k
+- **Taux de Robustesse (RR)** : ratio adv_acc/clean_acc, métrique clé pour l'évaluation
+- **Crash Test** : protocole standardisé appliqué après chaque phase pour guider les transitions
+
+Cette approche systématique d'évaluation permet le contrôle adaptatif et en temps réel des transitions de phase.
 
 ---
 
@@ -40,7 +50,7 @@ Le **Discriminateur BiLSTM** (~92% d'accuracy de détection) combiné avec le **
 
 ### 8.2.1 Absence de Cross-Validation
 
-Les résultats obtenus dépendent d'un unique split 80/20. Sans cross-validation, la variance des performances n'est pas estimée — les scores pourraient varier de ±3-5 points selon le split temporel choisi. Une k-fold temporal cross-validation donnerait des estimations plus fiables.
+Les résultats obtenus dépendent d'un unique split temporel 70/10/20 par appareil. Sans cross-validation temporelle, la variance des performances n'est pas estimée — les scores pourraient varier de ±2-4 points selon le point de split choisi.
 
 ### 8.2.2 Évaluation sur Données Synthétiques
 
@@ -82,11 +92,11 @@ Avec l'essor des grands modèles de langage (LLMs), une avenue prometteuse est l
 
 ## 8.4 Conclusion Générale
 
-Ce projet démontre qu'il est possible de construire un système d'identification de dispositifs IoT à la fois **précis** (>90% d'accuracy sur données normales) et **robuste** (RR≈0.76 sous attaque de 4 features simultanées) en combinant des techniques d'apprentissage profond avancées avec un curriculum d'entraînement antagoniste soigneusement calibré.
+Ce projet démontre qu'il est possible de construire un système d'identification de dispositifs IoT à la fois **précis** (>90% d'accuracy sur données normales) et **robuste** (RR≈0.75 sous attaque de 4 features simultanées) en combinant des architectures de Deep Learning avancées (CNN-BiLSTM-Transformer) avec un curriculum d'entraînement adversarial en 6 phases soigneusement calibré.
 
-La progression A→B→C→D — de l'entraînement standard à la consolidation antagoniste — illustre qu'un modèle robuste n'est pas simplement un modèle entraîné sur des données adversariales, mais le résultat d'un **processus graduel et structuré** où chaque phase construit sur les acquis de la précédente, avec des mécanismes de défense adaptés à chaque niveau de difficulté.
+La progression Phase 0 → B1 → B2 → C → D1 → D2 — de l'entraînement standard à la consolidation adversariale — illustre qu'un modèle robuste n'est pas simplement un modèle entraîné sur des données adversariales, mais le résultat d'un **processus graduel et structuré** où chaque phase construit sur les acquis de la précédente, avec transitions automatiques basées sur des seuils de robustesse adaptatifs.
 
-Le système de routage (Discriminateur + Routeur) ajoute une couche de défense orthogonale qui améliore encore les performances globales (+50 points sur les flux adversariaux) et constitue une architecture deployable dans les infrastructures SDN modernes.
+La pipeline complète, implémentée dans le notebook Jupyter `greedy_new_optimized.ipynb`, orchestre l'ensemble du processus : du prétraitement anti-leakage à l'entraînement des 6 modèles en parallèle, avec gestion intelligente de la mémoire et sauvegardes sur Google Drive permettant la reprise en cas d'interruption.
 
 Les résultats obtenus constituent une contribution significative à la sécurité des réseaux IoT et ouvrent la voie à des déploiements réels dans des environnements réseau productifs où la menace adversariale est croissante.
 

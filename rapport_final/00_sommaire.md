@@ -17,7 +17,7 @@
 | 3 | Datasets et Prétraitement des Données | `03_pretraitement.md` | 8–10 |
 | 4 | Architectures des Modèles de Deep Learning | `04_architectures.md` | 8–10 |
 | 5 | Attaques Adversariales sur les Flux IoT | `05_attaques_adversariales.md` | 6–7 |
-| 6 | Curriculum d'Entraînement Antagoniste (4 Phases) | `06_entrainement_antagoniste.md` | 9–11 |
+| 6 | Curriculum d'Entraînement Antagoniste (6 Phases) | `06_entrainement_antagoniste.md` | 10–12 |
 | 7 | Évaluation des Performances et Résultats | `07_evaluation_resultats.md` | 6–7 |
 | 8 | Conclusion et Perspectives | `08_conclusion.md` | 3–4 |
 
@@ -27,9 +27,9 @@
 
 ## Résumé du Projet
 
-Ce PFE porte sur le problème de l'**identification de dispositifs IoT** à partir de données de flux réseau au format IPFIX, dans un contexte de réseau défini par logiciel (SDN). L'approche proposée combine plusieurs architectures de Deep Learning — dont un modèle hybride **CNN-BiLSTM-Transformer** — avec un **curriculum d'entraînement antagoniste en 4 phases** permettant de renforcer la robustesse des modèles face aux attaques adversariales. Le système intègre un **discriminateur** (LSTM bidirectionnel) pour détecter les flux malveillants et router les paquets suspects vers le modèle robuste.
+Ce PFE porte sur le problème de l'**identification de dispositifs IoT** à partir de données de flux réseau au format IPFIX, dans un contexte de réseau défini par logiciel (SDN). L'approche proposée combine six architectures de Deep Learning — dont un modèle hybride **CNN-BiLSTM-Transformer** — avec un **curriculum d'entraînement adversarial en 6 phases** (Phase 0 → B1 → B2 → C → D1 → D2) permettant de renforcer la robustesse des modèles face aux attaques adversariales générées par le **GreedyAttackSimulator**. Le système est implémenté dans le notebook Jupyter `greedy_new_optimized.ipynb` avec transitions automatiques basées sur des seuils de robustesse adaptatifs.
 
-**Mots-clés :** IoT, Identification d'Appareils, IPFIX, SDN, Deep Learning, CNN, BiLSTM, Transformer, Adversarial Training, Robustesse, GreedyAttack, AFDLoss, Curriculum Learning.
+**Mots-clés :** IoT, Identification d'Appareils, IPFIX, SDN, Deep Learning, CNN, BiLSTM, Transformer, Adversarial Training, Robustesse, GreedyAttackSimulator, Curriculum Learning, Threshold-Gated Control.
 
 ---
 
@@ -40,10 +40,9 @@ Ce PFE porte sur le problème de l'**identification de dispositifs IoT** à part
 - Figure 3 : Pipeline de prétraitement JSON en 4 étapes
 - Figure 4 : Méthode du coude (Elbow Method) pour la sélection de features
 - Figure 5 : Architecture CNN-BiLSTM-Transformer
-- Figure 6 : Curriculum d'entraînement en 4 phases (A, B, C, D)
-- Figure 7 : Architecture du Discriminateur BiLSTM
-- Figure 8 : Architecture du Routeur IoT (IoTRouter)
-- Figure 9 : Comparaison des performances des 6 modèles (propre vs adversarial)
+- Figure 6 : Curriculum d'entraînement en 6 phases (0, B1, B2, C, D1, D2)
+- Figure 7 : Comparaison des performances des 6 modèles (propre vs adversarial)
+- Figure 8 : Évolution de la robustesse par phase
 
 ## Liste des Tableaux
 
@@ -53,6 +52,6 @@ Ce PFE porte sur le problème de l'**identification de dispositifs IoT** à part
 - Tableau 4 : Comparaison des 6 architectures (paramètres, profondeur, mécanisme)
 - Tableau 5 : Hyperparamètres du modèle CNN-BiLSTM-Transformer
 - Tableau 6 : Stratégies d'attaques Greedy par feature
-- Tableau 7 : Configuration des 4 phases d'entraînement
+- Tableau 7 : Configuration des 6 phases d'entraînement avec mix ratios et k_max
 - Tableau 8 : Résultats du Crash Test par modèle et par phase
-- Tableau 9 : Taux de Robustesse (RR) avant et après entraînement antagoniste
+- Tableau 9 : Taux de Robustesse (RR) avant et après curriculum 6-phases
