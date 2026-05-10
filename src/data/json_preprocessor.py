@@ -535,13 +535,14 @@ class JsonIoTDataProcessor:
         2. Isolation Forest: detection des anomalies
         3. Local Outlier Factor (LOF): filtrage du bruit residual
         """
-        print(f"  Avant equilibrage: {len(X):,} echantillons")
+        print(f"  >>> Etape 2.1: Debut - Avant equilibrage: {len(X):,} echantillons")
 
         # Borderline-SMOTE has been removed as per user request
         X_resampled, y_resampled = X, y
+        print(f"  >>> Etape 2.1: Termine (SMOTE desactive)")
 
         # 2.2 Isolation Forest pour detecter les anomalies
-        print("  Application d'Isolation Forest...")
+        print(f"  >>> Etape 2.2: Debut - Application d'Isolation Forest...")
         iso_forest = IsolationForest(
             contamination=contamination, random_state=RANDOM_STATE, n_jobs=-1
         )
@@ -551,12 +552,12 @@ class JsonIoTDataProcessor:
         X_filtered = X_resampled[mask_if]
         y_filtered = y_resampled[mask_if]
         print(
-            f"  Apres Isolation Forest: {len(X_filtered):,} echantillons "
+            f"  >>> Etape 2.2: Termine - Apres Isolation Forest: {len(X_filtered):,} echantillons "
             f"({np.sum(~mask_if):,} supprimes)"
         )
 
         # 2.3 Local Outlier Factor pour filtrage supplementaire
-        print("  Application de Local Outlier Factor...")
+        print(f"  >>> Etape 2.3: Debut - Application de Local Outlier Factor...")
         try:
             lof = LocalOutlierFactor(
                 n_neighbors=20, contamination=contamination, n_jobs=-1
@@ -567,11 +568,11 @@ class JsonIoTDataProcessor:
             X_final = X_filtered[mask_lof]
             y_final = y_filtered[mask_lof]
             print(
-                f"  Apres LOF: {len(X_final):,} echantillons "
+                f"  >>> Etape 2.3: Termine - Apres LOF: {len(X_final):,} echantillons "
                 f"({np.sum(~mask_lof):,} supprimes)"
             )
         except Exception as e:
-            print(f"  LOF echoue ({e}), conservation des donnees filtrees")
+            print(f"  >>> Etape 2.3: Erreur - LOF echoue ({e}), conservation des donnees filtrees")
             X_final, y_final = X_filtered, y_filtered
 
         return X_final, y_final
@@ -803,11 +804,16 @@ class JsonIoTDataProcessor:
         all_feature_names = self.continuous_feature_names + self.binary_feature_names
 
         # ─── Etape 2: Equilibrage et Filtrage du Bruit (TRAIN UNIQUEMENT) ───
+        print("\n" + "=" * 50)
+        print(">>> ETAPE 2: Equilibrage et filtrage du bruit")
+        print("=" * 50)
         if apply_balancing:
             print("\n[ETAPE 2] Equilibrage et filtrage du bruit (train only)...")
+            print(">>> etape 2: debut du processus...")
             X_train_balanced, y_train_balanced = self.balance_and_filter_noise(
                 X_train_combined, y_enc_train, contamination=0.05
             )
+            print(">>> etape 2: termine!")
         else:
             print("\n[ETAPE 2] Equilibrage desactive.")
             X_train_balanced = X_train_combined
@@ -966,6 +972,10 @@ class JsonIoTDataProcessor:
             with open(save_path / "preprocessing_metadata.json", "w") as f:
                 json.dump(metadata, f, indent=2)
             print(f"\nDonnees sauvegardees dans {save_path}")
+
+        print("\n" + "=" * 50)
+        print(">>> PUSH: Pretraitement termine avec succes!")
+        print("=" * 50)
 
         return (
             X_train_seq,
