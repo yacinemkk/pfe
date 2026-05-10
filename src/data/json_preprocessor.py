@@ -787,6 +787,11 @@ class JsonIoTDataProcessor:
                 
                 print(f"  Cache charge: {len(X_train_balanced):,} echantillons train")
                 print(">>> Etape 2 terminee (charge depuis cache)")
+                
+                # Extract filtered binary from X_train_balanced
+                n_bin_features = X_bin_train.shape[1]
+                X_bin_train = X_train_balanced[:, -n_bin_features:]
+                
                 use_cache = True
             else:
                 print(f"  Cache non trouve dans {step2_cache_dir}, execution normale")
@@ -1163,10 +1168,14 @@ class JsonIoTDataProcessor:
         # ─── Creation des sequences (SEPARATEMENT pour train, val, test) ──────
         print(f"\n[SEQUENCES] Creation (length={seq_length}, stride={stride})...")
 
+        # Extract filtered binary from X_train_balanced (last n features are binary)
+        n_bin_features = X_bin_train.shape[1]
+        X_bin_train_filtered = X_train_balanced[:, -n_bin_features:]
+        
         X_train_seq, y_train_seq = self.create_sequences_with_categorical(
             X_train_cont_scaled,
             X_cat_train_balanced,
-            X_bin_train,
+            X_bin_train_filtered,
             y_train_balanced,
             y_str_train if not apply_balancing else None,
             seq_length,
