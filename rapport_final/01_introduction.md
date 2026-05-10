@@ -47,9 +47,15 @@ Pour répondre à cette question, les objectifs spécifiques du projet sont :
 
 3. **Démontrer la vulnérabilité** des modèles naïvement entraînés face aux attaques adversariales via un protocole de *Crash Test*.
 
-4. **Concevoir et implémenter un curriculum d'entraînement antagoniste en 4 phases** (A : Fondation, B : Robustesse Douce, C : Robustesse Forte, D : Consolidation) qui renforce progressivement la robustesse des modèles, en utilisant le **GreedyAttackSimulator** — un simulateur d'attaques guidé par l'analyse de sensibilité des features.
+4. **Concevoir et implémenter un curriculum d'entraînement adversarial progressif en 6 phases** 
+   - Phase 0 : Clean baseline
+   - Phases B1–B2 : Introduction douce avec k_max=2 perturbations
+   - Phase C : Robustesse forte avec k_max=4
+   - Phases D1–D2 : Consolidation maximale
+   
+   Ce curriculum renforce progressivement la robustesse en utilisant le **GreedyAttackSimulator** — un simulateur d'attaques guidé par l'analyse de sensibilité des features, avec un **contrôle adaptatif par seuils de robustesse** (K_THRESHOLD=0.85) et transition automatique entre phases.
 
-5. **Déployer un système de détection et de routage** basé sur un Discriminateur BiLSTM qui identifie les flux adversariaux et les redirige vers le modèle robuste.
+5. **Déployer un système d'évaluation complet** avec évaluation continue de la robustesse (k=1,2,3,4) et mécanismes de backstep automatique pour garantir une convergence stable.
 
 ---
 

@@ -63,6 +63,44 @@ from config.config import (
 
 CATEGORICAL_FEATURES_JSON = ["protocolIdentifier"]
 
+# ─── Adversarial Feature Exclusion ─────────────────────────────────────────
+# Features exclues car >= 45% de drop sous attaques adversariales (sensitivity analysis)
+# See docs/pretraitement.md — Section Etape 3
+
+ADVERSARIAL_EXCLUDED_FEATURES = {
+    "octetTotalCount": 54.2,          # Padding_x10
+    "bytesPerPacket": 53.7,           # Padding_x10
+    "firstNonEmptyPacketSize": 49.4,  # Padding_x10
+    "smallPacketCount": 47.6,         # Mimic_95th
+    "reverseFirstNonEmptyPacketSize": 47.4,  # Zero
+}
+
+
+def adversarial_feature_exclusion(feature_names, excluded_features=None):
+    """Exclusion adversariale explicite des features vulnerables.
+
+    Remplace la selection hybride (XGBoost + Chi2 + MI).
+    Toutes les autres features sont conservees.
+    Ne touche pas aux features categororielles et binaires.
+    """
+    if excluded_features is None:
+        excluded_features = ADVERSARIAL_EXCLUDED_FEATURES
+
+    excluded = []
+    kept = []
+
+    for feat in feature_names:
+        if feat in excluded_features:
+            excluded.append(feat)
+        else:
+            kept.append(feat)
+
+    print(f"  Features exclues ({len(excluded)}): {excluded}")
+    print(f"  Features conservees ({len(kept)}): {kept}")
+
+    return kept, excluded
+
+
 # ─── MAC-to-Device Mapping pour IPFIX Records ────────────────────────────────
 # Primary source: config/config.yaml (mac_mapping section)
 # Fallback: hardcoded dict below (kept for backwards compatibility)
@@ -129,6 +167,41 @@ TARGET_CLASSES = [
     "Amazon Echo",
     "Amazon Echo Show",
 ]
+
+# ─── Adversarial Feature Exclusion ─────────────────────────────────────────
+# Features exclues car >= 45% de drop sous attaques adversariales (sensitivity analysis)
+# Remplace la selection hybride (XGBoost + Chi2 + MI + elbow)
+# 36 - 5 = 31 features continues conservees
+
+ADVERSARIAL_EXCLUDED_FEATURES = {
+    "octetTotalCount": 54.2,
+    "bytesPerPacket": 53.7,
+    "firstNonEmptyPacketSize": 49.4,
+    "smallPacketCount": 47.6,
+    "reverseFirstNonEmptyPacketSize": 47.4,
+}
+
+
+def adversarial_feature_exclusion(feature_names, excluded_features=None):
+    """Exclusion adversariale explicite — remplace la selection hybride.
+
+    Conserve toutes les features SAUF celles vulnerables aux attaques.
+    Pas de scoring, pas de coude. Applique sur train/val/test identiquement.
+    """
+    if excluded_features is None:
+        excluded_features = ADVERSARIAL_EXCLUDED_FEATURES
+
+    excluded = []
+    kept = []
+
+    for feat in feature_names:
+        if feat in excluded_features:
+            excluded.append(feat)
+        else:
+            kept.append(feat)
+
+    return kept, excluded
+
 
 # ─── Issue 4: Columns to drop (prevent data leakage) ────────────────────────
 
@@ -308,6 +381,7 @@ class JsonIoTDataProcessor:
         self.feature_names = None
         self.selected_feature_indices = None
         self.num_classes = 0
+        self.excluded_features = {}
         self.continuous_feature_names = list(FEATURES_TO_KEEP_JSON)
         self.categorical_feature_names = list(CATEGORICAL_FEATURES_JSON)
         self.binary_feature_names = list(PKT_DIR_COLS)
@@ -502,99 +576,15 @@ class JsonIoTDataProcessor:
 
         return X_final, y_final
 
-    # ─── Etape 3: Selection hybride des caracteristiques ─────────────────────
+    # ─── Etape 3: Selection par exclusion adversariale ─────────────────────
 
-    @staticmethod
-    def find_elbow_k(scores: np.ndarray) -> int:
-        """Trouve le k optimal via la methode du coude (elbow).
+    def adversarial_feature_selection(self, feature_names):
+        """Exclusion adversariale explicite — remplace la selection hybride.
 
-        Calcule la distance perpendiculaire maximale entre chaque point
-        de la courbe triee (descendant) et la ligne reliant le premier
-        et le dernier point. Le point le plus eloigne est le coude.
+        Conserve toutes les features SAUF celles vulnerables aux attaques.
+        Pas de scoring, pas de coude. Applique sur train/val/test identiquement.
         """
-        n = len(scores)
-        if n <= 2:
-            return n
-
-        sorted_scores = np.sort(scores)[::-1]
-        x = np.arange(n, dtype=float)
-
-        p1 = np.array([x[0], sorted_scores[0]])
-        p2 = np.array([x[-1], sorted_scores[-1]])
-
-        line_vec = p2 - p1
-        line_len_sq = np.dot(line_vec, line_vec)
-        if line_len_sq < 1e-12:
-            return n // 2
-
-        distances = np.zeros(n)
-        for i in range(n):
-            pt = np.array([x[i], sorted_scores[i]])
-            distances[i] = abs(np.cross(line_vec, pt - p1)) / np.sqrt(line_len_sq)
-
-        elbow_idx = int(np.argmax(distances))
-        return max(1, elbow_idx + 1)
-
-    def hybrid_feature_selection(self, X, y, feature_names, top_k=None):
-        """
-        Etape 3: Selection hybride des caracteristiques.
-
-        1. XGBoost: importance des caracteristiques
-        2. Chi2: pertinence statistique
-        3. Information Mutuelle: dependances non lineaires
-
-        Si top_k est None, utilise la methode du coude automatiquement.
-        """
-        n_features = X.shape[1]
-        print(f"  Selection parmi {n_features} caracteristiques...")
-
-        # 3.1 XGBoost Feature Importance
-        print("  3.1 XGBoost importance...")
-        xgb_clf = xgb.XGBClassifier(
-            n_estimators=100,
-            max_depth=6,
-            learning_rate=0.1,
-            random_state=RANDOM_STATE,
-            use_label_encoder=False,
-            eval_metric="mlogloss",
-            verbosity=0,
-        )
-        xgb_clf.fit(X, y)
-        xgb_importance = xgb_clf.feature_importances_
-
-        # 3.2 Chi2 test (besoin de valeurs positives)
-        print("  3.2 Chi2 test...")
-        X_positive = X - X.min() + 1e-6
-        chi2_scores, _ = chi2(X_positive, y)
-        chi2_scores = chi2_scores / (chi2_scores.max() + 1e-10)
-
-        # 3.3 Mutual Information
-        print("  3.3 Information Mutuelle...")
-        mi_scores = mutual_info_classif(X, y, random_state=RANDOM_STATE)
-        mi_scores = mi_scores / (mi_scores.max() + 1e-10)
-
-        # Combiner les scores
-        xgb_norm = xgb_importance / (xgb_importance.max() + 1e-10)
-        combined_scores = 0.4 * xgb_norm + 0.3 * chi2_scores + 0.3 * mi_scores
-
-        # Determiner k : elbow method ou valeur fixee
-        if top_k is None:
-            top_k = self.find_elbow_k(combined_scores)
-            print(f"  Elbow method → k={top_k} (sur {n_features} features)")
-        else:
-            top_k = min(top_k, n_features)
-            print(f"  k fixe → {top_k}")
-
-        selected_indices = np.argsort(combined_scores)[-top_k:]
-        selected_indices = np.sort(selected_indices)
-
-        selected_features = [feature_names[i] for i in selected_indices]
-        print(f"  {len(selected_indices)} caracteristiques selectionnees:")
-        for i, idx in enumerate(selected_indices[-10:]):
-            print(f"    {i + 1}. {feature_names[idx]}: {combined_scores[idx]:.4f}")
-
-        self.selected_feature_indices = selected_indices
-        return selected_indices, selected_features
+        return adversarial_feature_exclusion(feature_names, ADVERSARIAL_EXCLUDED_FEATURES)
 
     def prepare_features(self, df: pd.DataFrame):
         """
@@ -823,32 +813,44 @@ class JsonIoTDataProcessor:
             X_train_balanced = X_train_combined
             y_train_balanced = y_enc_train
 
-        # ─── Etape 3: Selection Hybride des Caracteristiques ─────────────────
+        # ─── Etape 3: Selection par Exclusion Adversariale ────────────────────
         if apply_feature_selection:
-            print("\n[ETAPE 3] Selection hybride des caracteristiques...")
-            selected_indices, selected_features = self.hybrid_feature_selection(
-                X_train_balanced,
-                y_train_balanced,
-                all_feature_names,
-                top_k=top_k_features,
+            print("\n[ETAPE 3] Exclusion adversariale des caracteristiques vulnerables...")
+            kept_features, excluded_features = self.adversarial_feature_selection(
+                all_feature_names
             )
+
+            excluded_set = set(ADVERSARIAL_EXCLUDED_FEATURES.keys())
+            selected_indices = [
+                i for i, name in enumerate(all_feature_names)
+                if name not in excluded_set
+            ]
+            selected_indices = np.array(selected_indices, dtype=int)
+            selected_features = kept_features
+
             X_train_selected = X_train_balanced[:, selected_indices]
             X_val_selected = X_val_combined[:, selected_indices]
             X_test_selected = X_test_combined[:, selected_indices]
             self.feature_names = selected_features
+            self.excluded_features = excluded_features
 
-            # Mettre a jour les indices des features continues/binaires
             n_continuous = len(self.continuous_feature_names)
             cont_mask = selected_indices < n_continuous
             bin_mask = selected_indices >= n_continuous
 
             self.selected_continuous_indices = selected_indices[cont_mask]
             self.selected_binary_indices = selected_indices[bin_mask] - n_continuous
+
+            print(
+                f"  Features selectionnees: {len(selected_features)} "
+                f"({len(excluded_features)} exclues)"
+            )
         else:
             print("\n[ETAPE 3] Selection desactivee.")
             X_train_selected = X_train_balanced
             X_val_selected = X_val_combined
             X_test_selected = X_test_combined
+            self.excluded_features = {}
 
         del X_train_combined, X_val_combined, X_test_combined, X_train_balanced
         gc.collect()
@@ -943,9 +945,26 @@ class JsonIoTDataProcessor:
                         "feature_names": self.feature_names,
                         "selected_feature_indices": self.selected_feature_indices,
                         "num_classes": self.num_classes,
+                        "excluded_features": self.excluded_features,
                     },
                     f,
                 )
+
+            metadata = {
+                "excluded_features": {
+                    name: {
+                        "drop_percent": drop,
+                        "reason": "adversarial_vulnerability",
+                    }
+                    for name, drop in self.excluded_features.items()
+                },
+                "feature_selection_method": "adversarial_exclusion",
+                "n_features_original": len(all_feature_names),
+                "n_features_kept": len(selected_features),
+                "n_features_excluded": len(self.excluded_features),
+            }
+            with open(save_path / "preprocessing_metadata.json", "w") as f:
+                json.dump(metadata, f, indent=2)
             print(f"\nDonnees sauvegardees dans {save_path}")
 
         return (
