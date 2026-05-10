@@ -528,7 +528,7 @@ class JsonIoTDataProcessor:
 
     # ─── Etape 2: Equilibrage et filtrage du bruit ───────────────────────────
 
-    def balance_and_filter_noise(self, X, y, contamination=0.05):
+    def balance_and_filter_noise(self, X, y, X_categorical=None, contamination=0.05):
         """
         Etape 2: Equilibrage et filtrage du bruit.
 
@@ -554,6 +554,13 @@ class JsonIoTDataProcessor:
         mask_if = outliers_if == 1
         X_filtered = X_resampled[mask_if]
         y_filtered = y_resampled[mask_if]
+        
+        # Also filter categorical if provided
+        if X_categorical is not None:
+            X_cat_filtered = X_categorical[mask_if]
+        else:
+            X_cat_filtered = None
+            
         print(
             f"  >>> Etape 2.2: Termine - Apres Isolation Forest: {len(X_filtered):,} echantillons "
             f"({np.sum(~mask_if):,} supprimes)"
@@ -590,6 +597,13 @@ class JsonIoTDataProcessor:
             mask_lof = all_mask_lof
             X_final = X_filtered[mask_lof]
             y_final = y_filtered[mask_lof]
+            
+            # Also filter categorical after LOF
+            if X_cat_filtered is not None:
+                X_cat_final = X_cat_filtered[mask_lof]
+            else:
+                X_cat_final = None
+                
             print(
                 f"  >>> Etape 2.3: Termine - Apres LOF: {len(X_final):,} echantillons "
                 f"({np.sum(~mask_lof):,} supprimes)"
@@ -597,8 +611,9 @@ class JsonIoTDataProcessor:
         except Exception as e:
             print(f"  >>> Etape 2.3: Erreur - LOF echoue ({e}), conservation des donnees filtrees")
             X_final, y_final = X_filtered, y_filtered
+            X_cat_final = X_cat_filtered if X_categorical is not None else None
 
-        return X_final, y_final
+        return X_final, y_final, X_cat_final if X_categorical is not None else None
 
     # ─── Etape 3: Selection par exclusion adversariale ─────────────────────
 
@@ -834,8 +849,8 @@ class JsonIoTDataProcessor:
             print("\n[ETAPE 2] Equilibrage et filtrage du bruit (train only)...")
             print(">>> etape 2: debut du processus...")
             with tqdm(total=3, desc="  >> Etape 2 Progress", unit="step") as pbar:
-                X_train_balanced, y_train_balanced = self.balance_and_filter_noise(
-                    X_train_combined, y_enc_train, contamination=0.05
+                X_train_balanced, y_train_balanced, X_cat_train_balanced = self.balance_and_filter_noise(
+                    X_train_combined, y_enc_train, X_categorical=X_cat_train, contamination=0.05
                 )
                 pbar.update(1)
                 pbar.set_description("  >> Etape 2.1 SMOTE")
@@ -848,6 +863,7 @@ class JsonIoTDataProcessor:
             print("\n[ETAPE 2] Equilibrage desactive.")
             X_train_balanced = X_train_combined
             y_train_balanced = y_enc_train
+            X_cat_train_balanced = X_cat_train
 
         # ─── Etape 3: Selection par Exclusion Adversariale ────────────────────
         if apply_feature_selection:
@@ -916,7 +932,7 @@ class JsonIoTDataProcessor:
 
         X_train_seq, y_train_seq = self.create_sequences_with_categorical(
             X_train_cont_scaled,
-            X_cat_train,
+            X_cat_train_balanced,
             X_bin_train,
             y_train_balanced,
             y_str_train if not apply_balancing else None,

@@ -160,8 +160,7 @@ reverseOctetTotalCount | Zero         | 16.8% | 0.102
 ...autres features...  |              |  ...  | 0.260
 ```
 
-La colonne `P(sampling)` montre la **distribution de probabilité** avec laquelle chaque feature sera choisie lors d'une attaque. Cette distribution est recalculée dynamiquement : la sensibilité est **re-analysée après chaque phase d'entraînement** (sur la version courante du modèle, pas seulement Phase A), ce qui permet de mettre à jour la distribution `P` au fur et à mesure que le modèle devient plus robuste contre certaines features — le simulateur s'adapte dynamiquement aux nouvelles failles exposées par l'entraînement.
-
+La colonne `P(sampling)` montre la **distribution de probabilité** avec laquelle chaque feature sera choisie lors d'une attaque. Cette distribution est recalculée dynamiquement : la sensibilité est calculer seulement Phase A),
 ```python
 # Recalcul de la sensibilité après chaque phase
 sens_csv_path = f'{save_dir}/sensitivity_phase_{phase}.csv'
