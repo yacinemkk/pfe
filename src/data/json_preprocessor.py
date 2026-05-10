@@ -1071,7 +1071,7 @@ class JsonIoTDataProcessor:
             X_test_selected = X_test_combined
             self.excluded_features = {}
 
-        del X_train_combined, X_val_combined, X_test_combined, X_train_balanced
+        del X_train_combined, X_val_combined, X_test_combined
         gc.collect()
 
         # ─── Etape 4: Normalisation (StandardScaler per docs/pretraitement) ─────
