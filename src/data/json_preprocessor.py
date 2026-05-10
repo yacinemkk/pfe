@@ -561,15 +561,33 @@ class JsonIoTDataProcessor:
 
         # 2.3 Local Outlier Factor pour filtrage supplementaire
         print(f"  >>> Etape 2.3: Debut - Application de Local Outlier Factor...")
+        unique_classes = np.unique(y_filtered)
+        print(f"  >> Classes a traiter: {len(unique_classes)} classes, {len(X_filtered):,} echantillons")
+        
         try:
-            with tqdm(total=100, desc="  >> LOF", unit="%") as pbar:
+            all_mask_lof = np.ones(len(X_filtered), dtype=bool)
+            
+            for cls in tqdm(unique_classes, desc="  >> LOF par classe"):
+                cls_mask = y_filtered == cls
+                cls_X = X_filtered[cls_mask]
+                n_cls = len(cls_X)
+                
+                if n_cls < 20:
+                    print(f"     - Classe {cls}: {n_cls} echantillons (trop peu, ignore)")
+                    continue
+                
+                print(f"     - Classe {cls}: traitement de {n_cls} echantillons...")
                 lof = LocalOutlierFactor(
-                    n_neighbors=20, contamination=contamination, n_jobs=-1
+                    n_neighbors=min(20, n_cls - 1), 
+                    contamination=contamination, 
+                    n_jobs=-1
                 )
-                outliers_lof = lof.fit_predict(X_filtered)
-                pbar.update(100)
+                outliers_cls = lof.fit_predict(cls_X)
+                mask_cls = outliers_cls == 1
+                all_mask_lof[np.where(cls_mask)[0]] = mask_cls
+                print(f"       -> Classe {cls}: {np.sum(mask_cls)}/{n_cls} conserves ({n_cls - np.sum(mask_cls)} supprimes)")
 
-            mask_lof = outliers_lof == 1
+            mask_lof = all_mask_lof
             X_final = X_filtered[mask_lof]
             y_final = y_filtered[mask_lof]
             print(
