@@ -45,6 +45,7 @@ import pickle
 import gc
 import warnings
 import sys
+from tqdm import tqdm
 
 warnings.filterwarnings("ignore")
 
@@ -543,12 +544,14 @@ class JsonIoTDataProcessor:
 
         # 2.2 Isolation Forest pour detecter les anomalies
         print(f"  >>> Etape 2.2: Debut - Application d'Isolation Forest...")
-        iso_forest = IsolationForest(
-            contamination=contamination, random_state=RANDOM_STATE, n_jobs=-1
-        )
-        outliers_if = iso_forest.fit_predict(X_resampled)
-        mask_if = outliers_if == 1
+        with tqdm(total=100, desc="  >> Isolation Forest", unit="%") as pbar:
+            iso_forest = IsolationForest(
+                contamination=contamination, random_state=RANDOM_STATE, n_jobs=-1
+            )
+            outliers_if = iso_forest.fit_predict(X_resampled)
+            pbar.update(100)
 
+        mask_if = outliers_if == 1
         X_filtered = X_resampled[mask_if]
         y_filtered = y_resampled[mask_if]
         print(
@@ -559,12 +562,14 @@ class JsonIoTDataProcessor:
         # 2.3 Local Outlier Factor pour filtrage supplementaire
         print(f"  >>> Etape 2.3: Debut - Application de Local Outlier Factor...")
         try:
-            lof = LocalOutlierFactor(
-                n_neighbors=20, contamination=contamination, n_jobs=-1
-            )
-            outliers_lof = lof.fit_predict(X_filtered)
-            mask_lof = outliers_lof == 1
+            with tqdm(total=100, desc="  >> LOF", unit="%") as pbar:
+                lof = LocalOutlierFactor(
+                    n_neighbors=20, contamination=contamination, n_jobs=-1
+                )
+                outliers_lof = lof.fit_predict(X_filtered)
+                pbar.update(100)
 
+            mask_lof = outliers_lof == 1
             X_final = X_filtered[mask_lof]
             y_final = y_filtered[mask_lof]
             print(
@@ -810,9 +815,16 @@ class JsonIoTDataProcessor:
         if apply_balancing:
             print("\n[ETAPE 2] Equilibrage et filtrage du bruit (train only)...")
             print(">>> etape 2: debut du processus...")
-            X_train_balanced, y_train_balanced = self.balance_and_filter_noise(
-                X_train_combined, y_enc_train, contamination=0.05
-            )
+            with tqdm(total=3, desc="  >> Etape 2 Progress", unit="step") as pbar:
+                X_train_balanced, y_train_balanced = self.balance_and_filter_noise(
+                    X_train_combined, y_enc_train, contamination=0.05
+                )
+                pbar.update(1)
+                pbar.set_description("  >> Etape 2.1 SMOTE")
+                pbar.update(1)
+                pbar.set_description("  >> Etape 2.2 IsoForest")
+                pbar.update(1)
+                pbar.set_description("  >> Etape 2.3 LOF")
             print(">>> etape 2: termine!")
         else:
             print("\n[ETAPE 2] Equilibrage desactive.")
