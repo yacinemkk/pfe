@@ -41,12 +41,12 @@ JSON_SMOTE_K_NEIGHBORS = 5
 JSON_SMOTE_RANDOM_STATE = 42
 CSV_SMOTE_FORCE_REBUILD = False
 CSV_SMOTE_CACHE_VERSION = 'v2-stronger-balance'
-smote_config['target_quantile'] = 0.65
-smote_config['max_multiplier'] = 128.0
-smote_config['max_new_samples'] = 500000
-smote_config['context_multiplier'] = 1.25
-smote_config['k_neighbors'] = 5
-smote_config['random_state'] = 42
+CSV_SMOTE_TARGET_QUANTILE = 0.65
+CSV_SMOTE_MAX_MULTIPLIER = 128.0
+CSV_SMOTE_MAX_NEW_SAMPLES = 500000
+CSV_SMOTE_CONTEXT_MULTIPLIER = 1.25
+CSV_SMOTE_K_NEIGHBORS = 5
+CSV_SMOTE_RANDOM_STATE = 42
 
 # Lighter CNN-BiLSTM-Transformer to fit within 22 GB VRAM
 CNN_BILSTM_TRANSFORMER_OVERRIDE = {
@@ -180,12 +180,12 @@ def get_json_smote_config():
 def get_csv_smote_config():
     return {
         'cache_version': CSV_SMOTE_CACHE_VERSION,
-        'target_quantile': float(smote_config['target_quantile']),
-        'max_multiplier': float(smote_config['max_multiplier']),
-        'max_new_samples': int(smote_config['max_new_samples']),
-        'context_multiplier': float(smote_config['context_multiplier']),
-        'k_neighbors': int(smote_config['k_neighbors']),
-        'random_state': int(smote_config['random_state']),
+        'target_quantile': float(CSV_SMOTE_TARGET_QUANTILE),
+        'max_multiplier': float(CSV_SMOTE_MAX_MULTIPLIER),
+        'max_new_samples': int(CSV_SMOTE_MAX_NEW_SAMPLES),
+        'context_multiplier': float(CSV_SMOTE_CONTEXT_MULTIPLIER),
+        'k_neighbors': int(CSV_SMOTE_K_NEIGHBORS),
+        'random_state': int(CSV_SMOTE_RANDOM_STATE),
     }
 
 
