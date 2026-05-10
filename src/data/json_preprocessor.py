@@ -850,6 +850,7 @@ class JsonIoTDataProcessor:
                 y_str_val = np.load(step2_cache_dir / "y_str_val.npy")
                 y_enc_test = np.load(step2_cache_dir / "y_enc_test.npy")
                 y_str_test = np.load(step2_cache_dir / "y_str_test.npy")
+                y_str_train = np.load(step2_cache_dir / "y_str_train.npy")  # ADDED: Load y_str_train from cache
                 
                 all_feature_names = list(np.load(step2_cache_dir / "all_feature_names.npy", allow_pickle=True))
                 
@@ -861,9 +862,10 @@ class JsonIoTDataProcessor:
                 print(f"  Cache charge: {len(X_train_balanced):,} echantillons train")
                 print(">>> Etape 2 terminee (charge depuis cache)")
                 
-                # Extract filtered binary from X_train_balanced
-                n_bin_features = X_bin_train.shape[1]
-                X_bin_train = X_train_balanced[:, -n_bin_features:]
+                # IMPORTANT: Set feature names for subsequent stages
+                self.continuous_feature_names = [c for c in FEATURES_TO_KEEP_JSON if c not in CATEGORICAL_FEATURES_JSON]
+                self.categorical_feature_names = list(CATEGORICAL_FEATURES_JSON)
+                self.binary_feature_names = list(PKT_DIR_COLS)
                 
                 use_cache = True
             else:
@@ -1002,6 +1004,7 @@ class JsonIoTDataProcessor:
                     np.save(step2_cache_dir / "y_str_val.npy", y_str_val)
                     np.save(step2_cache_dir / "y_enc_test.npy", y_enc_test)
                     np.save(step2_cache_dir / "y_str_test.npy", y_str_test)
+                    np.save(step2_cache_dir / "y_str_train.npy", y_str_train)  # ADDED: y_str_train for sequence creation
                     np.save(step2_cache_dir / "all_feature_names.npy", np.array(all_feature_names, dtype=object))
                     
                     with open(step2_cache_dir / "label_encoder.pkl", "wb") as f:
@@ -1023,14 +1026,14 @@ class JsonIoTDataProcessor:
 
             # End of if not use_cache
         else:
-            # When using cache, still need to compute these for step 3
-            self.continuous_feature_names = [c for c in FEATURES_TO_KEEP_JSON if c not in CATEGORICAL_FEATURES_JSON]
-            self.categorical_feature_names = list(CATEGORICAL_FEATURES_JSON)
-            self.binary_feature_names = list(PKT_DIR_COLS)
+            # When using cache, variables are already loaded from lines 837-852
+            # Just ensure that X_train_combined, X_val_combined and X_test_combined are created
+            # since they are needed for etape 3 and will be deleted at line ~1082
             X_train_combined = np.concatenate([X_cont_train, X_bin_train], axis=1)
             X_val_combined = np.concatenate([X_cont_val, X_bin_val], axis=1)
             X_test_combined = np.concatenate([X_cont_test, X_bin_test], axis=1)
-            all_feature_names = self.continuous_feature_names + self.binary_feature_names
+            
+            # all_feature_names is already loaded from cache at line 852
 
         # ─── Etape 3: Selection par Exclusion Adversariale ────────────────────
         if apply_feature_selection:
@@ -1098,6 +1101,12 @@ class JsonIoTDataProcessor:
         print(f"\n[SEQUENCES] Creation (length={seq_length}, stride={stride})...")
 
         # Extract filtered binary from X_train_balanced (last n features are binary)
+        # BUGFIX: X_train_balanced should always be defined at this point
+        # When apply_balancing=False, it's set to X_train_combined (line 1020)
+        # When using cache, it's reconstructed (line 1032)
+        if X_train_balanced is None:
+            raise RuntimeError("X_train_balanced is None - this should never happen after etape 2")
+        
         n_bin_features = X_bin_train.shape[1]
         X_bin_train_filtered = X_train_balanced[:, -n_bin_features:]
         
