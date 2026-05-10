@@ -35,6 +35,7 @@ import json
 import numpy as np
 import pandas as pd
 from pathlib import Path
+import shutil
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.feature_selection import chi2, mutual_info_classif
 from sklearn.ensemble import IsolationForest
@@ -48,6 +49,68 @@ import sys
 from tqdm import tqdm
 
 warnings.filterwarnings("ignore")
+
+try:
+    from google.colab import drive
+    GOOGLE_COLAB = True
+except ImportError:
+    GOOGLE_COLAB = False
+
+
+def upload_to_drive(local_path: Path, drive_folder: str = "PFE/IPFIX_Records/Processed"):
+    """Upload processed data to Google Drive."""
+    if not GOOGLE_COLAB:
+        print("  [Drive] Not in Google Colab - skipping upload")
+        return
+
+    print(f"  [Drive] Uploading processed data to Google Drive: {drive_folder}")
+    try:
+        from google.colab import drive
+        drive.mount("/content/drive")
+        drive_path = Path("/content/drive/MyDrive") / drive_folder
+        drive_path.mkdir(parents=True, exist_ok=True)
+
+        local_path = Path(local_path)
+        for f in local_path.rglob("*"):
+            if f.is_file():
+                rel_path = f.relative_to(local_path)
+                dest = drive_path / rel_path
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                print(f"  [Drive] Uploading {rel_path}...")
+                shutil.copy2(f, dest)
+        print(f"  [Drive] Upload complete: {drive_path}")
+    except Exception as e:
+        print(f"  [Drive] Upload failed: {e}")
+
+
+def download_from_drive(drive_folder: str, local_path: Path) -> bool:
+    """Download processed data from Google Drive if available."""
+    if not GOOGLE_COLAB:
+        return False
+
+    try:
+        from google.colab import drive
+        drive.mount("/content/drive")
+        drive_path = Path("/content/drive/MyDrive") / drive_folder
+        marker = drive_path / "step2_cache_ready"
+        if not marker.exists():
+            return False
+
+        print(f"  [Drive] Found processed data in Google Drive: {drive_folder}")
+        local_path = Path(local_path)
+        local_path.mkdir(parents=True, exist_ok=True)
+
+        for f in drive_path.rglob("*"):
+            if f.is_file():
+                rel_path = f.relative_to(drive_path)
+                dest = local_path / rel_path
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, dest)
+        print(f"  [Drive] Download complete: {local_path}")
+        return True
+    except Exception as e:
+        print(f"  [Drive] Download failed: {e}")
+        return False
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.config import (
@@ -724,6 +787,7 @@ class JsonIoTDataProcessor:
         apply_feature_selection: bool = True,
         top_k_features: int = None,
         step2_cache_dir: Path = None,
+        drive_cache_dir: str = None,
     ):
         """
         Full pipeline en 4 etapes avec anti-leakage pour IPFIX Records.
@@ -756,6 +820,15 @@ class JsonIoTDataProcessor:
         use_cache = False
         if step2_cache_dir is not None and apply_balancing:
             step2_cache_dir = Path(step2_cache_dir)
+            
+            # Try downloading cache from Google Drive first
+            if drive_cache_dir and GOOGLE_COLAB:
+                print(f"\n>>> Tentative de telechargement du cache depuis Drive: {drive_cache_dir}")
+                if download_from_drive(drive_cache_dir, step2_cache_dir):
+                    print(">>> Cache telecharge depuis Drive avec succes!")
+                else:
+                    print(">>> Aucun cache trouve sur Drive")
+            
             cache_ready_file = step2_cache_dir / "step2_cache_ready"
             
             if step2_cache_dir.exists() and cache_ready_file.exists():
@@ -941,6 +1014,7 @@ class JsonIoTDataProcessor:
                         f.write("ready")
                     
                     print(">>> Cache etape 2 sauvegarde!")
+                    upload_to_drive(step2_cache_dir, "PFE/IPFIX_Records/step2_cache")
             else:
                 print("\n[ETAPE 2] Equilibrage desactive.")
                 X_train_balanced = X_train_combined
@@ -950,158 +1024,13 @@ class JsonIoTDataProcessor:
             # End of if not use_cache
         else:
             # When using cache, still need to compute these for step 3
+            self.continuous_feature_names = [c for c in FEATURES_TO_KEEP_JSON if c not in CATEGORICAL_FEATURES_JSON]
+            self.categorical_feature_names = list(CATEGORICAL_FEATURES_JSON)
+            self.binary_feature_names = list(PKT_DIR_COLS)
             X_train_combined = np.concatenate([X_cont_train, X_bin_train], axis=1)
             X_val_combined = np.concatenate([X_cont_val, X_bin_val], axis=1)
             X_test_combined = np.concatenate([X_cont_test, X_bin_test], axis=1)
             all_feature_names = self.continuous_feature_names + self.binary_feature_names
-
-        # ─── Etape 3: Selection par Exclusion Adversariale ────────────────────
-        df = self.load_json_files(data_dir, max_records=max_records)
-
-        print("  1.2 Filtrage aux 17 classes cibles...")
-        df = self.filter_classes(df, min_samples)
-
-        # ─── Extraction des caracteristiques ─────────────────────────────────
-        print("\n  Extraction des caracteristiques...")
-        X_continuous, X_categorical, X_binary, y_str, flow_start = (
-            self.prepare_features(df)
-        )
-        del df
-        gc.collect()
-
-        # ─── Encodage des labels ─────────────────────────────────────────────
-        print("\n  Encodage des labels...")
-        self.label_encoder.fit(y_str)
-        y_encoded = self.label_encoder.transform(y_str)
-        self.num_classes = len(self.label_encoder.classes_)
-        print(f"  Classes: {self.num_classes}")
-        for i, cls in enumerate(self.label_encoder.classes_):
-            count = int(np.sum(y_encoded == i))
-            print(f"    {i}: {cls} ({count:,} samples)")
-
-        # ─── Split temporel ANTI-LEAKAGE (train/val/test) ─────────────────────
-        val_ratio = VAL_SIZE  # e.g. 0.1
-        train_ratio = 1.0 - TEST_SIZE - val_ratio  # e.g. 0.7
-        print(
-            f"\n[PRE-SPLIT] Application du split temporel {int(train_ratio * 100)}/{int(val_ratio * 100)}/{int(TEST_SIZE * 100)} par appareil..."
-        )
-        train_mask = np.zeros(len(y_str), dtype=bool)
-        val_mask = np.zeros(len(y_str), dtype=bool)
-
-        for device in np.unique(y_str):
-            dev_indices = np.where(y_str == device)[0]
-            if flow_start is not None:
-                sort_order = np.argsort(flow_start[dev_indices])
-                dev_indices = dev_indices[sort_order]
-            n = len(dev_indices)
-            split_idx_train = max(1, int(n * train_ratio))
-            split_idx_val = max(split_idx_train + 1, int(n * (train_ratio + val_ratio)))
-            train_mask[dev_indices[:split_idx_train]] = True
-            val_mask[dev_indices[split_idx_train:split_idx_val]] = True
-
-        test_mask = ~train_mask & ~val_mask
-
-        X_cont_train = X_continuous[train_mask].copy()
-        X_cat_train = X_categorical[train_mask].copy()
-        X_bin_train = X_binary[train_mask].copy()
-        y_enc_train = y_encoded[train_mask].copy()
-        y_str_train = y_str[train_mask].copy()
-
-        X_cont_val = X_continuous[val_mask].copy()
-        X_cat_val = X_categorical[val_mask].copy()
-        X_bin_val = X_binary[val_mask].copy()
-        y_enc_val = y_encoded[val_mask].copy()
-        y_str_val = y_str[val_mask].copy()
-
-        X_cont_test = X_continuous[test_mask].copy()
-        X_cat_test = X_categorical[test_mask].copy()
-        X_bin_test = X_binary[test_mask].copy()
-        y_enc_test = y_encoded[test_mask].copy()
-        y_str_test = y_str[test_mask].copy()
-
-        print(
-            f"  Train rows: {len(y_enc_train):,} | Val rows: {len(y_enc_val):,} | Test rows: {len(y_enc_test):,}"
-        )
-
-        del (
-            X_continuous,
-            X_categorical,
-            X_binary,
-            y_encoded,
-            y_str,
-            flow_start,
-            train_mask,
-            val_mask,
-            test_mask,
-        )
-        gc.collect()
-
-        # Combiner features pour les etapes 2 et 3
-        # Continuous + binary for SMOTE/outlier/feature selection
-        X_train_combined = np.concatenate([X_cont_train, X_bin_train], axis=1)
-        X_val_combined = np.concatenate([X_cont_val, X_bin_val], axis=1)
-        X_test_combined = np.concatenate([X_cont_test, X_bin_test], axis=1)
-        all_feature_names = self.continuous_feature_names + self.binary_feature_names
-
-        # ─── Etape 2: Equilibrage et Filtrage du Bruit (TRAIN UNIQUEMENT) ───
-        print("\n" + "=" * 50)
-        print(">>> ETAPE 2: Equilibrage et filtrage du bruit")
-        print("=" * 50)
-        if apply_balancing:
-            print("\n[ETAPE 2] Equilibrage et filtrage du bruit (train only)...")
-            print(">>> etape 2: debut du processus...")
-            with tqdm(total=3, desc="  >> Etape 2 Progress", unit="step") as pbar:
-                X_train_balanced, y_train_balanced, X_cat_train_balanced = self.balance_and_filter_noise(
-                    X_train_combined, y_enc_train, X_categorical=X_cat_train, contamination=0.05
-                )
-                pbar.update(1)
-                pbar.set_description("  >> Etape 2.1 SMOTE")
-                pbar.update(1)
-                pbar.set_description("  >> Etape 2.2 IsoForest")
-                pbar.update(1)
-                pbar.set_description("  >> Etape 2.3 LOF")
-            print(">>> etape 2: termine!")
-            
-            # ─── Save Step 2 cache ───────────────────────────────────────────
-            if step2_cache_dir is not None:
-                step2_cache_dir = Path(step2_cache_dir)
-                step2_cache_dir.mkdir(parents=True, exist_ok=True)
-                
-                print(f"\n>>> Sauvegarde du cache etape 2 dans: {step2_cache_dir}")
-                
-                np.save(step2_cache_dir / "X_train_balanced.npy", X_train_balanced)
-                np.save(step2_cache_dir / "y_train_balanced.npy", y_train_balanced)
-                np.save(step2_cache_dir / "X_cat_train_balanced.npy", X_cat_train_balanced)
-                np.save(step2_cache_dir / "X_cont_train.npy", X_cont_train)
-                np.save(step2_cache_dir / "X_cat_train.npy", X_cat_train)
-                np.save(step2_cache_dir / "X_bin_train.npy", X_bin_train)
-                np.save(step2_cache_dir / "X_cont_val.npy", X_cont_val)
-                np.save(step2_cache_dir / "X_cat_val.npy", X_cat_val)
-                np.save(step2_cache_dir / "X_bin_val.npy", X_bin_val)
-                np.save(step2_cache_dir / "X_cont_test.npy", X_cont_test)
-                np.save(step2_cache_dir / "X_cat_test.npy", X_cat_test)
-                np.save(step2_cache_dir / "X_bin_test.npy", X_bin_test)
-                np.save(step2_cache_dir / "y_enc_val.npy", y_enc_val)
-                np.save(step2_cache_dir / "y_str_val.npy", y_str_val)
-                np.save(step2_cache_dir / "y_enc_test.npy", y_enc_test)
-                np.save(step2_cache_dir / "y_str_test.npy", y_str_test)
-                np.save(step2_cache_dir / "all_feature_names.npy", np.array(all_feature_names, dtype=object))
-                
-                with open(step2_cache_dir / "label_encoder.pkl", "wb") as f:
-                    pickle.dump({
-                        "label_encoder": self.label_encoder,
-                        "num_classes": self.num_classes
-                    }, f)
-                
-                with open(step2_cache_dir / "step2_cache_ready", "w") as f:
-                    f.write("ready")
-                
-                print(">>> Cache etape 2 sauvegarde!")
-        else:
-            print("\n[ETAPE 2] Equilibrage desactive.")
-            X_train_balanced = X_train_combined
-            y_train_balanced = y_enc_train
-            X_cat_train_balanced = X_cat_train
 
         # ─── Etape 3: Selection par Exclusion Adversariale ────────────────────
         if apply_feature_selection:
@@ -1415,6 +1344,12 @@ if __name__ == "__main__":
         default=25,
         help="Number of features to select (default: 25)",
     )
+    parser.add_argument(
+        "--drive_cache_dir",
+        type=str,
+        default=None,
+        help="Google Drive folder for step 2 cache (e.g. PFE/IPFIX_Records/step2_cache)",
+    )
     args = parser.parse_args()
 
     processor = JsonIoTDataProcessor()
@@ -1427,4 +1362,5 @@ if __name__ == "__main__":
         apply_balancing=not args.no_balancing,
         apply_feature_selection=not args.no_feature_selection,
         top_k_features=args.top_k_features,
+        drive_cache_dir=args.drive_cache_dir,
     )
